@@ -137,6 +137,7 @@
           <form id="message-form" class="composer" autocomplete="off">
             <!-- Wyskakujące panele -->
             <div id="emoji-panel" class="popup popup--emoji hidden"></div>
+            <div id="emoji-suggest" class="popup popup--suggest hidden" role="listbox"></div>
             <div id="gif-panel" class="popup popup--gif hidden">
               <input id="gif-search" type="text" placeholder="Szukaj GIFów…" maxlength="50" />
               <div id="gif-grid" class="gif-grid"></div>
@@ -193,6 +194,7 @@
         <button type="button" class="settings__tab" role="tab" data-tab="profile"><span class="settings__tab-icon">🪪</span>Profil</button>
         <button type="button" class="settings__tab" role="tab" data-tab="nick"><span class="settings__tab-icon">🔤</span>Nick</button>
         <button type="button" class="settings__tab" role="tab" data-tab="look"><span class="settings__tab-icon">🎨</span>Wygląd</button>
+        <button type="button" class="settings__tab" role="tab" data-tab="emoji"><span class="settings__tab-icon">😀</span>Emoji</button>
         <button type="button" class="settings__tab" role="tab" data-tab="chat"><span class="settings__tab-icon">💬</span>Czat i archiwum</button>
       </nav>
 
@@ -282,6 +284,27 @@
 
               <div class="section-title section-title--spaced">KOLOR AKCENTU</div>
               <div id="accent-row" class="accent-row"></div>
+            </section>
+
+            <!-- EMOJI -->
+            <section class="settings__pane" data-pane="emoji" hidden>
+              <h4 class="settings__title">Własne emoji <span id="emoji-count" class="field-counter"></span></h4>
+              <p class="settings-note">Emoji są wspólne dla całego serwera. Użyjesz ich w wiadomościach, wpisując <b>:nazwa:</b>, albo jako reakcji pod wiadomością. Obraz jest zmniejszany do 128×128; animowany GIF może mieć do 256 KB.</p>
+
+              <div class="emoji-add">
+                <div id="emoji-add-preview" class="emoji-add__preview" title="Podgląd">?</div>
+                <div class="emoji-add__fields">
+                  <input id="emoji-add-name" class="field" type="text" maxlength="32" placeholder="nazwa_emoji" autocomplete="off" />
+                  <div class="emoji-add__buttons">
+                    <button type="button" id="emoji-add-pick" class="btn-secondary btn-sm">Wybierz obraz</button>
+                    <button type="button" id="emoji-add-save" class="btn-primary btn-sm" disabled>Dodaj emoji</button>
+                  </div>
+                </div>
+                <input type="file" id="emoji-add-file" accept="image/*" hidden />
+              </div>
+
+              <div class="section-title section-title--spaced">EMOJI SERWERA</div>
+              <div id="emoji-list" class="emoji-list"></div>
             </section>
 
             <!-- CZAT I ARCHIWUM -->

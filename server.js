@@ -46,6 +46,13 @@ const GIF_AVATAR_BYTES = 600 * 1024; // animowany avatar (GIF)
 const GIF_BANNER_BYTES = 1536 * 1024; // animowany baner (GIF)
 const MAX_MEDIA_BYTES = (Number(process.env.MAX_MEDIA_MB) || 100) * 1024 * 1024; // łączny budżet avatarów i banerów
 
+// Własne emoji serwera (jak na Discordzie): wspólne dla wszystkich, używane jako :nazwa: i w reakcjach.
+const MAX_EMOJI = 100;
+const EMOJI_STATIC_CHARS = 100000; // statyczne emoji (klient zmniejsza je do 128x128)
+const EMOJI_GIF_BYTES = 256 * 1024; // animowane emoji (GIF)
+const MAX_REACTIONS_PER_MESSAGE = 20; // różnych emoji pod jedną wiadomością
+const MAX_REACTORS_PER_EMOJI = 100;
+
 const app = express();
 app.use(cors());
 app.use(express.static(path.join(__dirname, 'public')));
@@ -54,9 +61,10 @@ app.use(express.static(path.join(__dirname, 'public')));
 // wersję (?v=…), więc przeglądarka trzyma obraz w pamięci podręcznej „na zawsze” i pobiera go raz.
 app.get('/media/:kind/:id', (req, res) => {
   const { kind, id } = req.params;
-  if (!['avatar', 'banner'].includes(kind) || !/^[0-9a-f-]{36}$/.test(id)) return res.sendStatus(404);
-  const account = accountsById.get(id);
-  const dataUrl = account && account[kind];
+  if (!['avatar', 'banner', 'emoji'].includes(kind) || !/^[0-9a-f-]{12,36}$/.test(id)) return res.sendStatus(404);
+  // avatar i baner należą do konta, emoji do serwera
+  const owner = kind === 'emoji' ? emojiById.get(id) : accountsById.get(id);
+  const dataUrl = kind === 'emoji' ? owner && owner.data : owner && owner[kind];
   const match = typeof dataUrl === 'string' && /^data:(image\/(?:jpeg|png|webp|gif));base64,/.exec(dataUrl);
   if (!match) return res.sendStatus(404);
   const body = Buffer.from(dataUrl.slice(match[0].length), 'base64');
@@ -168,6 +176,54 @@ async function persistAccount(account) {
   } catch (err) {
     console.error('Nie udało się zapisać konta:', err.message);
   }
+}
+
+// ---------- Własne emoji ----------
+const emojiById = new Map(); // id -> { id, name, data, v, animated, by, createdAt }
+
+function emojiNameTaken(name) {
+  const lower = name.toLowerCase();
+  for (const e of emojiById.values()) if (e.name.toLowerCase() === lower) return true;
+  return false;
+}
+
+// Tak emoji widzą klienci: adres obrazu z wersją (cache), bez ciężkiego data-URL.
+function publicEmoji(e) {
+  return {
+    id: e.id,
+    name: e.name,
+    url: `/media/emoji/${e.id}?v=${e.v}`,
+    animated: e.animated,
+    by: e.by ? accountsById.get(e.by)?.nick || null : null,
+    byId: e.by || null,
+  };
+}
+
+function emojiList() {
+  return Array.from(emojiById.values())
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map(publicEmoji);
+}
+
+function broadcastEmoji() {
+  io.emit('emoji:list', emojiList());
+}
+
+// Czy to poprawna reakcja: własne emoji :nazwa: (musi istnieć) albo zwykłe emoji Unicode?
+function validReactionEmoji(value) {
+  if (typeof value !== 'string' || !value || value.length > 24) return false;
+  const custom = /^:([A-Za-z0-9_]{2,32}):$/.exec(value);
+  if (custom) return emojiNameTaken(custom[1]);
+  return /\p{Extended_Pictographic}/u.test(value) && /^[\p{Extended_Pictographic}‍️\u{1f3fb}-\u{1f3ff}]+$/u.test(value);
+}
+
+// Reakcje w formie dla klientów: { emoji: { ids: [accountId...], nicks: [pierwsze nicki do podpowiedzi] } }
+function publicReactions(reactions) {
+  const out = {};
+  for (const [emoji, ids] of Object.entries(reactions || {})) {
+    out[emoji] = { ids, nicks: ids.slice(0, 12).map((id) => accountsById.get(id)?.nick).filter(Boolean) };
+  }
+  return out;
 }
 
 const restorable = new Map(); // id świeżo założonych kont -> kiedy (okno na odtworzenie profilu z kopii zapasowej)
@@ -490,7 +546,8 @@ async function sendHistory(socket, channelId) {
     const a = m.accountId && accountsById.get(m.accountId);
     if (a && (a.nickColor || a.nickFont)) styles[a.id] = { nickColor: a.nickColor || null, nickFont: a.nickFont || null };
   }
-  socket.emit('history', { channel: channelId, messages, styles });
+  const withReactions = messages.map((m) => (m.reactions ? { ...m, reactions: publicReactions(m.reactions) } : m));
+  socket.emit('history', { channel: channelId, messages: withReactions, styles });
 }
 
 async function emitMessage(socket, nick, extra) {
@@ -577,6 +634,8 @@ io.on('connection', (socket) => {
       createdAt: account.createdAt,
       profile: profileOf(account),
       isNew: isNewAccount, // true = konto właśnie utworzono (np. serwer zgubił dane po restarcie)
+      emoji: emojiList(),
+      maxEmoji: MAX_EMOJI,
       channel,
       channels: CHANNELS,
     });
@@ -587,6 +646,103 @@ io.on('connection', (socket) => {
       if (firstSession) systemMessage(`${nick} dołączył(a) do czatu`);
     }
     broadcastUsers();
+  });
+
+  // ---------- Własne emoji: dodawanie i usuwanie ----------
+  socket.on('emoji:add', async (payload, ack) => {
+    const reply = typeof ack === 'function' ? ack : () => {};
+    const user = users.get(socket.id);
+    if (!user) return reply({ ok: false, error: 'Najpierw dołącz do czatu.' });
+    if (!payload || typeof payload !== 'object') return reply({ ok: false, error: 'Nieprawidłowe dane.' });
+    if (rateLimited(socket, 'emojiAdd', 8, 60000)) {
+      return reply({ ok: false, error: 'Zbyt wiele nowych emoji naraz. Spróbuj za chwilę.' });
+    }
+    const name = typeof payload.name === 'string' ? payload.name.trim() : '';
+    if (!/^[A-Za-z0-9_]{2,32}$/.test(name)) {
+      return reply({ ok: false, error: 'Nazwa: 2–32 znaki – litery bez polskich znaków, cyfry i podkreślenie.' });
+    }
+    if (emojiNameTaken(name)) return reply({ ok: false, error: `Emoji :${name}: już istnieje.` });
+    if (emojiById.size >= MAX_EMOJI) return reply({ ok: false, error: `Serwer ma już maksymalną liczbę emoji (${MAX_EMOJI}).` });
+    if (!isValidImageDataUrl(payload.image, EMOJI_STATIC_CHARS, EMOJI_GIF_BYTES)) {
+      return reply({ ok: false, error: 'Nieprawidłowy obraz emoji (GIF do 256 KB, inne formaty są zmniejszane).' });
+    }
+
+    const emoji = {
+      id: crypto.randomBytes(6).toString('hex'),
+      name,
+      data: payload.image,
+      v: mediaVersion(payload.image),
+      animated: payload.image.startsWith('data:image/gif'),
+      by: user.accountId,
+      createdAt: Date.now(),
+    };
+    emojiById.set(emoji.id, emoji);
+    try {
+      await store.saveEmoji(emoji);
+    } catch (err) {
+      console.error('Nie udało się zapisać emoji:', err.message);
+    }
+    reply({ ok: true, emoji: publicEmoji(emoji) });
+    broadcastEmoji();
+  });
+
+  socket.on('emoji:delete', async (id, ack) => {
+    const reply = typeof ack === 'function' ? ack : () => {};
+    const user = users.get(socket.id);
+    if (!user) return reply({ ok: false, error: 'Najpierw dołącz do czatu.' });
+    const emoji = typeof id === 'string' ? emojiById.get(id) : null;
+    if (!emoji) return reply({ ok: false, error: 'Nie ma takiego emoji.' });
+    if (emoji.by !== user.accountId) return reply({ ok: false, error: 'Możesz usuwać tylko własne emoji.' });
+    emojiById.delete(id);
+    try {
+      await store.deleteEmoji(id);
+    } catch (err) {
+      console.error('Nie udało się usunąć emoji:', err.message);
+    }
+    reply({ ok: true });
+    broadcastEmoji();
+  });
+
+  // ---------- Reakcje na wiadomości (kliknięcie dodaje, ponowne kliknięcie usuwa) ----------
+  socket.on('react', async (payload, ack) => {
+    const reply = typeof ack === 'function' ? ack : () => {};
+    const user = users.get(socket.id);
+    if (!user) return reply({ ok: false, error: 'Najpierw dołącz do czatu.' });
+    if (!payload || typeof payload.id !== 'string' || payload.id.length > 64) {
+      return reply({ ok: false, error: 'Nieprawidłowa wiadomość.' });
+    }
+    if (!validReactionEmoji(payload.emoji)) return reply({ ok: false, error: 'Nieprawidłowe emoji.' });
+    if (rateLimited(socket, 'react', 25, 10000)) return reply({ ok: false, error: 'Zwolnij trochę.' });
+
+    try {
+      const msg = await store.get(payload.id);
+      if (!msg) return reply({ ok: false, error: 'Ta wiadomość już nie istnieje.' });
+      // Reagować można tylko w kanale, który oglądasz (i tylko w nsfw po potwierdzeniu pełnoletności).
+      const channel = msg.channel || DEFAULT_CHANNEL;
+      if (channel !== socket.data.channel) return reply({ ok: false, error: 'Ta wiadomość jest w innym kanale.' });
+      if (CHANNELS_BY_ID.get(channel)?.nsfw && !socket.data.adult) return reply({ ok: false, error: 'Brak dostępu.' });
+
+      const reactions = { ...(msg.reactions || {}) };
+      const who = new Set(reactions[payload.emoji] || []);
+      if (who.has(user.accountId)) {
+        who.delete(user.accountId);
+      } else {
+        if (!reactions[payload.emoji] && Object.keys(reactions).length >= MAX_REACTIONS_PER_MESSAGE) {
+          return reply({ ok: false, error: `Pod wiadomością może być najwyżej ${MAX_REACTIONS_PER_MESSAGE} różnych reakcji.` });
+        }
+        if (who.size >= MAX_REACTORS_PER_EMOJI) return reply({ ok: false, error: 'Ta reakcja ma już maksymalną liczbę osób.' });
+        who.add(user.accountId);
+      }
+      if (who.size) reactions[payload.emoji] = Array.from(who);
+      else delete reactions[payload.emoji];
+
+      await store.setReactions(payload.id, reactions);
+      io.to(`ch:${channel}`).emit('reactions', { id: payload.id, reactions: publicReactions(reactions) });
+      reply({ ok: true });
+    } catch (err) {
+      console.error('Błąd reakcji:', err.message);
+      reply({ ok: false, error: 'Nie udało się dodać reakcji.' });
+    }
   });
 
   // Zapis własnego profilu (wszystkie pola opcjonalne – zmieniamy tylko te, które przyszły).
@@ -908,6 +1064,9 @@ io.on('connection', (socket) => {
 async function start() {
   await store.init();
   console.log(`Historia: ${store.label}, wiadomości i pliki usuwane po ${RETENTION_DAYS} dn.`);
+
+  for (const emoji of await store.loadEmoji()) emojiById.set(emoji.id, emoji);
+  console.log(`Wczytano emoji: ${emojiById.size}`);
 
   for (const account of await store.loadAccounts()) indexAccount(account);
   console.log(`Wczytano kont: ${accountsById.size}`);

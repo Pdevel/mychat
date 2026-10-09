@@ -272,7 +272,7 @@ function renderSettingsOptions() {
 
 // ---------- Avatary ----------
 // Dozwolone źródła obrazu: adres z serwera (/media/…) albo data-URL wybrany lokalnie (także animowany GIF).
-const MEDIA_URL = /^\/media\/(avatar|banner)\/[0-9a-f-]{36}\?v=[0-9a-f]+$/;
+const MEDIA_URL = /^\/media\/(avatar|banner|emoji)\/[0-9a-f-]{12,36}\?v=[0-9a-f]+$/;
 const DATA_IMAGE_PREFIX = /^data:image\/(jpeg|png|webp|gif);base64,/;
 function isSafeImageSrc(value) {
   return (
@@ -416,20 +416,63 @@ avatarFileInput.addEventListener('change', async () => {
 nickInput.addEventListener('input', updateLoginAvatar);
 
 // ---------- Renderowanie wiadomości ----------
-function linkify(text) {
+// ---------- Własne emoji serwera ----------
+// Wspólne dla wszystkich (jak na Discordzie): w wiadomości wpisujesz :nazwa:, a pod wiadomością możesz dać reakcję.
+let customEmoji = []; // [{ id, name, url, animated, by, byId }]
+let maxEmoji = 100;
+const emojiByName = new Map(); // nazwa małymi literami -> emoji
+
+function setCustomEmoji(list) {
+  customEmoji = Array.isArray(list) ? list : [];
+  emojiByName.clear();
+  customEmoji.forEach((e) => emojiByName.set(e.name.toLowerCase(), e));
+}
+
+function emojiImg(emoji, big) {
+  const img = el('img', 'emoji' + (big ? ' emoji--big' : ''));
+  img.src = emoji.url;
+  img.alt = `:${emoji.name}:`;
+  img.title = `:${emoji.name}:`;
+  img.draggable = false;
+  img.loading = 'lazy';
+  return img;
+}
+
+// Tekst wiadomości: linki są klikalne, a :nazwa: znanego emoji zamienia się w obrazek.
+function renderRichText(text, big = false) {
   const frag = document.createDocumentFragment();
   text.split(/(https?:\/\/[^\s<>"']+)/g).forEach((part, i) => {
-    if (i % 2 === 0) {
-      if (part) frag.appendChild(document.createTextNode(part));
+    if (i % 2 === 1) {
+      const a = el('a', '', part);
+      a.href = part;
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer';
+      frag.appendChild(a);
       return;
     }
-    const a = el('a', '', part);
-    a.href = part;
-    a.target = '_blank';
-    a.rel = 'noopener noreferrer';
-    frag.appendChild(a);
+    part.split(/(:[A-Za-z0-9_]{2,32}:)/g).forEach((piece, j) => {
+      if (j % 2 === 1) {
+        const emoji = emojiByName.get(piece.slice(1, -1).toLowerCase());
+        if (emoji && isSafeImageSrc(emoji.url)) return frag.appendChild(emojiImg(emoji, big));
+      }
+      if (piece) frag.appendChild(document.createTextNode(piece));
+    });
   });
   return frag;
+}
+
+// Wiadomość złożona wyłącznie z 1–8 emoji (zwykłych lub własnych) wyświetlamy powiększoną, jak na Discordzie.
+function isJumboMessage(text) {
+  let customCount = 0;
+  const rest = text.replace(/:([A-Za-z0-9_]{2,32}):/g, (match, name) => {
+    if (!emojiByName.has(name.toLowerCase())) return match;
+    customCount += 1;
+    return '';
+  });
+  const unicodeCount = (rest.match(/\p{Extended_Pictographic}/gu) || []).length;
+  const leftovers = rest.replace(/[\p{Extended_Pictographic}‍️\s]/gu, '');
+  const total = customCount + unicodeCount;
+  return leftovers === '' && total >= 1 && total <= 8;
 }
 
 function openLightbox(src) {
@@ -836,7 +879,6 @@ function makeFileContent(m, onLoad) {
   return card;
 }
 
-const ONLY_EMOJI = /^(?:\p{Extended_Pictographic}|‍|️|\s){1,8}$/u;
 
 function addSystem(m) {
   const stick = isNearBottom();
@@ -996,17 +1038,30 @@ function addMessage(m, { historic = false } = {}) {
     wrap.appendChild(el('span', 'msg__hovertime', formatTime(m.time)));
   }
 
-  if (mine && m.id) {
+  if (m.id) {
+    // Pasek akcji widoczny po najechaniu: dodanie reakcji (każdy) i usunięcie (tylko autor)
     const actions = el('div', 'msg__actions');
-    const del = el('button', 'msg__action msg__action--danger', '🗑');
-    del.type = 'button';
-    del.title = 'Usuń wiadomość';
-    del.setAttribute('aria-label', 'Usuń wiadomość');
-    del.addEventListener('click', (e) => {
+    const react = el('button', 'msg__action js-react', '😀');
+    react.type = 'button';
+    react.title = 'Dodaj reakcję';
+    react.setAttribute('aria-label', 'Dodaj reakcję');
+    react.addEventListener('click', (e) => {
       e.stopPropagation();
-      requestDelete(m.id);
+      openReactionPicker(m.id, react);
     });
-    actions.appendChild(del);
+    actions.appendChild(react);
+
+    if (mine) {
+      const del = el('button', 'msg__action msg__action--danger', '🗑');
+      del.type = 'button';
+      del.title = 'Usuń wiadomość';
+      del.setAttribute('aria-label', 'Usuń wiadomość');
+      del.addEventListener('click', (e) => {
+        e.stopPropagation();
+        requestDelete(m.id);
+      });
+      actions.appendChild(del);
+    }
     wrap.appendChild(actions);
   }
 
@@ -1019,10 +1074,15 @@ function addMessage(m, { historic = false } = {}) {
   } else if (m.kind === 'file') {
     wrap.appendChild(makeFileContent(m, afterMediaLoad));
   } else {
-    const body = el('div', 'msg__text' + (ONLY_EMOJI.test(m.text) ? ' msg__text--emoji' : ''));
-    body.appendChild(linkify(m.text));
+    const jumbo = isJumboMessage(m.text);
+    const body = el('div', 'msg__text' + (jumbo ? ' msg__text--emoji' : ''));
+    body.dataset.raw = m.text; // żeby po zmianie listy emoji dało się wiadomość narysować od nowa
+    body.appendChild(renderRichText(m.text, jumbo));
     wrap.appendChild(body);
   }
+
+  wrap._reactions = m.reactions || {};
+  renderReactions(wrap, wrap._reactions);
 
   messagesEl.appendChild(wrap);
   lastNick = m.nick;
@@ -1036,6 +1096,51 @@ function addMessage(m, { historic = false } = {}) {
       document.title = `(${unread}) MyChat`;
     }
   }
+}
+
+// ---------- Reakcje ----------
+// m.reactions: { emoji: { ids: [accountId…], nicks: [nicki do podpowiedzi] } }; emoji to znak Unicode albo :nazwa:
+function reactionGlyph(emoji) {
+  const custom = /^:([A-Za-z0-9_]{2,32}):$/.exec(emoji);
+  const known = custom && emojiByName.get(custom[1].toLowerCase());
+  if (known && isSafeImageSrc(known.url)) return emojiImg(known, false);
+  return el('span', 'reaction__glyph', emoji);
+}
+
+function toggleReaction(messageId, emoji) {
+  if (!messageId) return;
+  socket.timeout(8000).emit('react', { id: messageId, emoji }, (err, res) => {
+    if (err || !res || !res.ok) toast((res && res.error) || 'Nie udało się dodać reakcji.');
+  });
+}
+
+function renderReactions(wrap, reactions) {
+  let bar = wrap.querySelector('.reactions');
+  const entries = Object.entries(reactions || {}).filter(([, r]) => r && r.ids && r.ids.length);
+  if (!entries.length) {
+    bar?.remove();
+    return;
+  }
+  if (!bar) {
+    bar = el('div', 'reactions');
+    wrap.appendChild(bar);
+  }
+  bar.replaceChildren(
+    ...entries.map(([emoji, r]) => {
+      const mine = r.ids.includes(myAccountId);
+      const pill = el('button', 'reaction' + (mine ? ' reaction--mine' : ''));
+      pill.type = 'button';
+      pill.appendChild(reactionGlyph(emoji));
+      pill.appendChild(el('span', 'reaction__count', String(r.ids.length)));
+      const more = r.ids.length - r.nicks.length;
+      pill.title = `${r.nicks.join(', ')}${more > 0 ? ` i ${more} więcej` : ''} — ${emoji}`;
+      pill.addEventListener('click', (e) => {
+        e.stopPropagation();
+        toggleReaction(wrap.dataset.id, emoji);
+      });
+      return pill;
+    })
+  );
 }
 
 function renderTyping() {
@@ -1484,6 +1589,10 @@ function join(nick) {
       myProfile = res.profile;
       setNickStyle(myAccountId, myNick, res.profile);
     }
+    if (Array.isArray(res.emoji)) {
+      setCustomEmoji(res.emoji); // własne emoji serwera – potrzebne, zanim dojdzie historia z wiadomościami
+      if (res.maxEmoji) maxEmoji = res.maxEmoji;
+    }
     if (Array.isArray(res.channels) && res.channels.length) channels = res.channels;
     currentChannel = res.channel || DEFAULT_CHANNEL; // serwer mógł zmienić kanał (np. brak zgody na nsfw)
     historyLoading = true; // zaraz po zalogowaniu serwer wyśle historię kanału
@@ -1662,29 +1771,100 @@ window.addEventListener('drop', (e) => {
   if (myNick) Array.from(e.dataTransfer.files).forEach(sendFile);
 });
 
-// ---------- Emoji ----------
+// ---------- Emoji: wybieraczka (zwykłe i własne), reakcje, podpowiedzi, zarządzanie ----------
 const EMOJIS =
-  '😀😁😂🤣😊😍😘😎🤔😅😭😡🥳😴🤯🥺👍👎👏🙏💪🙌👋🤝❤️🧡💛💚💙💜🖤💔🔥✨🎉🎂🍕🍔🍟🍺☕⚽🎮🎵🚀🌈☀️🌙⭐💯✅❌👀🤖👻💩🐶🐱🦊🐼🐸'.match(
+  ('😀😃😄😁😆😅🤣😂🙂🙃😉😊😇🥰😍🤩😘😗😚😋😛😜🤪😝🤑🤗🤭🤫🤔🤐🤨😐😑😶😏😒🙄😬😮‍💨🤥😌😔😪🤤😴😷🤒🤕🤢🤮🤧🥵🥶🥴😵🤯🤠🥳😎🤓🧐😕😟🙁😮😯😲😳🥺😦😧😨😰😥😢😭😱😖😣😞😓😩😫🥱😤😡😠🤬😈👿💀💩🤡👻👽🤖' +
+    '👍👎👌✌️🤞🤟🤘🤙👈👉👆👇☝️✋🤚🖐️🖖👋🤝👏🙌👐🤲🙏✍️💪🦾👀🧠' +
+    '❤️🧡💛💚💙💜🖤🤍🤎💔❣️💕💞💓💗💖💘💝💯💢💥💫💦💨🔥✨⭐🌟🎉🎊🎁🏆🥇🎮🎯🎲🎵🎶🎤🎧⚽🏀🏈⚾🎾🏐' +
+    '🐶🐱🐭🐹🐰🦊🐻🐼🐨🐯🦁🐮🐷🐸🐵🐔🐧🐦🦆🦉🐺🐴🦄🐝🦋🐢🐍🐙🐬🐳🦈' +
+    '🍎🍌🍉🍇🍓🍒🍑🍍🥑🌽🥕🍕🍔🍟🌭🍿🍩🍪🎂🍰🍫🍬🍺🍻🥂🍷☕🍵' +
+    '🚀🚗✈️🏠🌍🌈☀️🌙⚡❄️🌊🌸🌹🍀' +
+    '✅❌❓❗💬💭⚠️🔔🔒🔑💡📌📎💻📱📷🎬').match(
     /\p{Extended_Pictographic}(?:️|‍\p{Extended_Pictographic})*/gu
   );
+const QUICK_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
 
-EMOJIS.forEach((emoji) => {
-  const b = el('button', '', emoji);
-  b.type = 'button';
-  b.addEventListener('click', () => {
-    const start = messageInput.selectionStart ?? messageInput.value.length;
-    const end = messageInput.selectionEnd ?? start;
-    messageInput.setRangeText(emoji, start, end, 'end');
-    messageInput.focus();
-  });
-  emojiPanel.appendChild(b);
-});
+// Zawartość wybieraczki: zakładki „Emoji” i „Własne”; onPick dostaje znak Unicode albo :nazwa:.
+function fillEmojiPicker(container, onPick, { quick = false } = {}) {
+  const tabStd = el('button', 'epicker__tab is-active', '😀 Emoji');
+  const tabCustom = el('button', 'epicker__tab', `⭐ Własne (${customEmoji.length})`);
+  tabStd.type = tabCustom.type = 'button';
+  const tabs = el('div', 'epicker__tabs');
+  tabs.append(tabStd, tabCustom);
+  const grid = el('div', 'epicker__grid');
 
+  const parts = [tabs];
+  if (quick) {
+    const row = el('div', 'epicker__quick');
+    QUICK_REACTIONS.forEach((emoji) => {
+      const b = el('button', '', emoji);
+      b.type = 'button';
+      b.addEventListener('click', () => onPick(emoji));
+      row.appendChild(b);
+    });
+    parts.push(row);
+  }
+  parts.push(grid);
+  container.replaceChildren(...parts);
+
+  const showStandard = () => {
+    tabStd.classList.add('is-active');
+    tabCustom.classList.remove('is-active');
+    grid.replaceChildren(
+      ...EMOJIS.map((emoji) => {
+        const b = el('button', '', emoji);
+        b.type = 'button';
+        b.addEventListener('click', () => onPick(emoji));
+        return b;
+      })
+    );
+  };
+  const showCustom = () => {
+    tabCustom.classList.add('is-active');
+    tabStd.classList.remove('is-active');
+    if (!customEmoji.length) {
+      const empty = el('div', 'epicker__empty', 'Serwer nie ma jeszcze własnych emoji. ');
+      const add = el('button', 'btn-secondary btn-sm', 'Dodaj pierwsze');
+      add.type = 'button';
+      add.addEventListener('click', () => {
+        closePopups();
+        openSettings('emoji');
+      });
+      empty.appendChild(add);
+      return grid.replaceChildren(empty);
+    }
+    grid.replaceChildren(
+      ...customEmoji.map((e) => {
+        const b = el('button');
+        b.type = 'button';
+        b.title = `:${e.name}:`;
+        b.appendChild(emojiImg(e, false));
+        b.addEventListener('click', () => onPick(`:${e.name}:`));
+        return b;
+      })
+    );
+  };
+  tabStd.addEventListener('click', showStandard);
+  tabCustom.addEventListener('click', showCustom);
+  showStandard();
+}
+
+// Wstawia tekst w miejscu kursora w polu wiadomości.
+function insertIntoInput(text) {
+  const start = messageInput.selectionStart ?? messageInput.value.length;
+  const end = messageInput.selectionEnd ?? start;
+  messageInput.setRangeText(text, start, end, 'end');
+  messageInput.focus();
+}
+
+// --- Wybieraczka w polu wiadomości ---
 function closePopups() {
   emojiPanel.classList.add('hidden');
   gifPanel.classList.add('hidden');
   $('emoji-btn').classList.remove('is-active');
   $('gif-btn').classList.remove('is-active');
+  closeReactionPicker();
+  closeEmojiSuggest();
 }
 
 function togglePopup(panel, btn) {
@@ -1697,10 +1877,273 @@ function togglePopup(panel, btn) {
   return wasHidden;
 }
 
-$('emoji-btn').addEventListener('click', () => togglePopup(emojiPanel, $('emoji-btn')));
+$('emoji-btn').addEventListener('click', () => {
+  if (togglePopup(emojiPanel, $('emoji-btn'))) {
+    // własne emoji wstawiamy ze spacją, żeby od razu dało się pisać dalej
+    fillEmojiPicker(emojiPanel, (token) => insertIntoInput(token.startsWith(':') ? `${token} ` : token));
+  }
+});
 
 document.addEventListener('click', (e) => {
-  if (!e.target.closest('.popup, #emoji-btn, #gif-btn')) closePopups();
+  if (!e.target.closest('.popup, #emoji-btn, #gif-btn, .js-react')) closePopups();
+});
+
+// --- Wybieraczka reakcji przy wiadomości ---
+let reactionTarget = null;
+
+function closeReactionPicker() {
+  document.getElementById('reaction-picker')?.remove();
+  reactionTarget = null;
+}
+
+function openReactionPicker(messageId, anchor) {
+  const same = reactionTarget === messageId;
+  closePopups();
+  if (same) return; // drugie kliknięcie tego samego przycisku zamyka
+  const panel = el('div', 'popup popup--emoji popup--float');
+  panel.id = 'reaction-picker';
+  fillEmojiPicker(
+    panel,
+    (emoji) => {
+      toggleReaction(messageId, emoji);
+      closeReactionPicker();
+    },
+    { quick: true }
+  );
+  document.body.appendChild(panel);
+  reactionTarget = messageId;
+
+  const r = anchor.getBoundingClientRect();
+  const w = panel.offsetWidth;
+  const h = panel.offsetHeight;
+  const left = Math.max(8, Math.min(r.right - w, window.innerWidth - w - 8));
+  let top = r.bottom + 6;
+  if (top + h > window.innerHeight - 8) top = Math.max(8, r.top - h - 6); // brak miejsca pod spodem – nad przyciskiem
+  panel.style.left = `${left}px`;
+  panel.style.top = `${top}px`;
+}
+
+// --- Podpowiedzi przy wpisywaniu :nazwa (jak na Discordzie) ---
+const suggestEl = $('emoji-suggest');
+let suggestMatches = [];
+let suggestIndex = 0;
+let suggestQuery = '';
+
+function closeEmojiSuggest() {
+  suggestEl.classList.add('hidden');
+  suggestMatches = [];
+}
+
+function renderEmojiSuggest() {
+  const title = el('div', 'suggest__title', `EMOJI PASUJĄCE DO „:${suggestQuery}”`);
+  const items = suggestMatches.map((e, i) => {
+    const b = el('button', 'suggest__item' + (i === suggestIndex ? ' is-selected' : ''));
+    b.type = 'button';
+    b.setAttribute('role', 'option');
+    b.appendChild(emojiImg(e, false));
+    b.appendChild(el('span', '', `:${e.name}:`));
+    b.addEventListener('mousedown', (ev) => ev.preventDefault()); // nie zabieraj fokusu polu wiadomości
+    b.addEventListener('click', () => applyEmojiSuggestion(e));
+    return b;
+  });
+  suggestEl.replaceChildren(title, ...items);
+  suggestEl.classList.remove('hidden');
+}
+
+function updateEmojiSuggest() {
+  const caret = messageInput.selectionStart ?? messageInput.value.length;
+  const match = /(?:^|\s):([A-Za-z0-9_]{2,})$/.exec(messageInput.value.slice(0, caret));
+  if (!match || !customEmoji.length) return closeEmojiSuggest();
+
+  const q = match[1].toLowerCase();
+  const starts = (e) => (e.name.toLowerCase().startsWith(q) ? 0 : 1);
+  const found = customEmoji
+    .filter((e) => e.name.toLowerCase().includes(q))
+    .sort((a, b) => starts(a) - starts(b) || a.name.localeCompare(b.name))
+    .slice(0, 8);
+  if (!found.length) return closeEmojiSuggest();
+
+  if (q !== suggestQuery) suggestIndex = 0;
+  suggestQuery = q;
+  suggestMatches = found;
+  suggestIndex = Math.min(suggestIndex, found.length - 1);
+  renderEmojiSuggest();
+}
+
+function applyEmojiSuggestion(emoji) {
+  const caret = messageInput.selectionStart ?? messageInput.value.length;
+  const before = messageInput.value.slice(0, caret).replace(/:([A-Za-z0-9_]{2,})$/, `:${emoji.name}: `);
+  const after = messageInput.value.slice(caret);
+  messageInput.value = before + after;
+  messageInput.setSelectionRange(before.length, before.length);
+  closeEmojiSuggest();
+  messageInput.focus();
+}
+
+messageInput.addEventListener('input', updateEmojiSuggest);
+messageInput.addEventListener('click', updateEmojiSuggest);
+messageInput.addEventListener('keydown', (e) => {
+  if (suggestEl.classList.contains('hidden') || !suggestMatches.length) return;
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    suggestIndex = (suggestIndex + (e.key === 'ArrowDown' ? 1 : -1) + suggestMatches.length) % suggestMatches.length;
+    renderEmojiSuggest();
+  } else if (e.key === 'Enter' || e.key === 'Tab') {
+    e.preventDefault(); // Enter wybiera emoji zamiast wysyłać wiadomość
+    applyEmojiSuggestion(suggestMatches[suggestIndex]);
+  } else if (e.key === 'Escape') {
+    closeEmojiSuggest();
+  }
+});
+
+// --- Reakcje i lista emoji z serwera ---
+socket.on('reactions', ({ id, reactions }) => {
+  const node = messagesEl.querySelector(`.msg[data-id="${CSS.escape(id)}"]`);
+  if (node) {
+    node._reactions = reactions;
+    renderReactions(node, reactions);
+  }
+  const logged = sessionLog.get(id);
+  if (logged) {
+    logged.reactions = reactions;
+    if (settings.archive && archive.ready) archive.put([logged]).catch(handleArchiveError);
+  }
+});
+
+// Po zmianie listy emoji rysujemy od nowa teksty wiadomości (:nazwa: ↔ obrazek) i reakcje.
+function refreshEmojiViews() {
+  messagesEl.querySelectorAll('.msg__text[data-raw]').forEach((body) => {
+    const raw = body.dataset.raw;
+    const jumbo = isJumboMessage(raw);
+    body.classList.toggle('msg__text--emoji', jumbo);
+    body.replaceChildren(renderRichText(raw, jumbo));
+  });
+  messagesEl.querySelectorAll('.msg').forEach((wrap) => {
+    if (wrap._reactions && Object.keys(wrap._reactions).length) renderReactions(wrap, wrap._reactions);
+  });
+  renderEmojiSettings();
+}
+
+socket.on('emoji:list', (list) => {
+  setCustomEmoji(list);
+  refreshEmojiViews();
+});
+
+// --- Zarządzanie emoji (Ustawienia → Emoji) ---
+const emojiDraft = { image: null };
+
+function renderEmojiSettings() {
+  $('emoji-count').textContent = `${customEmoji.length}/${maxEmoji}`;
+  const list = $('emoji-list');
+  if (!customEmoji.length) {
+    return list.replaceChildren(el('div', 'emoji-empty', 'Nie ma jeszcze żadnych własnych emoji – dodaj pierwsze powyżej!'));
+  }
+  list.replaceChildren(
+    ...customEmoji.map((e) => {
+      const card = el('div', 'emoji-card');
+      card.appendChild(emojiImg(e, false));
+      const text = el('div', 'emoji-card__text');
+      text.appendChild(el('div', 'emoji-card__name', `:${e.name}:`));
+      text.appendChild(el('div', 'emoji-card__by', e.by ? `dodał(a) ${e.by}` : ''));
+      card.appendChild(text);
+      if (e.byId && e.byId === myAccountId) {
+        const del = el('button', 'icon-btn icon-btn--danger', '🗑');
+        del.type = 'button';
+        del.title = 'Usuń emoji';
+        del.addEventListener('click', () => {
+          if (!confirm(`Usunąć emoji :${e.name}:? Zniknie dla wszystkich.`)) return;
+          socket.timeout(10000).emit('emoji:delete', e.id, (err, res) => {
+            if (err || !res || !res.ok) toast((res && res.error) || 'Nie udało się usunąć emoji.');
+          });
+        });
+        card.appendChild(del);
+      }
+      return card;
+    })
+  );
+}
+
+function updateEmojiAddState() {
+  const name = $('emoji-add-name').value.trim();
+  $('emoji-add-save').disabled = !(emojiDraft.image && name.length >= 2);
+}
+
+// Obraz emoji: GIF zostaje w oryginale (animacja), reszta jest zmniejszana do 128x128 z zachowaniem przezroczystości.
+function fileToEmoji(file) {
+  return new Promise((resolve, reject) => {
+    if (!file || !file.type.startsWith('image/')) return reject(new Error('To nie jest obrazek.'));
+    if (file.type === 'image/gif') {
+      if (file.size > 256 * 1024) return reject(new Error('Animowane emoji (GIF) może mieć maksymalnie 256 KB.'));
+      return readAsDataUrl(file).then(resolve, reject);
+    }
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      for (const size of [128, 96, 64]) {
+        const canvas = document.createElement('canvas');
+        canvas.width = canvas.height = size;
+        const scale = Math.min(size / img.width, size / img.height);
+        const w = Math.round(img.width * scale);
+        const h = Math.round(img.height * scale);
+        canvas.getContext('2d').drawImage(img, Math.round((size - w) / 2), Math.round((size - h) / 2), w, h);
+        for (const type of ['image/png', 'image/webp']) {
+          const dataUrl = canvas.toDataURL(type, 0.9);
+          if (dataUrl.startsWith(`data:${type}`) && dataUrl.length <= 95000) return resolve(dataUrl);
+        }
+      }
+      reject(new Error('Ten obraz jest zbyt szczegółowy – wybierz prostszy.'));
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error('Nie udało się wczytać obrazka.'));
+    };
+    img.src = url;
+  });
+}
+
+$('emoji-add-pick').addEventListener('click', () => $('emoji-add-file').click());
+$('emoji-add-file').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+  try {
+    emojiDraft.image = await fileToEmoji(file);
+    const preview = $('emoji-add-preview');
+    preview.style.backgroundImage = `url("${emojiDraft.image}")`;
+    preview.textContent = '';
+    if (!$('emoji-add-name').value.trim()) {
+      // nazwa z nazwy pliku: tylko litery, cyfry i podkreślenia
+      const guess = file.name.replace(/\.[^.]+$/, '').replace(/[^A-Za-z0-9_]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 32);
+      $('emoji-add-name').value = guess.length >= 2 ? guess : '';
+    }
+  } catch (err) {
+    emojiDraft.image = null;
+    toast(err.message);
+  }
+  updateEmojiAddState();
+});
+$('emoji-add-name').addEventListener('input', (e) => {
+  e.target.value = e.target.value.replace(/[^A-Za-z0-9_]/g, ''); // nazwa tylko z liter bez polskich znaków, cyfr i _
+  updateEmojiAddState();
+});
+$('emoji-add-save').addEventListener('click', () => {
+  const name = $('emoji-add-name').value.trim();
+  const btn = $('emoji-add-save');
+  btn.disabled = true;
+  socket.timeout(20000).emit('emoji:add', { name, image: emojiDraft.image }, (err, res) => {
+    if (err || !res || !res.ok) {
+      updateEmojiAddState();
+      return toast((res && res.error) || 'Nie udało się dodać emoji.');
+    }
+    toast(`Dodano emoji :${name}:`, true);
+    emojiDraft.image = null;
+    $('emoji-add-name').value = '';
+    const preview = $('emoji-add-preview');
+    preview.style.backgroundImage = '';
+    preview.textContent = '?';
+    updateEmojiAddState();
+  });
 });
 
 // ---------- GIFy ----------
@@ -1807,6 +2250,7 @@ function openSettings(tab) {
   closeProfilePopout();
   loadProfileForm();
   renderSettingsOptions();
+  renderEmojiSettings();
   showSettingsTab(typeof tab === 'string' ? tab : settingsTab);
   updateArchiveStats();
   $('rename-input').value = myNick || '';

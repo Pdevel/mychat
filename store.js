@@ -19,6 +19,8 @@ class FileStore {
     this.maxBytes = maxBytes;
     this.accountsPath = path.join(dir, 'accounts.json');
     this.deletedPath = path.join(dir, 'deleted.json');
+    this.emojiPath = path.join(dir, 'emoji.json');
+    this.emoji = new Map(); // id -> własne emoji serwera (z obrazem jako data-URL)
     this.tombstones = []; // [{ id, at }] – ślady usuniętych wiadomości, żeby urządzenia mogły wyczyścić archiwum
     this.messages = [];
     this.accounts = new Map(); // id -> konto
@@ -46,6 +48,12 @@ class FileStore {
       this.tombstones = JSON.parse(await fs.readFile(this.deletedPath, 'utf8'));
     } catch {
       this.tombstones = [];
+    }
+    try {
+      const list = JSON.parse(await fs.readFile(this.emojiPath, 'utf8'));
+      this.emoji = new Map(list.map((e) => [e.id, e]));
+    } catch {
+      this.emoji = new Map();
     }
     await this.prune();
 
@@ -80,6 +88,31 @@ class FileStore {
 
   async get(id) {
     return this.messages.find((m) => m.id === id) || null;
+  }
+
+  // ---------- Własne emoji serwera ----------
+  async loadEmoji() {
+    return Array.from(this.emoji.values());
+  }
+
+  async saveEmoji(emoji) {
+    this.emoji.set(emoji.id, { ...emoji });
+    this.scheduleSave();
+  }
+
+  async deleteEmoji(id) {
+    this.emoji.delete(id);
+    this.scheduleSave();
+  }
+
+  // ---------- Reakcje: { emoji: [accountId, ...] } przechowywane razem z wiadomością ----------
+  async setReactions(id, reactions) {
+    const msg = this.messages.find((m) => m.id === id);
+    if (!msg) return false;
+    if (Object.keys(reactions).length) msg.reactions = reactions;
+    else delete msg.reactions;
+    this.scheduleSave();
+    return true;
   }
 
   // Zapamiętuje, że wiadomość została usunięta przez autora (na rok – tyle, ile urządzenia mogą być offline).
@@ -155,6 +188,7 @@ class FileStore {
         [this.metaPath, this.messages],
         [this.accountsPath, Array.from(this.accounts.values())],
         [this.deletedPath, this.tombstones],
+        [this.emojiPath, Array.from(this.emoji.values())],
       ]) {
         const tmp = `${file}.tmp`;
         await fs.writeFile(tmp, JSON.stringify(value));
@@ -185,6 +219,7 @@ class MongoStore {
     this.accountsCol = this.client.db(this.dbName).collection('accounts');
     await this.accountsCol.createIndex({ tokenHash: 1 }, { unique: true });
     await this.accountsCol.createIndex({ nickLower: 1 }, { unique: true });
+    this.emojiCol = this.client.db(this.dbName).collection('emoji');
     this.deletedCol = this.client.db(this.dbName).collection('deleted');
     await this.deletedCol.createIndex({ at: 1 });
     await this.deletedCol.createIndex({ atDate: 1 }, { expireAfterSeconds: Math.ceil(TOMBSTONE_MS / 1000) });
@@ -225,6 +260,25 @@ class MongoStore {
 
   async get(id) {
     return this.col.findOne({ _id: id }, { projection: { data: 0, _id: 0, createdAt: 0 } });
+  }
+
+  async loadEmoji() {
+    const docs = await this.emojiCol.find({}).toArray();
+    return docs.map(({ _id, ...rest }) => rest);
+  }
+
+  async saveEmoji(emoji) {
+    await this.emojiCol.replaceOne({ _id: emoji.id }, { _id: emoji.id, ...emoji }, { upsert: true });
+  }
+
+  async deleteEmoji(id) {
+    await this.emojiCol.deleteOne({ _id: id });
+  }
+
+  async setReactions(id, reactions) {
+    const has = Object.keys(reactions).length > 0;
+    const res = await this.col.updateOne({ _id: id }, has ? { $set: { reactions } } : { $unset: { reactions: '' } });
+    return res.matchedCount > 0;
   }
 
   async addTombstone(id) {
