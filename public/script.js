@@ -87,15 +87,14 @@ if (profile.avatar && profile.avatar.startsWith('data:')) {
 let myNick = null;
 let myAccountId = null;
 
-// Kanały tekstowe
-const DEFAULT_CHANNEL = 'ogolny';
-let channels = [{ id: DEFAULT_CHANNEL, name: 'ogólny' }]; // pełna lista przychodzi z serwera po zalogowaniu
-let currentChannel = store.get('mychat.channel', { id: DEFAULT_CHANNEL }).id;
+// Kanały tekstowe istnieją tylko w grupach (nie ma już kanałów wspólnych dla wszystkich).
 const isGroupChannel = (id) => typeof id === 'string' && id.startsWith('g_');
-let lastMainChannel = isGroupChannel(currentChannel) ? DEFAULT_CHANNEL : currentChannel; // dokąd wraca ikona „M”
+let currentChannel = (() => {
+  const saved = store.get('mychat.channel', { id: null }).id;
+  return isGroupChannel(saved) ? saved : null; // null = nie oglądasz żadnego kanału (np. jeszcze nie masz grupy)
+})();
 let groups = []; // prywatne grupy, do których należysz (lista przychodzi z serwera)
 const lastGroupChannel = new Map(); // grupa -> ostatnio oglądany w niej kanał
-let adultConfirmed = store.get('mychat.adult', { ok: false }).ok === true; // potwierdzenie pełnoletności (nsfw)
 const unreadChannels = new Set(); // kanały z nowymi wiadomościami, których nie oglądasz
 const mentionCounts = new Map(); // kanał -> ile razy oznaczono Cię tam, gdy go nie oglądałeś
 let pendingAvatar = profile.avatarData; // avatar wybrany na ekranie logowania (data-URL)
@@ -283,7 +282,7 @@ function renderSettingsOptions() {
 
 // ---------- Avatary ----------
 // Dozwolone źródła obrazu: adres z serwera (/media/…) albo data-URL wybrany lokalnie (także animowany GIF).
-const MEDIA_URL = /^\/media\/(avatar|banner|emoji)\/[0-9a-f-]{12,36}\?v=[0-9a-f]+$/;
+const MEDIA_URL = /^\/media\/(avatar|banner|emoji|group)\/[0-9a-f-]{12,36}\?v=[0-9a-f]+$/;
 const DATA_IMAGE_PREFIX = /^data:image\/(jpeg|png|webp|gif);base64,/;
 function isSafeImageSrc(value) {
   return (
@@ -1894,7 +1893,6 @@ function join(nick) {
     nick,
     avatar: pendingAvatar || profile.avatarData || null, // liczy się tylko przy zakładaniu nowego konta
     channel: currentChannel,
-    adult: adultConfirmed,
   };
   socket.emit('join', payload, (res) => {
     if (!res || !res.ok) {
@@ -1917,15 +1915,17 @@ function join(nick) {
       setCustomEmoji(res.emoji); // własne emoji serwera – potrzebne, zanim dojdzie historia z wiadomościami
       if (res.maxEmoji) maxEmoji = res.maxEmoji;
     }
-    if (Array.isArray(res.channels) && res.channels.length) channels = res.channels;
     groups = Array.isArray(res.groups) ? res.groups : [];
-    currentChannel = res.channel || DEFAULT_CHANNEL; // serwer mógł zmienić kanał (np. brak zgody na nsfw, wyjście z grupy)
-    if (!isGroupChannel(currentChannel)) lastMainChannel = currentChannel;
+    currentChannel = res.channel || null; // serwer mógł zmienić kanał (np. wyjście z grupy); null = brak grup
     groupMembersFor = null;
-    historyLoading = true; // zaraz po zalogowaniu serwer wyśle historię kanału
+    historyLoading = Boolean(currentChannel); // zaraz po zalogowaniu serwer wyśle historię kanału
     pendingLive.length = 0;
-    unreadChannels.delete(currentChannel);
-    mentionCounts.delete(currentChannel);
+    if (currentChannel) {
+      unreadChannels.delete(currentChannel);
+      mentionCounts.delete(currentChannel);
+    } else {
+      messagesEl.replaceChildren();
+    }
     renderChannels();
     if (groupByChannel(currentChannel)) loadGroupMembers();
     syncDeletions();
@@ -1956,8 +1956,9 @@ function join(nick) {
 
     // Po utracie połączenia wracamy na kanał głosowy (każda osoba robi to sama, więc rozmowa się odtwarza).
     if (voiceRejoin) {
-      voiceRejoin = false;
-      joinVoice();
+      const rejoinGroup = voiceRejoin;
+      voiceRejoin = null;
+      joinVoice(rejoinGroup);
     }
   });
 }
@@ -3067,7 +3068,7 @@ async function exportChat(format) {
     const lines = list.map((m) => {
       const d = new Date(m.time);
       const when = `${d.toLocaleDateString('pl-PL')} ${d.toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' })}`;
-      return `[${when}] #${m.channel || DEFAULT_CHANNEL} ${m.nick}: ${describeMessage(m)}`;
+      return `[${when}] #${m.channel || ''} ${m.nick}: ${describeMessage(m)}`;
     });
     downloadText(`mychat-${stamp}.txt`, `MyChat\n${'='.repeat(30)}\n${lines.join('\n')}\n`, 'text/plain');
   }
@@ -3089,7 +3090,6 @@ lightbox.addEventListener('click', () => lightbox.classList.add('hidden'));
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
   clearReply();
-  $('age-gate').classList.add('hidden');
   closeProfilePopout();
   closeSettings();
   closePopups();
@@ -3114,11 +3114,13 @@ const voice = {
   screen: null, // strumień z naszym udostępnianym ekranem (gdy go udostępniamy)
   muted: false,
   deafened: false,
-  users: [], // [{ id, nick, muted, deafened, sharing }] – z serwera
+  groupId: null, // grupa, do której kanału głosowego jesteśmy podłączeni (każda grupa ma własny)
+  users: [], // [{ id, nick, muted, deafened, sharing }] – osoby z NASZEGO kanału głosowego
   peers: new Map(), // socket.id -> { pc, pending, audio }
 };
+const voiceLists = new Map(); // groupId -> osoby na kanale głosowym każdej z Twoich grup (do panelu bocznego)
 
-let voiceRejoin = false; // true = byliśmy na kanale głosowym, gdy zerwało się połączenie z serwerem
+let voiceRejoin = null; // id grupy, w której byliśmy na kanale głosowym, gdy zerwało się połączenie z serwerem
 const analysers = new Map(); // 'me' lub socket.id -> { source, analyser, buf, speaking }
 let speakingTimer = null;
 
@@ -3171,8 +3173,10 @@ function unwatchSpeaking(key) {
 }
 
 function renderVoiceUsers() {
-  const list = voice.users;
-  $('voice-count').textContent = list.length ? `${list.length}/${maxVoiceUsers}` : '';
+  const list = voice.users; // pasek rozmowy: nasz kanał głosowy
+  const viewed = myCurrentGroup();
+  const sidebar = viewed ? voiceLists.get(viewed.id) || [] : []; // panel boczny: kanał głosowy oglądanej grupy
+  $('voice-count').textContent = sidebar.length ? `${sidebar.length}/${maxVoiceUsers}` : '';
 
   // Znaczki przy osobie: czerwone LIVE (udostępnia ekran) oraz wyciszenie / wyłączony dźwięk
   const flags = (u) => {
@@ -3184,7 +3188,7 @@ function renderVoiceUsers() {
   };
 
   $('voice-members').replaceChildren(
-    ...list.map((u) => {
+    ...sidebar.map((u) => {
       const row = el('div', 'voice-member');
       row.dataset.voiceId = u.id;
       row.appendChild(makeAvatar(u.nick));
@@ -3212,8 +3216,11 @@ function renderVoiceUsers() {
 function updateVoiceUI() {
   $('voice-bar').classList.toggle('hidden', !voice.active);
   $('voice-btn').classList.toggle('is-active', voice.active);
-  $('voice-btn').title = voice.active ? 'Rozłącz z kanałem głosowym' : 'Dołącz do kanału głosowego';
-  $('voice-channel').classList.toggle('is-connected', voice.active);
+  const inViewedVoice = voice.active && Boolean(myCurrentGroup()) && voice.groupId === myCurrentGroup().id;
+  $('voice-btn').title = inViewedVoice ? 'Rozłącz z kanałem głosowym' : 'Dołącz do kanału głosowego';
+  $('voice-channel').classList.toggle('is-connected', inViewedVoice);
+  const voiceGroup = voice.active ? groups.find((g) => g.id === voice.groupId) : null;
+  $('voice-status').textContent = voiceGroup ? `Kanał głosowy: ${voiceGroup.name}` : 'Połączono z kanałem głosowym';
   $('voice-mute').classList.toggle('is-off', voice.muted);
   $('voice-mute').title = voice.muted ? 'Włącz mikrofon' : 'Wycisz mikrofon';
   $('voice-deafen').classList.toggle('is-off', voice.deafened);
@@ -3805,11 +3812,15 @@ function stopLocalStream() {
   voice.stream = null;
 }
 
-async function joinVoice() {
-  if (voice.active || voice.joining || !myNick) return;
+// Dołącza do kanału głosowego grupy (domyślnie oglądanej). Będąc na kanale innej grupy – przenosi się.
+async function joinVoice(groupId = myCurrentGroup()?.id) {
+  if (voice.joining || !myNick) return;
+  if (!groupId || !groups.some((g) => g.id === groupId)) return toast('Najpierw otwórz grupę, do której kanału głosowego chcesz dołączyć.');
+  if (voice.active && voice.groupId === groupId) return;
   if (!navigator.mediaDevices?.getUserMedia) {
     return toast('Czat głosowy wymaga połączenia HTTPS i nowszej przeglądarki.');
   }
+  if (voice.active) leaveVoice(); // przenosiny do kanału innej grupy
 
   voice.joining = true;
   try {
@@ -3828,13 +3839,15 @@ async function joinVoice() {
     );
   }
 
-  socket.timeout(10000).emit('voice:join', (err, res) => {
+  socket.timeout(10000).emit('voice:join', groupId, (err, res) => {
     voice.joining = false;
     if (err || !res || !res.ok) {
       stopLocalStream();
       return toast((res && res.error) || 'Nie udało się dołączyć do kanału głosowego.');
     }
     voice.active = true;
+    voice.groupId = groupId;
+    voice.users = voiceLists.get(groupId) || [];
     voice.muted = false;
     voice.deafened = false;
     watchSpeaking('me', voice.stream);
@@ -3858,13 +3871,17 @@ function leaveVoice(notify = true) {
   unwatchSpeaking('me');
   stopLocalStream();
   voice.active = false;
+  voice.groupId = null;
+  voice.users = [];
   voice.muted = false;
   voice.deafened = false;
   document.querySelectorAll('.speaking').forEach((n) => n.classList.remove('speaking'));
   updateVoiceUI();
 }
 
-socket.on('voice:users', (list) => {
+socket.on('voice:users', ({ groupId, users: list }) => {
+  voiceLists.set(groupId, list);
+  if (!voice.active || voice.groupId !== groupId) return renderVoiceUsers(); // to nie nasz kanał – tylko odśwież panel
   const previous = voice.users.length;
   voice.users = list;
   if (voice.active) {
@@ -3882,8 +3899,12 @@ socket.on('voice:users', (list) => {
   renderVoiceUsers();
 });
 
-$('voice-channel').addEventListener('click', joinVoice);
-$('voice-btn').addEventListener('click', () => (voice.active ? leaveVoice() : joinVoice()));
+$('voice-channel').addEventListener('click', () => joinVoice());
+$('voice-btn').addEventListener('click', () => {
+  const viewed = myCurrentGroup();
+  if (voice.active && viewed && voice.groupId === viewed.id) leaveVoice();
+  else joinVoice();
+});
 $('voice-leave').addEventListener('click', () => leaveVoice());
 $('voice-screen').addEventListener('click', () => (voice.screen ? stopScreenShare() : startScreenShare()));
 
@@ -3936,13 +3957,13 @@ function handleLive(m) {
 }
 
 socket.on('message', (m) => {
-  if ((m.channel || DEFAULT_CHANNEL) !== currentChannel) return;
+  if (!currentChannel || m.channel !== currentChannel) return;
   if (historyLoading) pendingLive.push(m);
   else handleLive(m);
 });
-// Komunikaty grupy pokazujemy tylko w jej czacie, ogólne (wejścia/wyjścia z czatu) – poza grupami.
+// Komunikaty systemowe (np. „ktoś dołączył do grupy”) pokazujemy tylko w czacie grupy, której dotyczą.
 socket.on('system', (m) => {
-  if (m.channel ? m.channel !== currentChannel : isGroupChannel(currentChannel)) return;
+  if (!m.channel || m.channel !== currentChannel) return;
   addSystem(m);
 });
 
@@ -3957,43 +3978,60 @@ socket.on('activity', ({ channel, mention }) => {
   renderChannels();
 });
 
-// ---------- Kanały tekstowe: lista, przełączanie, bramka wiekowa ----------
+// ---------- Kanały tekstowe: lista, przełączanie ----------
 const groupChannelsOf = (g) => (Array.isArray(g.channels) && g.channels.length ? g.channels : [{ id: g.channel, name: 'ogólny', isDefault: true }]);
 
 function groupByChannel(id) {
   return isGroupChannel(id) ? groups.find((g) => groupChannelsOf(g).some((c) => c.id === id)) || null : null;
 }
 
-// Uprawnienia w oglądanej grupie (poza grupami wszystko dozwolone w ramach zwykłych zasad).
+// Uprawnienia w oglądanej grupie.
 const hasGroupPerm = (group, perm) => Boolean(group) && Array.isArray(group.perms) && group.perms.includes(perm);
 const myCurrentGroup = () => groupByChannel(currentChannel);
-const canPostHere = () => {
-  const group = myCurrentGroup();
-  return !group || hasGroupPerm(group, 'send');
-};
+const canPostHere = () => hasGroupPerm(myCurrentGroup(), 'send');
 
 function channelById(id) {
   const group = groupByChannel(id);
-  if (group) {
-    const entry = groupChannelsOf(group).find((c) => c.id === id);
-    return { id, name: entry.name, group: true };
+  const entry = group && groupChannelsOf(group).find((c) => c.id === id);
+  return entry ? { id, name: entry.name } : null;
+}
+
+// Obrazek grupy (albo pierwsza litera nazwy na kolorowym tle, gdy go nie ma).
+function applyGroupIcon(node, g) {
+  node.classList.toggle('has-icon', Boolean(g.icon));
+  if (g.icon && isSafeImageSrc(g.icon)) {
+    node.style.background = `center / cover no-repeat url("${g.icon}")`;
+    node.textContent = '';
+  } else {
+    node.style.background = colorFor(g.name);
+    node.textContent = (g.name.trim()[0] || '?').toUpperCase();
   }
-  return channels.find((c) => c.id === id) || channels[0];
 }
 
 function renderChannels() {
   const group = groupByChannel(currentChannel);
   const current = channelById(currentChannel);
+  const empty = groups.length === 0;
 
-  // W grupie lewy panel pokazuje kanały tej grupy (kanały ogólne i głosowy są poza grupą).
-  $('channels-title').textContent = group ? `👥 ${group.name}` : 'MyChat';
+  // Bez żadnej grupy nie ma czatu – pokazujemy ekran powitalny z prośbą o dołączenie do grupy lub założenie własnej.
+  chatScreen.classList.toggle('app--empty', empty);
+  $('empty-state').classList.toggle('hidden', !empty);
+  document.querySelector('.main__body').classList.toggle('hidden', empty);
+  $('channel-select').classList.toggle('hidden', empty);
+  $('voice-btn').classList.toggle('hidden', empty);
+
+  // Lewy panel pokazuje kanały oglądanej grupy i jej kanał głosowy.
+  $('channels-title').textContent = group ? group.name : 'MyChat';
+  const icon = $('channels-icon');
+  icon.classList.toggle('hidden', !group);
+  if (group) applyGroupIcon(icon, group);
   $('channels-category').textContent = 'KANAŁY TEKSTOWE';
-  $('voice-block').classList.toggle('hidden', Boolean(group));
+  $('voice-block').classList.toggle('hidden', !group);
   $('group-gear').classList.toggle('hidden', !group);
   $('channel-add').classList.toggle('hidden', !hasGroupPerm(group, 'manageChannels'));
 
   $('channel-list').replaceChildren(
-    ...(group ? groupChannelsOf(group) : channels).map((c) => {
+    ...(group ? groupChannelsOf(group) : []).map((c) => {
       const active = c.id === currentChannel;
       const unread = unreadChannels.has(c.id) && !active;
       const item = el('button', 'channel' + (active ? ' channel--active' : '') + (unread ? ' channel--unread' : ''));
@@ -4003,68 +4041,53 @@ function renderChannels() {
       item.appendChild(document.createTextNode(` ${c.name}`));
       const mentions = active ? 0 : mentionCounts.get(c.id) || 0;
       if (mentions) item.appendChild(el('span', 'channel__mentions', String(mentions)));
-      else if (c.nsfw) item.appendChild(el('span', 'channel__badge', '18+'));
       else if (unread) item.appendChild(el('span', 'channel__dot'));
       item.addEventListener('click', () => switchChannel(c.id));
       return item;
     })
   );
 
+  // Lista kanałów na telefonie (bez panelu bocznego): wszystkie kanały wszystkich Twoich grup.
   const select = $('channel-select');
   const mark = (id) => (unreadChannels.has(id) && id !== currentChannel ? ' •' : '');
-  const options = channels.map((c) => {
-    const opt = el('option', '', `# ${c.name}${c.nsfw ? ' (18+)' : ''}${mark(c.id)}`);
-    opt.value = c.id;
-    return opt;
-  });
-  if (groups.length) {
-    const optgroup = el('optgroup');
-    optgroup.label = 'Grupy';
-    groups.forEach((g) => {
+  select.replaceChildren(
+    ...groups.map((g) => {
+      const optgroup = el('optgroup');
+      optgroup.label = g.name;
       groupChannelsOf(g).forEach((c) => {
-        const opt = el('option', '', `👥 ${g.name} › ${c.name}${mark(c.id)}`);
+        const opt = el('option', '', `# ${c.name}${mark(c.id)}`);
         opt.value = c.id;
         optgroup.appendChild(opt);
       });
-    });
-    options.push(optgroup);
-  }
-  select.replaceChildren(...options);
-  select.value = currentChannel;
+      return optgroup;
+    })
+  );
+  if (currentChannel) select.value = currentChannel;
 
-  $('channel-title').textContent = group ? `${group.name} › ${current.name}` : current.name;
+  $('channel-title').textContent = group && current ? `${group.name} › ${current.name}` : 'MyChat';
   const canPost = canPostHere();
-  messageInput.placeholder = !canPost
-    ? 'Nie masz uprawnienia do pisania w tej grupie'
-    : group
-      ? `Napisz wiadomość w #${current.name} (${group.name})`
-      : `Napisz wiadomość na #${current.name}`;
+  messageInput.placeholder = !current
+    ? 'Dołącz do grupy, żeby pisać'
+    : !canPost
+      ? 'Nie masz uprawnienia do pisania w tej grupie'
+      : `Napisz wiadomość w #${current.name} (${group.name})`;
   messageInput.disabled = !canPost;
   $('message-form').classList.toggle('composer--locked', !canPost);
-  messagesEl.dataset.nsfw = current.nsfw ? '1' : '';
   renderRail();
+  renderVoiceUsers();
 }
 
-// ---------- Grupy prywatne: pasek po lewej ----------
+// ---------- Grupy: pasek po lewej ----------
 function renderRail() {
-  const inGroup = Boolean(groupByChannel(currentChannel));
-  const home = $('rail-home');
-  home.classList.toggle('is-active', !inGroup);
-  home.replaceChildren(document.createTextNode('M'));
-  const mainUnread = channels.some((c) => unreadChannels.has(c.id) && c.id !== currentChannel);
-  const mainMentions = channels.reduce((n, c) => n + (c.id === currentChannel ? 0 : mentionCounts.get(c.id) || 0), 0);
-  if (inGroup && mainMentions) home.appendChild(el('span', 'rail__badge', String(mainMentions)));
-  else if (inGroup && mainUnread) home.appendChild(el('span', 'rail__dot'));
-
   $('rail-groups').replaceChildren(
     ...groups.map((g) => {
       const ids = groupChannelsOf(g).map((c) => c.id);
       const active = ids.includes(currentChannel);
-      const btn = el('button', 'rail__icon' + (active ? ' is-active' : ''), (g.name.trim()[0] || '?').toUpperCase());
+      const btn = el('button', 'rail__icon' + (active ? ' is-active' : ''));
+      applyGroupIcon(btn, g);
       btn.type = 'button';
       btn.title = g.name;
       btn.setAttribute('aria-label', `Grupa ${g.name}`);
-      btn.style.background = colorFor(g.name);
       const mentions = ids.reduce((n, id) => n + (id === currentChannel ? 0 : mentionCounts.get(id) || 0), 0);
       if (mentions) btn.appendChild(el('span', 'rail__badge', String(mentions)));
       else if (ids.some((id) => id !== currentChannel && unreadChannels.has(id))) btn.appendChild(el('span', 'rail__dot'));
@@ -4077,34 +4100,25 @@ function renderRail() {
   );
 }
 
-$('rail-home').addEventListener('click', () => switchChannel(lastMainChannel));
 $('rail-add').addEventListener('click', () => openGroups());
 $('groups-btn').addEventListener('click', () => openGroups());
+$('empty-join').addEventListener('click', () => openGroups('code'));
+$('empty-create').addEventListener('click', () => openGroups('name'));
 
 $('channel-select').addEventListener('change', (e) => switchChannel(e.target.value));
 
-function showAgeGate(onConfirm) {
-  const gate = $('age-gate');
-  gate.classList.remove('hidden');
-  $('age-no').onclick = () => gate.classList.add('hidden');
-  $('age-yes').onclick = () => {
-    gate.classList.add('hidden');
-    adultConfirmed = true;
-    store.set('mychat.adult', { ok: true });
-    onConfirm();
-  };
-}
-
 // Przestawia widok na inny kanał (bez pytania serwera – on sam albo już to zrobił, albo zaraz zrobi).
+// `null` = żaden kanał (brak grup).
 function showChannelView(id) {
   currentChannel = id;
-  if (!isGroupChannel(id)) lastMainChannel = id;
   const viewedGroup = groupByChannel(id);
   if (viewedGroup) lastGroupChannel.set(viewedGroup.id, id);
-  historyLoading = true; // nowe wiadomości czekają, aż przyjdzie historia tego kanału
+  historyLoading = Boolean(id); // nowe wiadomości czekają, aż przyjdzie historia tego kanału
   pendingLive.length = 0;
-  unreadChannels.delete(id);
-  mentionCounts.delete(id);
+  if (id) {
+    unreadChannels.delete(id);
+    mentionCounts.delete(id);
+  }
   clearReply(); // odpowiedź dotyczy wiadomości z poprzedniego kanału
   typingUsers.clear();
   renderTyping();
@@ -4120,17 +4134,14 @@ function showChannelView(id) {
     renderMembersPanel();
     loadGroupMembers();
   } else {
+    groupMembers = [];
+    groupMembersFor = null;
     renderMembersPanel();
   }
 }
 
 function switchChannel(id) {
-  if (id === currentChannel || !(channels.some((c) => c.id === id) || groupByChannel(id))) return renderChannels();
-  const target = channelById(id);
-  if (target.nsfw && !adultConfirmed) {
-    renderChannels(); // przywraca poprzedni wybór na liście (telefon)
-    return showAgeGate(() => switchChannel(id));
-  }
+  if (id === currentChannel || !groupByChannel(id)) return renderChannels();
   if (!socket.connected) {
     renderChannels();
     return toast('Brak połączenia z serwerem.');
@@ -4139,17 +4150,23 @@ function switchChannel(id) {
   const previous = currentChannel;
   showChannelView(id);
 
-  socket.timeout(10000).emit('switchChannel', { channel: id, adult: adultConfirmed }, (err, res) => {
+  socket.timeout(10000).emit('switchChannel', { channel: id }, (err, res) => {
     if (!err && res && res.ok) return;
-    // Nie udało się – wracamy na poprzedni kanał.
-    if (res && res.needAdult) {
-      adultConfirmed = false;
-      store.set('mychat.adult', { ok: false });
-    }
+    // Nie udało się – wracamy na poprzedni kanał (jeśli jakiś był).
     toast((res && res.error) || 'Nie udało się zmienić kanału.');
     historyLoading = false;
-    if (currentChannel === id) switchChannel(previous);
+    if (currentChannel !== id) return;
+    if (previous && groupByChannel(previous)) switchChannel(previous);
+    else ensureChannel();
   });
+}
+
+// Gdy nie oglądasz żadnego (istniejącego) kanału: wejdź do pierwszej swojej grupy albo pokaż ekran powitalny.
+function ensureChannel() {
+  if (currentChannel && groupByChannel(currentChannel)) return;
+  const first = groups[0];
+  if (first) switchChannel(lastGroupChannel.get(first.id) || first.channel);
+  else showChannelView(null);
 }
 
 // Usunięta wiadomość znika wszędzie: z ekranu, z pamięci sesji i z archiwum lokalnego (razem z plikiem).
@@ -4275,10 +4292,10 @@ socket.on('users', (list) => {
 const groupsModal = $('groups-modal');
 const removedByMe = new Set(); // grupy, które właśnie opuszczam/usuwam – bez dodatkowego powiadomienia
 
-function openGroups() {
+function openGroups(focus = 'code') {
   groupsModal.classList.remove('hidden');
   renderGroupList();
-  $('group-code').focus();
+  $(focus === 'name' ? 'group-name' : 'group-code').focus();
 }
 
 function closeGroups() {
@@ -4287,10 +4304,13 @@ function closeGroups() {
 
 function setGroups(list) {
   groups = Array.isArray(list) ? list : [];
-  // Gdyby grupa lub kanał, który oglądasz, zniknął bez zdarzenia usunięcia – wróć do grupy albo do kanałów ogólnych.
-  if (isGroupChannel(currentChannel) && !groupByChannel(currentChannel)) {
+  // Gdyby grupa lub kanał, który oglądasz, zniknął bez zdarzenia usunięcia – wróć do tej grupy albo do innej.
+  if (currentChannel && !groupByChannel(currentChannel)) {
     const owner = groups.find((g) => currentChannel.startsWith(`g_${g.id}`));
-    showChannelView(owner ? owner.channel : lastMainChannel);
+    if (owner) showChannelView(owner.channel);
+    else ensureChannel();
+  } else if (!currentChannel) {
+    ensureChannel();
   }
   renderChannels();
   renderGroupList();
@@ -4339,8 +4359,8 @@ function renderGroupList() {
     ...groups.map((g) => {
       const card = el('div', 'group-card');
       const head = el('div', 'group-card__head');
-      const icon = el('div', 'group-card__icon', (g.name.trim()[0] || '?').toUpperCase());
-      icon.style.background = colorFor(g.name);
+      const icon = el('div', 'group-card__icon');
+      applyGroupIcon(icon, g);
       const info = el('div', 'group-card__info');
       const name = el('div', 'group-card__name', g.name);
       if (g.isOwner) name.appendChild(el('span', 'group-card__crown', 'TWÓRCA'));
@@ -4497,6 +4517,39 @@ function gsetButton(label, cls, onClick, { disabled = false, title = '' } = {}) 
 }
 
 function gsetOverview(g, body) {
+  // Obrazek grupy: widać go na pasku po lewej, w liście grup i nad kanałami (zmienia ten, kto może zmieniać nazwę grupy).
+  const iconSec = gsetSection('OBRAZEK GRUPY');
+  const iconRow = el('div', 'gset__iconrow');
+  const preview = el('div', 'group-card__icon gset__icon');
+  applyGroupIcon(preview, g);
+  const canIcon = g.perms.includes('manageGroup');
+  const file = document.createElement('input');
+  file.type = 'file';
+  file.accept = 'image/*';
+  file.hidden = true;
+  file.addEventListener('change', async () => {
+    const picked = file.files[0];
+    file.value = '';
+    if (!picked) return;
+    try {
+      const icon = await fileToAvatar(picked); // jak avatar: zmniejszony do 128×128, a GIF zostaje animowany
+      groupAction('group:icon', { groupId: g.id, icon }, () => toast('Zmieniono obrazek grupy', true));
+    } catch (err) {
+      toast(err.message);
+    }
+  });
+  iconRow.append(
+    preview,
+    file,
+    gsetButton('Zmień obrazek', 'btn-secondary btn-sm', () => file.click(), { disabled: !canIcon }),
+    gsetButton('Usuń', 'btn-secondary btn-sm', () => groupAction('group:icon', { groupId: g.id, icon: null }, () => toast('Usunięto obrazek', true)), {
+      disabled: !canIcon || !g.icon,
+    })
+  );
+  iconSec.appendChild(iconRow);
+  iconSec.appendChild(el('div', 'groups__hint', 'Zwykłe obrazy są kadrowane do kwadratu; animowany GIF może mieć do 600 KB.'));
+  body.appendChild(iconSec);
+
   const nameSec = gsetSection('NAZWA GRUPY');
   const row = el('div', 'groups__row');
   const input = el('input', 'field');
@@ -4900,8 +4953,11 @@ socket.on('group:removed', async ({ groupId, channel, channels: removedChannels 
     unreadChannels.delete(id);
     mentionCounts.delete(id);
   });
+  if (voice.active && voice.groupId === groupId) leaveVoice(false); // serwer już zakończył naszą rozmowę w tej grupie
+  voiceLists.delete(groupId);
   if (ids.includes(currentChannel)) {
-    showChannelView(DEFAULT_CHANNEL); // serwer przeniósł już to połączenie na kanał domyślny i zaraz wyśle jego historię
+    currentChannel = null; // serwer zostawił to połączenie bez kanału – wchodzimy do innej grupy albo pokazujemy ekran powitalny
+    ensureChannel();
   } else {
     renderChannels();
   }
@@ -4951,11 +5007,12 @@ socket.on('connect', () => {
 
 socket.on('disconnect', () => {
   if (voice.active) {
-    voiceRejoin = true; // wrócimy na kanał, gdy tylko uda się zalogować ponownie
+    voiceRejoin = voice.groupId; // wrócimy na kanał tej grupy, gdy tylko uda się zalogować ponownie
     leaveVoice(false);
     toast('Utracono połączenie z serwerem – próbuję wrócić na kanał głosowy…');
   }
   voice.users = [];
+  voiceLists.clear();
   renderVoiceUsers();
   statusEl.textContent = 'rozłączono – próba ponownego połączenia…';
   typingUsers.clear();

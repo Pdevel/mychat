@@ -65,10 +65,10 @@ app.use(express.static(path.join(__dirname, 'public')));
 // wersję (?v=…), więc przeglądarka trzyma obraz w pamięci podręcznej „na zawsze” i pobiera go raz.
 app.get('/media/:kind/:id', (req, res) => {
   const { kind, id } = req.params;
-  if (!['avatar', 'banner', 'emoji'].includes(kind) || !/^[0-9a-f-]{12,36}$/.test(id)) return res.sendStatus(404);
-  // avatar i baner należą do konta, emoji do serwera
-  const owner = kind === 'emoji' ? emojiById.get(id) : accountsById.get(id);
-  const dataUrl = kind === 'emoji' ? owner && owner.data : owner && owner[kind];
+  if (!['avatar', 'banner', 'emoji', 'group'].includes(kind) || !/^[0-9a-f-]{12,36}$/.test(id)) return res.sendStatus(404);
+  // avatar i baner należą do konta, emoji do serwera, obrazek – do grupy
+  const owner = kind === 'emoji' ? emojiById.get(id) : kind === 'group' ? groupsById.get(id) : accountsById.get(id);
+  const dataUrl = kind === 'emoji' ? owner && owner.data : kind === 'group' ? owner && owner.icon : owner && owner[kind];
   const match = typeof dataUrl === 'string' && /^data:(image\/(?:jpeg|png|webp|gif));base64,/.exec(dataUrl);
   if (!match) return res.sendStatus(404);
   const body = Buffer.from(dataUrl.slice(match[0].length), 'base64');
@@ -240,12 +240,12 @@ function isOnline(accountId) {
   for (const u of users.values()) if (u.accountId === accountId) return true;
   return false;
 }
-// socket.id -> { muted, deafened } (osoby na kanale głosowym)
+// socket.id -> { groupId, muted, deafened, sharing } (osoby na kanale głosowym; każda grupa ma własny kanał głosowy)
 const voice = new Map();
 
-function voiceList() {
+function voiceList(groupId) {
   return Array.from(voice.entries())
-    .filter(([id]) => users.has(id))
+    .filter(([id, s]) => s.groupId === groupId && users.has(id))
     .map(([id, s]) => ({
       id,
       nick: users.get(id).nick,
@@ -255,12 +255,18 @@ function voiceList() {
     }));
 }
 
-function broadcastVoice() {
-  io.emit('voice:users', voiceList());
+// Lista osób na głosowym dostaje tylko ta grupa, do której kanał należy.
+function broadcastVoice(groupId) {
+  io.to(`grp:${groupId}`).emit('voice:users', { groupId, users: voiceList(groupId) });
+}
+
+function broadcastAllVoice() {
+  new Set(Array.from(voice.values()).map((s) => s.groupId)).forEach(broadcastVoice);
 }
 
 function leaveVoice(socket) {
-  if (voice.delete(socket.id)) broadcastVoice();
+  const entry = voice.get(socket.id);
+  if (entry && voice.delete(socket.id)) broadcastVoice(entry.groupId);
 }
 
 // ---------- Walidacja ----------
@@ -534,32 +540,27 @@ function broadcastUsers() {
       });
     }
   }
-  io.emit('users', Array.from(online.values()));
-}
-
-function systemMessage(text) {
-  io.emit('system', { text, time: Date.now() });
+  // Każdy widzi tylko osoby, z którymi dzieli jakąś grupę (oraz siebie) – nie ma już wspólnej sali dla wszystkich.
+  const everyone = Array.from(online.values());
+  for (const [socketId, { accountId }] of users) {
+    const target = io.sockets.sockets.get(socketId);
+    if (!target) continue;
+    const visible = new Set([accountId]);
+    for (const g of groupsOf(accountId)) g.members.forEach((id) => visible.add(id));
+    target.emit('users', everyone.filter((u) => visible.has(u.id)));
+  }
 }
 
 // ---------- Kanały tekstowe ----------
-// Każdy kanał ma osobną historię. Pełne wiadomości dostają tylko osoby, które oglądają dany kanał
-// (pokój `ch:<id>`); reszta dostaje lekkie powiadomienie `activity` (kropka przy kanale).
-// Kanał nsfw jest dostępny dopiero po potwierdzeniu pełnoletności (pokój `adult`).
-const CHANNELS = [
-  { id: 'ogolny', name: 'ogólny' },
-  { id: 'ogolny2', name: 'ogólny2' },
-  { id: 'screeny', name: 'screeny' },
-  { id: 'granie', name: 'granie' },
-  { id: 'nsfw', name: 'nsfw', nsfw: true },
-];
-const CHANNELS_BY_ID = new Map(CHANNELS.map((c) => [c.id, c]));
-const DEFAULT_CHANNEL = 'ogolny';
+// Rozmawia się wyłącznie w grupach: każdy kanał grupy ma osobną historię. Pełne wiadomości dostają tylko osoby,
+// które oglądają dany kanał (pokój `ch:<id>`); reszta członków grupy dostaje lekkie powiadomienie `activity`.
+// Nie ma kanałów wspólnych dla wszystkich – na początku trzeba dołączyć do grupy albo założyć własną.
 
-// Przenosi połączenie do kanału (opuszcza poprzedni pokój, wchodzi do nowego).
+// Przenosi połączenie do kanału (opuszcza poprzedni pokój, wchodzi do nowego). `null` = żaden.
 function enterChannel(socket, channelId) {
   if (socket.data.channel) socket.leave(`ch:${socket.data.channel}`);
-  socket.data.channel = channelId;
-  socket.join(`ch:${channelId}`);
+  socket.data.channel = channelId || null;
+  if (channelId) socket.join(`ch:${channelId}`);
 }
 
 // ---------- Grupy prywatne ----------
@@ -638,10 +639,10 @@ function permsOf(group, accountId) {
 }
 const can = (group, accountId, perm) => permsOf(group, accountId).has(perm);
 
-// Czy to połączenie może pisać na swoim kanale (poza grupami zawsze tak).
+// Czy to połączenie może pisać na swoim kanale (wymaga kanału grupy i uprawnienia „Pisanie wiadomości”).
 function mayPost(socket) {
   const group = groupOfChannel(socket.data.channel);
-  if (!group) return true;
+  if (!group) return false; // poza grupą nie ma gdzie pisać
   const user = users.get(socket.id);
   return Boolean(user) && isGroupMember(group, user.accountId) && can(group, user.accountId, 'send');
 }
@@ -696,6 +697,7 @@ function groupInfo(group, accountId) {
     ownerId: group.ownerId,
     memberCount: group.members.length,
     maxMembers: MAX_GROUP_MEMBERS,
+    icon: group.icon ? `/media/group/${group.id}?v=${group.iconV || (group.iconV = mediaVersion(group.icon))}` : null,
     perms: Array.from(perms),
     rank: rank === Infinity ? 9999 : rank,
     everyone: group.everyone.slice(),
@@ -731,11 +733,13 @@ async function revokeGroupAccess(accountId, group) {
   for (const s of accountSockets(accountId)) {
     s.leave(`grp:${group.id}`);
     s.emit('group:removed', { groupId: group.id, channel, channels });
-    if (belongsToGroup(s.data.channel, group.id)) {
-      enterChannel(s, DEFAULT_CHANNEL);
-      await sendHistory(s, DEFAULT_CHANNEL);
-    }
+    // Kanał głosowy tej grupy kończy się dla osoby, która straciła do niej dostęp (klient rozłącza się sam).
+    const inVoice = voice.get(s.id);
+    if (inVoice && inVoice.groupId === group.id) voice.delete(s.id);
+    // Połączenie, które oglądało tę grupę, zostaje bez kanału – klient sam wybierze inną grupę albo pokaże ekran powitalny.
+    if (belongsToGroup(s.data.channel, group.id)) enterChannel(s, null);
   }
+  broadcastVoice(group.id);
 }
 
 function groupSystemMessage(group, text) {
@@ -822,7 +826,9 @@ async function sendHistory(socket, channelId) {
 }
 
 async function emitMessage(socket, nick, extra) {
-  const channel = socket.data.channel || DEFAULT_CHANNEL;
+  const channel = socket.data.channel;
+  const group = groupOfChannel(channel);
+  if (!group) return; // wiadomości istnieją tylko w kanałach grup
   const msg = {
     id: crypto.randomUUID(),
     senderId: socket.id,
@@ -832,20 +838,18 @@ async function emitMessage(socket, nick, extra) {
     time: Date.now(),
     ...extra,
   };
-  const nsfw = Boolean(CHANNELS_BY_ID.get(channel)?.nsfw);
-  const group = groupOfChannel(channel);
   // Klienci dostają opis oryginału (`replyTo`), a w magazynie zostaje samo `replyToId`.
   const [wire] = await attachReplies([msg]);
   io.to(`ch:${channel}`).emit('message', wire);
-  // Powiadomienie o aktywności widzą tylko uprawnieni: członkowie grupy, osoby pełnoletnie (nsfw) albo wszyscy.
-  io.to(group ? `grp:${group.id}` : nsfw ? 'adult' : 'lobby').except(`ch:${channel}`).emit('activity', { channel });
+  // Powiadomienie o aktywności widzą tylko członkowie grupy, którzy oglądają inny kanał.
+  io.to(`grp:${group.id}`).except(`ch:${channel}`).emit('activity', { channel });
 
   // Oznaczone osoby, które oglądają inny kanał, dostają osobne powiadomienie (czerwony licznik przy kanale).
   for (const mention of msg.mentions || []) {
     for (const [socketId, u] of users) {
       if (u.accountId !== mention.id) continue;
       const target = io.sockets.sockets.get(socketId);
-      if (!target || target.rooms.has(`ch:${channel}`) || (nsfw && !target.data.adult)) continue;
+      if (!target || target.rooms.has(`ch:${channel}`) || !target.rooms.has(`grp:${group.id}`)) continue;
       target.emit('activity', { channel, mention: true });
     }
   }
@@ -898,19 +902,15 @@ io.on('connection', (socket) => {
 
     const nick = account.nick;
     const alreadyIn = users.has(socket.id);
-    const firstSession = !isOnline(account.id);
     users.set(socket.id, { accountId: account.id, nick });
 
-    // Kanał, w którym klient był ostatnio (kanał nsfw tylko po potwierdzeniu pełnoletności).
-    socket.data.adult = payload.adult === true;
+    // Kanał, w którym klient był ostatnio: tylko kanał grupy, do której należysz. Inaczej – pierwsza z Twoich grup,
+    // a gdy nie masz żadnej, brak kanału (klient pokaże ekran powitalny z prośbą o dołączenie do grupy).
+    const myGroups = groupsOf(account.id);
+    myGroups.forEach((g) => socket.join(`grp:${g.id}`));
     let channel = payload.channel;
     const wantedGroup = groupOfChannel(channel);
-    // ostatnio oglądany kanał: istniejący kanał główny albo grupa, do której należysz – inaczej kanał domyślny
-    if (wantedGroup ? !isGroupMember(wantedGroup, account.id) : !CHANNELS_BY_ID.has(channel)) channel = DEFAULT_CHANNEL;
-    if (CHANNELS_BY_ID.get(channel)?.nsfw && !socket.data.adult) channel = DEFAULT_CHANNEL;
-    socket.join('lobby');
-    if (socket.data.adult) socket.join('adult');
-    groupsOf(account.id).forEach((g) => socket.join(`grp:${g.id}`));
+    if (!wantedGroup || !isGroupMember(wantedGroup, account.id)) channel = myGroups.length ? groupChannel(myGroups[0].id) : null;
     enterChannel(socket, channel);
 
     reply({
@@ -925,14 +925,12 @@ io.on('connection', (socket) => {
       emoji: emojiList(),
       maxEmoji: MAX_EMOJI,
       channel,
-      channels: CHANNELS,
-      groups: groupsOf(account.id).map((g) => groupInfo(g, account.id)),
+      groups: myGroups.map((g) => groupInfo(g, account.id)),
     });
 
     if (!alreadyIn) {
-      await sendHistory(socket, channel);
-      socket.emit('voice:users', voiceList());
-      if (firstSession) systemMessage(`${nick} dołączył(a) do czatu`);
+      if (channel) await sendHistory(socket, channel);
+      myGroups.forEach((g) => socket.emit('voice:users', { groupId: g.id, users: voiceList(g.id) }));
     }
     broadcastUsers();
   });
@@ -1007,10 +1005,8 @@ io.on('connection', (socket) => {
     try {
       const msg = await store.get(payload.id);
       if (!msg) return reply({ ok: false, error: 'Ta wiadomość już nie istnieje.' });
-      // Reagować można tylko w kanale, który oglądasz (i tylko w nsfw po potwierdzeniu pełnoletności).
-      const channel = msg.channel || DEFAULT_CHANNEL;
-      if (channel !== socket.data.channel) return reply({ ok: false, error: 'Ta wiadomość jest w innym kanale.' });
-      if (CHANNELS_BY_ID.get(channel)?.nsfw && !socket.data.adult) return reply({ ok: false, error: 'Brak dostępu.' });
+      // Reagować można tylko w kanale grupy, który oglądasz.
+      if (!msg.channel || msg.channel !== socket.data.channel) return reply({ ok: false, error: 'Ta wiadomość jest w innym kanale.' });
 
       const reactions = { ...(msg.reactions || {}) };
       const who = new Set(reactions[payload.emoji] || []);
@@ -1105,27 +1101,19 @@ io.on('connection', (socket) => {
     const user = users.get(socket.id);
     if (!user) return reply({ ok: false, error: 'Najpierw dołącz do czatu.' });
     const group = groupOfChannel(payload && payload.channel);
-    const channel = group ? { id: payload.channel } : payload && CHANNELS_BY_ID.get(payload.channel);
-    if (!channel) return reply({ ok: false, error: 'Nie ma takiego kanału.' });
-    if (group && !isGroupMember(group, user.accountId)) {
+    if (!group) return reply({ ok: false, error: 'Nie ma takiego kanału.' });
+    if (!isGroupMember(group, user.accountId)) {
       return reply({ ok: false, error: 'Nie należysz do tej grupy.' });
     }
     if (rateLimited(socket, 'switch', 20, 10000)) {
       return reply({ ok: false, error: 'Zwolnij trochę – za szybko zmieniasz kanały.' });
     }
-    if (channel.nsfw && !socket.data.adult) {
-      if (payload.adult !== true) {
-        return reply({ ok: false, needAdult: true, error: 'Ten kanał jest tylko dla osób pełnoletnich.' });
-      }
-      socket.data.adult = true;
-      socket.join('adult');
-    }
 
     const previous = socket.data.channel;
     if (previous) socket.to(`ch:${previous}`).emit('typing', { nick: user.nick, isTyping: false, channel: previous });
-    enterChannel(socket, channel.id);
-    reply({ ok: true, channel: channel.id });
-    await sendHistory(socket, channel.id);
+    enterChannel(socket, payload.channel);
+    reply({ ok: true, channel: payload.channel });
+    await sendHistory(socket, payload.channel);
   });
 
   // ---------- Grupy: tworzenie, dołączanie jednorazowym kodem, wychodzenie, usuwanie ----------
@@ -1185,6 +1173,8 @@ io.on('connection', (socket) => {
 
     joinGroupRooms(account.id);
     group.members.forEach(pushGroups); // wszyscy widzą nową liczbę osób, a twórca – nowy kod
+    accountSockets(account.id).forEach((s) => s.emit('voice:users', { groupId: group.id, users: voiceList(group.id) }));
+    broadcastUsers(); // nowy członek widzi, kto z grupy jest online (i vice versa)
     io.to(`grp:${group.id}`).emit('group:members-changed', { groupId: group.id });
     groupSystemMessage(group, `${account.nick} dołączył(a) do grupy`);
     reply({ ok: true, group: groupInfo(group, account.id) });
@@ -1220,6 +1210,7 @@ io.on('connection', (socket) => {
     await revokeGroupAccess(account.id, group);
     pushGroups(account.id);
     group.members.forEach(pushGroups);
+    broadcastUsers();
     io.to(`grp:${group.id}`).emit('group:members-changed', { groupId: group.id });
     groupSystemMessage(group, `${account.nick} opuścił(a) grupę`);
     reply({ ok: true });
@@ -1246,6 +1237,7 @@ io.on('connection', (socket) => {
       await revokeGroupAccess(accountId, group);
       pushGroups(accountId);
     }
+    broadcastUsers();
     reply({ ok: true });
   });
 
@@ -1287,6 +1279,7 @@ io.on('connection', (socket) => {
   const refreshGroup = async (group) => {
     await persistGroup(group);
     group.members.forEach(pushGroups);
+    broadcastUsers(); // zmiana składu grupy zmienia też to, kogo widzi online
     io.to(`grp:${group.id}`).emit('group:members-changed', { groupId: group.id });
   };
   // Uprawnienia, które możesz nadawać lub odbierać: tylko te, które sam masz (administrator i twórca – wszystkie).
@@ -1306,6 +1299,29 @@ io.on('connection', (socket) => {
     if (name.length < 2) return reply({ ok: false, error: 'Nazwa grupy musi mieć co najmniej 2 znaki.' });
     ctx.group.name = name;
     await refreshGroup(ctx.group);
+    reply({ ok: true });
+  });
+
+  // Obrazek grupy (jak avatar): zwykłe obrazy klient zmniejsza, GIF może być animowany. Wymaga „Zmiana nazwy grupy”.
+  socket.on('group:icon', async (payload, ack) => {
+    const reply = typeof ack === 'function' ? ack : () => {};
+    const ctx = groupFor(payload && payload.groupId, 'manageGroup');
+    if (ctx.error) return reply({ ok: false, error: ctx.error });
+    if (adminLimited()) return reply({ ok: false, error: 'Zwolnij trochę.' });
+    const { group } = ctx;
+    const icon = payload.icon;
+    if (icon !== null && !validAvatar(icon)) {
+      return reply({ ok: false, error: 'Nieprawidłowy obrazek grupy (GIF do 600 KB, inne formaty są zmniejszane).' });
+    }
+    // Łączny budżet pamięci na obrazki grup (chroni serwer przed wieloma dużymi GIF-ami).
+    if (icon) {
+      let total = 0;
+      for (const g of groupsById.values()) if (g !== group && g.icon) total += g.icon.length;
+      if (total + icon.length > MAX_MEDIA_BYTES * 0.5) return reply({ ok: false, error: 'Serwer wyczerpał limit miejsca na obrazki grup.' });
+    }
+    group.icon = icon;
+    group.iconV = mediaVersion(icon);
+    await refreshGroup(group);
     reply({ ok: true });
   });
 
@@ -1536,23 +1552,30 @@ io.on('connection', (socket) => {
     await persistAccount(account);
 
     reply({ ok: true, nick });
-    systemMessage(`${oldNick} zmienił(a) nick na ${nick}`);
     broadcastUsers();
-    if (voice.size) broadcastVoice();
+    broadcastAllVoice();
   });
 
   // ---------- Czat głosowy: serwer tylko pośredniczy w wymianie sygnałów WebRTC ----------
-  socket.on('voice:join', (ack) => {
+  // Każda grupa ma własny kanał głosowy; osoba może być naraz tylko na jednym.
+  socket.on('voice:join', (groupId, ack) => {
     const reply = typeof ack === 'function' ? ack : () => {};
-    if (!users.has(socket.id)) return reply({ ok: false, error: 'Najpierw dołącz do czatu.' });
-    if (!voice.has(socket.id) && voice.size >= MAX_VOICE_USERS) {
+    const user = users.get(socket.id);
+    if (!user) return reply({ ok: false, error: 'Najpierw dołącz do czatu.' });
+    const group = typeof groupId === 'string' ? groupsById.get(groupId) : null;
+    if (!group || !isGroupMember(group, user.accountId)) return reply({ ok: false, error: 'Nie należysz do tej grupy.' });
+    const current = voice.get(socket.id);
+    if (current && current.groupId !== group.id) leaveVoice(socket); // przenosiny do kanału innej grupy
+    if (!voice.has(socket.id) && voiceList(group.id).length >= MAX_VOICE_USERS) {
       return reply({ ok: false, error: `Kanał głosowy jest pełny (maksymalnie ${MAX_VOICE_USERS} osób).` });
     }
-    // Osoba dołączająca sama zainicjuje połączenia z tymi, którzy już są na kanale.
-    const peers = Array.from(voice.keys()).filter((id) => id !== socket.id && users.has(id));
-    voice.set(socket.id, { muted: false, deafened: false, sharing: false });
+    // Osoba dołączająca sama zainicjuje połączenia z tymi, którzy już są na kanale tej grupy.
+    const peers = Array.from(voice.entries())
+      .filter(([id, s]) => id !== socket.id && s.groupId === group.id && users.has(id))
+      .map(([id]) => id);
+    voice.set(socket.id, { groupId: group.id, muted: false, deafened: false, sharing: false });
     reply({ ok: true, peers });
-    broadcastVoice();
+    broadcastVoice(group.id);
   });
 
   socket.on('voice:leave', () => leaveVoice(socket));
@@ -1563,13 +1586,15 @@ io.on('connection', (socket) => {
     entry.muted = Boolean(state.muted);
     entry.deafened = Boolean(state.deafened);
     entry.sharing = Boolean(state.sharing);
-    broadcastVoice();
+    broadcastVoice(entry.groupId);
   });
 
   socket.on('voice:signal', (payload) => {
-    if (!voice.has(socket.id) || !payload) return;
+    const mine = voice.get(socket.id);
+    if (!mine || !payload) return;
     const { to, data } = payload;
-    if (typeof to !== 'string' || !voice.has(to) || to === socket.id) return;
+    // sygnały krążą tylko między osobami z kanału głosowego tej samej grupy
+    if (typeof to !== 'string' || to === socket.id || !voice.has(to) || voice.get(to).groupId !== mine.groupId) return;
     // Opis sesji WebRTC z obrazem ekranu potrafi mieć dziesiątki tysięcy znaków, więc limit jest hojny
     // (ma tylko chronić przed nadużyciami). Wcześniejsze 20 000 po cichu gubiło oferty i zawieszało połączenie.
     if (!data || typeof data !== 'object') return;
@@ -1635,14 +1660,10 @@ io.on('connection', (socket) => {
       return reply({ ok: false, error: 'Zwolnij trochę – za dużo pobrań naraz.' });
     }
     try {
-      // Pliki z kanału nsfw tylko dla osób, które potwierdziły pełnoletność.
+      // Pliki są dostępne tylko dla członków grupy, w której je wysłano (stare pliki spoza grup – dla nikogo).
       const meta = await store.get(id);
-      if (meta && CHANNELS_BY_ID.get(meta.channel)?.nsfw && !socket.data.adult) {
-        return reply({ ok: false, error: 'Ten plik jest tylko dla osób pełnoletnich.' });
-      }
-      // Pliki z grupy prywatnej tylko dla jej członków.
       const fileGroup = meta && groupOfChannel(meta.channel);
-      if (meta && meta.channel && meta.channel.startsWith('g_') && (!fileGroup || !isGroupMember(fileGroup, users.get(socket.id).accountId))) {
+      if (meta && (!fileGroup || !isGroupMember(fileGroup, users.get(socket.id).accountId))) {
         return reply({ ok: false, error: 'Ten plik jest dostępny tylko dla członków grupy.' });
       }
       const data = await store.fileData(id);
@@ -1689,7 +1710,7 @@ io.on('connection', (socket) => {
     if (typeof body.replyTo === 'string' && body.replyTo.length <= 64) {
       const original = await store.get(body.replyTo).catch(() => null);
       // Odpowiedzieć można tylko na wiadomość z tego samego kanału; w przeciwnym razie wysyłamy zwykłą wiadomość.
-      if (original && (original.channel || DEFAULT_CHANNEL) === (socket.data.channel || DEFAULT_CHANNEL)) {
+      if (original && original.channel && original.channel === socket.data.channel) {
         extra.replyToId = original.id;
         const author = original.accountId && accountsById.get(original.accountId);
         // Odpowiedź domyślnie powiadamia autora oryginału (jak „@WŁ.” na Discordzie), chyba że to my.
@@ -1717,9 +1738,7 @@ io.on('connection', (socket) => {
     const matches = [];
     // W grupie podpowiadamy tylko jej członków (reszta kont nie powinna się w ogóle ujawniać).
     const searchGroup = groupOfChannel(socket.data.channel);
-    const pool = searchGroup
-      ? searchGroup.members.map((id) => accountsById.get(id)).filter(Boolean)
-      : accountsById.values();
+    const pool = searchGroup ? searchGroup.members.map((id) => accountsById.get(id)).filter(Boolean) : [];
     for (const account of pool) {
       const lower = account.nick.toLowerCase();
       if (q && !lower.includes(q)) continue;
@@ -1788,23 +1807,23 @@ io.on('connection', (socket) => {
   socket.on('typing', (isTyping) => {
     const user = users.get(socket.id);
     if (!user) return;
-    const channel = socket.data.channel || DEFAULT_CHANNEL;
+    const channel = socket.data.channel;
+    if (!channel) return;
     socket.to(`ch:${channel}`).emit('typing', { nick: user.nick, isTyping: Boolean(isTyping), channel });
   });
 
   socket.on('disconnect', () => {
-    const wasInVoice = voice.delete(socket.id);
+    const voiceEntry = voice.get(socket.id);
+    voice.delete(socket.id);
     const user = users.get(socket.id);
     if (!user) return;
     users.delete(socket.id);
-    // Komunikat o wyjściu tylko gdy to była ostatnia otwarta karta tego konta.
-    if (!isOnline(user.accountId)) {
-      const channel = socket.data.channel || DEFAULT_CHANNEL;
+    const channel = socket.data.channel;
+    if (channel && !isOnline(user.accountId)) {
       socket.to(`ch:${channel}`).emit('typing', { nick: user.nick, isTyping: false, channel });
-      systemMessage(`${user.nick} opuścił(a) czat`);
     }
     broadcastUsers();
-    if (wasInVoice) broadcastVoice();
+    if (voiceEntry) broadcastVoice(voiceEntry.groupId);
   });
 });
 
@@ -1823,6 +1842,11 @@ async function start() {
 
   for (const group of await store.loadGroups()) indexGroup(group);
   console.log(`Wczytano grup: ${groupsById.size}`);
+
+  // Dawne kanały wspólne dla wszystkich już nie istnieją – czyścimy ich resztki (wiadomości i pliki).
+  for (const old of ['ogolny', 'ogolny2', 'screeny', 'granie', 'nsfw']) {
+    await store.removeChannelMessages(old).catch((err) => console.error('Nie udało się wyczyścić starego kanału:', err.message));
+  }
 
   for (const account of await store.loadAccounts()) indexAccount(account);
   console.log(`Wczytano kont: ${accountsById.size}`);

@@ -2144,6 +2144,79 @@ audio.media {
   padding: 6px 12px;
   font-size: 13px;
 }
+/* ---- Obrazek grupy, ekran powitalny ---- */
+.rail__icon.has-icon {
+  color: transparent;
+}
+.channels__icon {
+  display: block;
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  margin-right: 8px;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 24px;
+  color: #fff;
+  text-align: center;
+  border-radius: 8px;
+}
+.channels__icon.has-icon {
+  color: transparent;
+}
+.group-card__icon.has-icon {
+  color: transparent;
+}
+.gset__iconrow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.group-card__icon.gset__icon {
+  width: 64px;
+  height: 64px;
+  font-size: 26px;
+  border-radius: 20px;
+}
+.emptystate {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  overflow-y: auto;
+}
+.emptystate__card {
+  max-width: 420px;
+  padding: 32px 28px;
+  text-align: center;
+  background: var(--bg-secondary);
+  border-radius: 12px;
+  box-shadow: 0 8px 30px var(--shadow);
+  animation: card-in 0.4s cubic-bezier(0.2, 0.9, 0.3, 1.2);
+}
+.emptystate__card h2 {
+  margin: 8px 0 10px;
+  color: var(--text-strong);
+}
+.emptystate__card p {
+  margin: 0 0 22px;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+.emptystate__emoji {
+  font-size: 44px;
+}
+.emptystate__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: center;
+}
+.app--empty .channels__list {
+  display: none;
+}
+
 /* ---- Ustawienia grupy: role, uprawnienia, kanały ---- */
 .modal__card.gset {
   display: flex;
