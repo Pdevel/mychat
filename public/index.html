@@ -302,6 +302,7 @@
                     <button type="button" id="emoji-add-pick" class="btn-secondary btn-sm">Wybierz obraz</button>
                     <button type="button" id="emoji-add-save" class="btn-primary btn-sm" disabled>Dodaj emoji</button>
                   </div>
+                  <p id="emoji-add-hint" class="emoji-add__hint">Najpierw wybierz obraz.</p>
                 </div>
                 <input type="file" id="emoji-add-file" accept="image/*" hidden />
               </div>
@@ -313,6 +314,12 @@
             <!-- CZAT I ARCHIWUM -->
             <section class="settings__pane" data-pane="chat" hidden>
               <h4 class="settings__title">Czat i archiwum</h4>
+
+              <div id="persistence-note" class="persistence-note" hidden>
+                <b>⚠ Dane serwera są tymczasowe.</b> Konta, wiadomości i własne emoji znikają przy każdym wdrożeniu
+                i uśpieniu serwera. Żeby je zachować, administrator powinien ustawić <code>MONGODB_URI</code> (darmowa baza MongoDB Atlas) w ustawieniach Rendera.
+                Twój profil i własne emoji odtworzą się z kopii w tej przeglądarce.
+              </div>
 
               <label class="switch">
                 <input type="checkbox" id="sound-toggle" />

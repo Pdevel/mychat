@@ -693,9 +693,12 @@ const backup = {
         req.onsuccess = async () => {
           this.db = req.result;
           try {
-            this.data = (await reqP(this.db.transaction('kv').objectStore('kv').get('backup'))) || null;
+            const kv = this.db.transaction('kv').objectStore('kv');
+            this.data = (await reqP(kv.get('backup'))) || null;
+            this.emoji = (await reqP(this.db.transaction('kv').objectStore('kv').get('emoji'))) || [];
           } catch {
             this.data = null;
+            this.emoji = [];
           }
           resolve();
         };
@@ -704,6 +707,19 @@ const backup = {
         resolve(); // np. tryb prywatny – czat działa dalej bez kopii
       }
     });
+  },
+
+  emoji: [], // własne emoji tej osoby: [{ name, image: data-URL }] – żeby dało się je odtworzyć po zresetowaniu serwera
+
+  async saveEmojiList() {
+    if (!this.db) return;
+    try {
+      const tx = this.db.transaction('kv', 'readwrite');
+      tx.objectStore('kv').put(this.emoji, 'emoji');
+      await txDone(tx);
+    } catch (err) {
+      handleArchiveError(err);
+    }
   },
 
   async save(patch) {
@@ -752,6 +768,54 @@ async function refreshBackup(res) {
     }
   }
   await backup.save(patch);
+}
+
+// Własne emoji: kopia lokalna uzupełnia się o emoji, które masz na serwerze, a gdy serwer straci dane,
+// Twoje emoji wracają same (każdy odtwarza swoje, więc wystarczy, że po aktualizacji wejdziesz na czat).
+const sleepMs = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+let emojiRestoring = false;
+
+async function backupOwnEmoji() {
+  await backup.ready;
+  let changed = false;
+  for (const e of customEmoji.filter((x) => x.byId && x.byId === myAccountId)) {
+    if (backup.emoji.some((x) => x.name.toLowerCase() === e.name.toLowerCase())) continue;
+    try {
+      backup.emoji.push({ name: e.name, image: await urlToDataUrl(e.url) });
+      changed = true;
+    } catch {
+      /* spróbujemy przy następnym logowaniu */
+    }
+  }
+  if (changed) await backup.saveEmojiList();
+}
+
+async function restoreMissingEmoji() {
+  await backup.ready;
+  if (emojiRestoring || !backup.emoji.length) return;
+  emojiRestoring = true;
+  let restored = 0;
+  try {
+    for (const item of [...backup.emoji]) {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        if (emojiByName.has(item.name.toLowerCase())) break; // już jest na serwerze
+        const res = await new Promise((resolve) =>
+          socket.timeout(20000).emit('emoji:add', { name: item.name, image: item.image }, (err, r) => resolve(err ? { ok: false } : r))
+        );
+        if (res.ok) {
+          restored += 1;
+          break;
+        }
+        // Serwer ogranicza liczbę dodawanych emoji na minutę – przy limicie czekamy i ponawiamy.
+        if (/Zbyt wiele/.test(res.error || '')) await sleepMs(62000);
+        else break; // np. nazwę zajęła już inna osoba – pomijamy
+      }
+      await sleepMs(600);
+    }
+  } finally {
+    emojiRestoring = false;
+  }
+  if (restored) toast(`Przywrócono Twoje emoji (${restored}).`, true);
 }
 
 // Serwer założył konto od nowa (zgubił dane) – odtwórz profil z kopii zapasowej.
@@ -1790,6 +1854,7 @@ function join(nick) {
     // Kopia zapasowa profilu: po zwykłym logowaniu odświeżamy ją, a gdy serwer założył konto od nowa
     // (zgubił dane), odtwarzamy z niej profil.
     backup.ready.then(() => (res.isNew ? restoreProfile() : refreshBackup(res)));
+    backupOwnEmoji().then(restoreMissingEmoji);
 
     // Po utracie połączenia wracamy na kanał głosowy (każda osoba robi to sama, więc rozmowa się odtwarza).
     if (voiceRejoin) {
@@ -2252,6 +2317,7 @@ const emojiDraft = { image: null };
 
 function renderEmojiSettings() {
   $('emoji-count').textContent = `${customEmoji.length}/${maxEmoji}`;
+  updateEmojiAddState(); // lista się zmieniła (np. ktoś dodał emoji o tej samej nazwie) – odśwież podpowiedź
   const list = $('emoji-list');
   if (!customEmoji.length) {
     return list.replaceChildren(el('div', 'emoji-empty', 'Nie ma jeszcze żadnych własnych emoji – dodaj pierwsze powyżej!'));
@@ -2271,7 +2337,10 @@ function renderEmojiSettings() {
         del.addEventListener('click', () => {
           if (!confirm(`Usunąć emoji :${e.name}:? Zniknie dla wszystkich.`)) return;
           socket.timeout(10000).emit('emoji:delete', e.id, (err, res) => {
-            if (err || !res || !res.ok) toast((res && res.error) || 'Nie udało się usunąć emoji.');
+            if (err || !res || !res.ok) return toast((res && res.error) || 'Nie udało się usunąć emoji.');
+            // usunięte celowo – nie odtwarzamy go potem z kopii
+            backup.emoji = backup.emoji.filter((x) => x.name.toLowerCase() !== e.name.toLowerCase());
+            backup.saveEmojiList();
           });
         });
         card.appendChild(del);
@@ -2281,9 +2350,44 @@ function renderEmojiSettings() {
   );
 }
 
-function updateEmojiAddState() {
+// Pierwsza wolna nazwa: „emoji”, jeśli zajęta – „emoji_2”, „emoji_3”… (pliki często mają tę samą nazwę, np. image.png)
+function uniqueEmojiName(base) {
+  const root = base.slice(0, 28);
+  let name = base;
+  for (let n = 2; emojiByName.has(name.toLowerCase()) && n < 1000; n += 1) name = `${root}_${n}`;
+  return name;
+}
+
+// Pokazuje, czego brakuje do dodania emoji – zamiast przycisku, który po prostu nie działa, i znikającego komunikatu.
+function updateEmojiAddState(serverError) {
   const name = $('emoji-add-name').value.trim();
-  $('emoji-add-save').disabled = !(emojiDraft.image && name.length >= 2);
+  const hint = $('emoji-add-hint');
+  let message = 'Gotowe – kliknij „Dodaj emoji”.';
+  let level = 'is-ok';
+  let ready = false;
+
+  if (!emojiDraft.image) {
+    message = 'Najpierw wybierz obraz.';
+    level = '';
+  } else if (name.length < 2) {
+    message = 'Wpisz nazwę (co najmniej 2 znaki: litery bez polskich znaków, cyfry lub _).';
+    level = 'is-warn';
+  } else if (emojiByName.has(name.toLowerCase())) {
+    message = `Emoji :${name}: już istnieje – zmień nazwę.`;
+    level = 'is-warn';
+  } else if (customEmoji.length >= maxEmoji) {
+    message = `Serwer ma już maksymalną liczbę emoji (${maxEmoji}). Usuń któreś, żeby dodać nowe.`;
+    level = 'is-warn';
+  } else {
+    ready = true;
+  }
+  if (serverError) {
+    message = serverError;
+    level = 'is-warn';
+  }
+  hint.textContent = message;
+  hint.className = `emoji-add__hint ${level}`.trim();
+  $('emoji-add-save').disabled = !ready;
 }
 
 // Obraz emoji: GIF zostaje w oryginale (animacja), reszta jest zmniejszana do 128x128 z zachowaniem przezroczystości.
@@ -2333,7 +2437,8 @@ $('emoji-add-file').addEventListener('change', async (e) => {
     if (!$('emoji-add-name').value.trim()) {
       // nazwa z nazwy pliku: tylko litery, cyfry i podkreślenia
       const guess = file.name.replace(/\.[^.]+$/, '').replace(/[^A-Za-z0-9_]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 32);
-      $('emoji-add-name').value = guess.length >= 2 ? guess : '';
+      // zajęta nazwa dostaje numer (emoji → emoji_2), żeby kolejne pliki o tej samej nazwie dało się dodać
+      $('emoji-add-name').value = guess.length >= 2 ? uniqueEmojiName(guess) : '';
     }
   } catch (err) {
     emojiDraft.image = null;
@@ -2351,10 +2456,15 @@ $('emoji-add-save').addEventListener('click', () => {
   btn.disabled = true;
   socket.timeout(20000).emit('emoji:add', { name, image: emojiDraft.image }, (err, res) => {
     if (err || !res || !res.ok) {
-      updateEmojiAddState();
-      return toast((res && res.error) || 'Nie udało się dodać emoji.');
+      const reason = (res && res.error) || 'Nie udało się dodać emoji (brak odpowiedzi serwera).';
+      updateEmojiAddState(reason); // powód zostaje pod formularzem, nie znika jak komunikat
+      return toast(reason);
     }
     toast(`Dodano emoji :${name}:`, true);
+    // kopia w przeglądarce – żeby emoji dało się odtworzyć, gdy serwer straci dane
+    backup.emoji = backup.emoji.filter((x) => x.name.toLowerCase() !== name.toLowerCase());
+    backup.emoji.push({ name, image: emojiDraft.image });
+    backup.saveEmojiList();
     emojiDraft.image = null;
     $('emoji-add-name').value = '';
     const preview = $('emoji-add-preview');
@@ -3431,6 +3541,7 @@ fetch('/api/config')
     if (cfg.maxFileBytes) maxFileBytes = cfg.maxFileBytes;
     if (Array.isArray(cfg.iceServers) && cfg.iceServers.length) iceServers = cfg.iceServers;
     if (cfg.maxVoiceUsers) maxVoiceUsers = cfg.maxVoiceUsers;
+    $('persistence-note').hidden = cfg.persistent !== false; // ostrzeżenie tylko, gdy serwer nie ma trwałej bazy
     if (cfg.gifAvatarBytes) gifAvatarBytes = cfg.gifAvatarBytes;
     if (cfg.gifBannerBytes) gifBannerBytes = cfg.gifBannerBytes;
     if (cfg.retentionMs) {

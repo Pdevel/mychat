@@ -1669,6 +1669,19 @@ audio.media {
   flex-wrap: wrap;
   gap: 8px;
 }
+.emoji-add__hint {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--text-muted);
+}
+.emoji-add__hint.is-warn {
+  color: #faa61a;
+}
+.emoji-add__hint.is-ok {
+  color: var(--green);
+}
 .btn-primary:disabled {
   opacity: 0.5;
   cursor: not-allowed;
@@ -2006,6 +2019,23 @@ audio.media {
     opacity: 1;
     transform: none;
   }
+}
+
+.persistence-note {
+  margin-bottom: 18px;
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text);
+  background: rgba(250, 166, 26, 0.12);
+  border-left: 3px solid #faa61a;
+  border-radius: 6px;
+}
+.persistence-note code {
+  padding: 1px 4px;
+  font-size: 12px;
+  background: var(--bg-tertiary);
+  border-radius: 4px;
 }
 
 .avatar-edit {
