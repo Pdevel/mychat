@@ -90,6 +90,7 @@ let channels = [{ id: DEFAULT_CHANNEL, name: 'ogólny' }]; // pełna lista przyc
 let currentChannel = store.get('mychat.channel', { id: DEFAULT_CHANNEL }).id;
 let adultConfirmed = store.get('mychat.adult', { ok: false }).ok === true; // potwierdzenie pełnoletności (nsfw)
 const unreadChannels = new Set(); // kanały z nowymi wiadomościami, których nie oglądasz
+const mentionCounts = new Map(); // kanał -> ile razy oznaczono Cię tam, gdy go nie oglądałeś
 let pendingAvatar = profile.avatarData; // avatar wybrany na ekranie logowania (data-URL)
 let avatarTarget = 'login';
 let lastNick = null;
@@ -438,8 +439,38 @@ function emojiImg(emoji, big) {
   return img;
 }
 
-// Tekst wiadomości: linki są klikalne, a :nazwa: znanego emoji zamienia się w obrazek.
-function renderRichText(text, big = false) {
+const WORD_CHAR = /[\p{L}\p{N}_]/u;
+const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+// Zwykły tekst z wzmiankami: „@Nick” osoby wymienionej w wiadomości staje się klikalną plakietką.
+// Lista osób pochodzi z serwera (m.mentions) – tylko one są podświetlane.
+function appendTextWithMentions(frag, text, mentions) {
+  const named = (mentions || []).filter((m) => !m.reply && m.nick);
+  if (!named.length || !text.includes('@')) {
+    if (text) frag.appendChild(document.createTextNode(text));
+    return;
+  }
+  const names = named.map((m) => escapeRegExp(m.nick)).sort((a, b) => b.length - a.length); // najdłuższe pierwsze
+  const pattern = new RegExp(`@(${names.join('|')})`, 'giu');
+  let last = 0;
+  let match;
+  while ((match = pattern.exec(text))) {
+    const before = text[match.index - 1];
+    const after = text[match.index + match[0].length];
+    if ((before && WORD_CHAR.test(before)) || (after && WORD_CHAR.test(after))) continue; // „ala@x.pl”, „@Ania2”
+    const person = named.find((m) => m.nick.toLowerCase() === match[1].toLowerCase());
+    if (match.index > last) frag.appendChild(document.createTextNode(text.slice(last, match.index)));
+    const chip = el('span', 'mention', match[0]);
+    markProfileTrigger(chip, person.nick, person.id);
+    if (identity.accountIds.has(person.id)) chip.classList.add('mention--me');
+    frag.appendChild(chip);
+    last = match.index + match[0].length;
+  }
+  if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
+}
+
+// Tekst wiadomości: linki są klikalne, :nazwa: znanego emoji zamienia się w obrazek, a @nick w plakietkę wzmianki.
+function renderRichText(text, big = false, mentions = []) {
   const frag = document.createDocumentFragment();
   text.split(/(https?:\/\/[^\s<>"']+)/g).forEach((part, i) => {
     if (i % 2 === 1) {
@@ -455,7 +486,7 @@ function renderRichText(text, big = false) {
         const emoji = emojiByName.get(piece.slice(1, -1).toLowerCase());
         if (emoji && isSafeImageSrc(emoji.url)) return frag.appendChild(emojiImg(emoji, big));
       }
-      if (piece) frag.appendChild(document.createTextNode(piece));
+      appendTextWithMentions(frag, piece, mentions);
     });
   });
   return frag;
@@ -582,6 +613,7 @@ const archive = {
   },
 
   getFile: (id) => reqP(archive.db.transaction('files').objectStore('files').get(id)),
+  getMessage: (id) => reqP(archive.db.transaction('messages').objectStore('messages').get(id)),
   fileIds: () => reqP(archive.db.transaction('files').objectStore('files').getAllKeys()),
   count: () => reqP(archive.db.transaction('messages').objectStore('messages').count()),
   countChannel: (channel) =>
@@ -1024,13 +1056,25 @@ function addMessage(m, { historic = false } = {}) {
     lastDay = day;
   }
 
-  const first = newDay || m.nick !== lastNick || m.time - lastMessageTime > GROUP_WINDOW_MS;
-  const wrap = el('div', 'msg' + (first ? ' msg--first' : '') + (historic ? ' msg--static' : ''));
+  // Odpowiedź zawsze zaczyna nową grupę (ma nad sobą odnośnik do oryginału).
+  const hasReply = Boolean(m.replyTo);
+  const first = hasReply || newDay || m.nick !== lastNick || m.time - lastMessageTime > GROUP_WINDOW_MS;
+  // Podświetlamy wiadomości, w których oznaczono Ciebie (także przez odpowiedź do Ciebie) – poza Twoimi własnymi.
+  const mentioned = !mine && (m.mentions || []).some((x) => identity.accountIds.has(x.id));
+  const wrap = el(
+    'div',
+    'msg' +
+      (first ? ' msg--first' : '') +
+      (hasReply ? ' msg--reply' : '') +
+      (mentioned ? ' msg--mentioned' : '') +
+      (historic ? ' msg--static' : '')
+  );
   wrap.dataset.time = m.time;
   wrap.dataset.nick = m.nick;
   wrap.dataset.account = m.accountId || '';
   if (m.id) wrap.dataset.id = m.id;
 
+  if (hasReply) wrap.appendChild(makeReplyRef(m.replyTo));
   if (first) {
     wrap.appendChild(makeMessageAvatar(m.nick, m.accountId));
     wrap.appendChild(makeMessageHeader(m.nick, m.time, m.accountId));
@@ -1039,8 +1083,18 @@ function addMessage(m, { historic = false } = {}) {
   }
 
   if (m.id) {
-    // Pasek akcji widoczny po najechaniu: dodanie reakcji (każdy) i usunięcie (tylko autor)
+    // Pasek akcji widoczny po najechaniu: odpowiedź i reakcja (każdy) oraz usunięcie (tylko autor)
     const actions = el('div', 'msg__actions');
+    const answer = el('button', 'msg__action', '↩');
+    answer.type = 'button';
+    answer.title = 'Odpowiedz';
+    answer.setAttribute('aria-label', 'Odpowiedz na wiadomość');
+    answer.addEventListener('click', (e) => {
+      e.stopPropagation();
+      setReply({ id: m.id, nick: m.nick, accountId: m.accountId, preview: previewOfMessage(m) });
+    });
+    actions.appendChild(answer);
+
     const react = el('button', 'msg__action js-react', '😀');
     react.type = 'button';
     react.title = 'Dodaj reakcję';
@@ -1077,7 +1131,8 @@ function addMessage(m, { historic = false } = {}) {
     const jumbo = isJumboMessage(m.text);
     const body = el('div', 'msg__text' + (jumbo ? ' msg__text--emoji' : ''));
     body.dataset.raw = m.text; // żeby po zmianie listy emoji dało się wiadomość narysować od nowa
-    body.appendChild(renderRichText(m.text, jumbo));
+    body._mentions = m.mentions || [];
+    body.appendChild(renderRichText(m.text, jumbo, body._mentions));
     wrap.appendChild(body);
   }
 
@@ -1090,12 +1145,123 @@ function addMessage(m, { historic = false } = {}) {
   if (stick) scrollToBottom();
 
   if (!mine && !historic) {
-    beep();
+    beep(mentioned ? [880, 1175] : undefined);
     if (document.hidden) {
       unread += 1;
       document.title = `(${unread}) MyChat`;
     }
   }
+}
+
+// ---------- Odpowiedzi ----------
+// m.replyTo (z serwera): { id, nick, accountId, kind, preview } albo { id, missing: true }, gdy oryginału już nie ma.
+function previewOfMessage(m) {
+  if (m.kind === 'gif') return 'GIF';
+  if (m.kind === 'file') return `📎 ${m.name}`;
+  return String(m.text || '').slice(0, 120);
+}
+
+function jumpToMessage(id) {
+  const node = messagesEl.querySelector(`.msg[data-id="${CSS.escape(id)}"]`);
+  if (!node) return toast('Tej wiadomości nie ma na ekranie – jest starsza niż wczytana historia.');
+  node.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  node.classList.remove('msg--flash');
+  void node.offsetWidth; // pozwala odpalić animację od nowa
+  node.classList.add('msg--flash');
+  setTimeout(() => node.classList.remove('msg--flash'), 1700);
+}
+
+function fillReplyRef(row, ref) {
+  row.classList.remove('msg__reply--missing');
+  row.replaceChildren();
+  row.appendChild(makeAvatar(ref.nick, ''));
+  const nick = el('span', 'msg__reply-nick', `@${ref.nick}`);
+  applyNickStyle(nick, ref.nick, ref.accountId);
+  row.appendChild(nick);
+  const text = el('span', 'msg__reply-text');
+  text.appendChild(renderRichText(ref.preview || '', false));
+  row.appendChild(text);
+  row.onclick = () => jumpToMessage(ref.id);
+}
+
+function markReplyMissing(row) {
+  row.classList.add('msg__reply--missing');
+  row.replaceChildren(document.createTextNode('Oryginalna wiadomość została usunięta lub jest niedostępna'));
+  row.onclick = null;
+}
+
+// Gdy serwer już nie ma oryginału, a Ty wciąż masz go w archiwum lokalnym, pokazujemy własną kopię.
+async function localReplyOriginal(id) {
+  const logged = sessionLog.get(id);
+  if (logged) return logged;
+  try {
+    await archive.opening;
+    return archive.ready ? await archive.getMessage(id) : null;
+  } catch {
+    return null;
+  }
+}
+
+function makeReplyRef(ref) {
+  const row = el('div', 'msg__reply');
+  row.dataset.replyId = ref.id;
+  if (!ref.missing) {
+    fillReplyRef(row, ref);
+    return row;
+  }
+  markReplyMissing(row);
+  localReplyOriginal(ref.id).then((local) => {
+    if (!local || !row.isConnected) return;
+    fillReplyRef(row, { id: local.id, nick: local.nick, accountId: local.accountId, preview: previewOfMessage(local) });
+    row.title = 'Kopia z Twojego archiwum lokalnego';
+  });
+  return row;
+}
+
+// Pasek nad polem wiadomości: „Odpowiadasz do …” z przełącznikiem powiadomienia autora i przyciskiem anulowania
+let replyingTo = null; // { id, nick, accountId, preview }
+let replyPing = true;
+
+function renderReplyBar() {
+  const bar = $('reply-bar');
+  if (!replyingTo) {
+    bar.classList.add('hidden');
+    return bar.replaceChildren();
+  }
+  const text = el('span', 'replybar__text');
+  text.appendChild(document.createTextNode('Odpowiadasz do '));
+  const who = el('b', '', replyingTo.nick);
+  applyNickStyle(who, replyingTo.nick, replyingTo.accountId);
+  text.appendChild(who);
+  text.appendChild(document.createTextNode(` — ${replyingTo.preview}`));
+
+  const ping = el('button', 'ping-toggle' + (replyPing ? ' is-on' : ''), replyPing ? '@ WŁ.' : '@ WYŁ.');
+  ping.type = 'button';
+  ping.title = replyPing ? 'Autor dostanie powiadomienie – kliknij, żeby wyłączyć' : 'Autor nie dostanie powiadomienia – kliknij, żeby włączyć';
+  ping.addEventListener('click', () => {
+    replyPing = !replyPing;
+    renderReplyBar();
+  });
+
+  const close = el('button', 'icon-btn', '✕');
+  close.type = 'button';
+  close.title = 'Anuluj odpowiedź';
+  close.addEventListener('click', clearReply);
+
+  bar.replaceChildren(text, ping, close);
+  bar.classList.remove('hidden');
+}
+
+function setReply(target) {
+  replyingTo = target;
+  replyPing = true;
+  renderReplyBar();
+  messageInput.focus();
+}
+
+function clearReply() {
+  replyingTo = null;
+  renderReplyBar();
 }
 
 // ---------- Reakcje ----------
@@ -1598,6 +1764,7 @@ function join(nick) {
     historyLoading = true; // zaraz po zalogowaniu serwer wyśle historię kanału
     pendingLive.length = 0;
     unreadChannels.delete(currentChannel);
+    mentionCounts.delete(currentChannel);
     renderChannels();
     syncDeletions();
     profile = {
@@ -1675,7 +1842,8 @@ messageForm.addEventListener('submit', (e) => {
   e.preventDefault();
   const text = messageInput.value.trim();
   if (!text || !socket.connected) return;
-  socket.emit('message', text);
+  socket.emit('message', replyingTo ? { text, replyTo: replyingTo.id, ping: replyPing } : text);
+  clearReply();
   socket.emit('typing', false);
   clearTimeout(typingTimeout);
   messageInput.value = '';
@@ -1923,36 +2091,79 @@ function openReactionPicker(messageId, anchor) {
   panel.style.top = `${top}px`;
 }
 
-// --- Podpowiedzi przy wpisywaniu :nazwa (jak na Discordzie) ---
+// --- Podpowiedzi przy wpisywaniu: :nazwa (własne emoji) i @nick (osoby), jak na Discordzie ---
 const suggestEl = $('emoji-suggest');
+let suggestKind = 'emoji'; // 'emoji' albo 'member'
 let suggestMatches = [];
 let suggestIndex = 0;
 let suggestQuery = '';
+let memberSearchTimer = null;
+let memberSearchSeq = 0;
 
-function closeEmojiSuggest() {
+function hideSuggest() {
   suggestEl.classList.add('hidden');
   suggestMatches = [];
 }
 
-function renderEmojiSuggest() {
-  const title = el('div', 'suggest__title', `EMOJI PASUJĄCE DO „:${suggestQuery}”`);
-  const items = suggestMatches.map((e, i) => {
+function closeEmojiSuggest() {
+  hideSuggest();
+  clearTimeout(memberSearchTimer);
+  memberSearchSeq += 1; // spóźnione odpowiedzi wyszukiwania osób są ignorowane
+}
+
+function renderSuggest() {
+  const isMember = suggestKind === 'member';
+  const title = el('div', 'suggest__title', isMember ? `LUDZIE „@${suggestQuery}”` : `EMOJI PASUJĄCE DO „:${suggestQuery}”`);
+  const items = suggestMatches.map((item, i) => {
     const b = el('button', 'suggest__item' + (i === suggestIndex ? ' is-selected' : ''));
     b.type = 'button';
     b.setAttribute('role', 'option');
-    b.appendChild(emojiImg(e, false));
-    b.appendChild(el('span', '', `:${e.name}:`));
+    if (isMember) {
+      avatars.set(item.nick, item.avatar);
+      b.appendChild(makeAvatar(item.nick, 'avatar--sm'));
+      const name = el('span', 'suggest__name', item.nick);
+      applyNickStyle(name, item.nick, item.id);
+      b.appendChild(name);
+      b.appendChild(el('span', 'suggest__meta', item.online ? 'online' : 'offline'));
+    } else {
+      b.appendChild(emojiImg(item, false));
+      b.appendChild(el('span', '', `:${item.name}:`));
+    }
     b.addEventListener('mousedown', (ev) => ev.preventDefault()); // nie zabieraj fokusu polu wiadomości
-    b.addEventListener('click', () => applyEmojiSuggestion(e));
+    b.addEventListener('click', () => applySuggestion(item));
     return b;
   });
   suggestEl.replaceChildren(title, ...items);
   suggestEl.classList.remove('hidden');
 }
 
+// Osoby do wzmianki wyszukuje serwer (zna wszystkie konta; osoby online są na początku listy).
+function updateMemberSuggest(query) {
+  clearTimeout(memberSearchTimer);
+  const seq = ++memberSearchSeq;
+  memberSearchTimer = setTimeout(() => {
+    socket.timeout(5000).emit('mention:search', query, (err, res) => {
+      if (seq !== memberSearchSeq || err || !res || !res.ok) return;
+      if (!res.results.length) return hideSuggest();
+      const q = query.toLowerCase();
+      if (suggestKind !== 'member' || q !== suggestQuery) suggestIndex = 0;
+      suggestKind = 'member';
+      suggestQuery = q;
+      suggestMatches = res.results;
+      suggestIndex = Math.min(suggestIndex, res.results.length - 1);
+      renderSuggest();
+    });
+  }, 120);
+}
+
 function updateEmojiSuggest() {
   const caret = messageInput.selectionStart ?? messageInput.value.length;
-  const match = /(?:^|\s):([A-Za-z0-9_]{2,})$/.exec(messageInput.value.slice(0, caret));
+  const before = messageInput.value.slice(0, caret);
+
+  const memberMatch = /(?:^|\s)@([^\s@]{0,20})$/.exec(before);
+  if (memberMatch) return updateMemberSuggest(memberMatch[1]);
+
+  const match = /(?:^|\s):([A-Za-z0-9_]{2,})$/.exec(before);
   if (!match || !customEmoji.length) return closeEmojiSuggest();
 
   const q = match[1].toLowerCase();
@@ -1963,18 +2174,25 @@ function updateEmojiSuggest() {
     .slice(0, 8);
   if (!found.length) return closeEmojiSuggest();
 
-  if (q !== suggestQuery) suggestIndex = 0;
+  memberSearchSeq += 1;
+  clearTimeout(memberSearchTimer);
+  if (suggestKind !== 'emoji' || q !== suggestQuery) suggestIndex = 0;
+  suggestKind = 'emoji';
   suggestQuery = q;
   suggestMatches = found;
   suggestIndex = Math.min(suggestIndex, found.length - 1);
-  renderEmojiSuggest();
+  renderSuggest();
 }
 
-function applyEmojiSuggestion(emoji) {
+function applySuggestion(item) {
   const caret = messageInput.selectionStart ?? messageInput.value.length;
-  const before = messageInput.value.slice(0, caret).replace(/:([A-Za-z0-9_]{2,})$/, `:${emoji.name}: `);
-  const after = messageInput.value.slice(caret);
-  messageInput.value = before + after;
+  const typed = messageInput.value.slice(0, caret);
+  // funkcja zamiast tekstu zastępczego: nick lub nazwa mogłyby zawierać znaki specjalne ($&)
+  const before =
+    suggestKind === 'member'
+      ? typed.replace(/@([^\s@]{0,20})$/, () => `@${item.nick} `)
+      : typed.replace(/:([A-Za-z0-9_]{2,})$/, () => `:${item.name}: `);
+  messageInput.value = before + messageInput.value.slice(caret);
   messageInput.setSelectionRange(before.length, before.length);
   closeEmojiSuggest();
   messageInput.focus();
@@ -1987,10 +2205,10 @@ messageInput.addEventListener('keydown', (e) => {
   if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
     e.preventDefault();
     suggestIndex = (suggestIndex + (e.key === 'ArrowDown' ? 1 : -1) + suggestMatches.length) % suggestMatches.length;
-    renderEmojiSuggest();
+    renderSuggest();
   } else if (e.key === 'Enter' || e.key === 'Tab') {
-    e.preventDefault(); // Enter wybiera emoji zamiast wysyłać wiadomość
-    applyEmojiSuggestion(suggestMatches[suggestIndex]);
+    e.preventDefault(); // Enter wybiera podpowiedź zamiast wysyłać wiadomość
+    applySuggestion(suggestMatches[suggestIndex]);
   } else if (e.key === 'Escape') {
     closeEmojiSuggest();
   }
@@ -2016,7 +2234,7 @@ function refreshEmojiViews() {
     const raw = body.dataset.raw;
     const jumbo = isJumboMessage(raw);
     body.classList.toggle('msg__text--emoji', jumbo);
-    body.replaceChildren(renderRichText(raw, jumbo));
+    body.replaceChildren(renderRichText(raw, jumbo, body._mentions || []));
   });
   messagesEl.querySelectorAll('.msg').forEach((wrap) => {
     if (wrap._reactions && Object.keys(wrap._reactions).length) renderReactions(wrap, wrap._reactions);
@@ -2382,6 +2600,7 @@ lightbox.addEventListener('click', () => lightbox.classList.add('hidden'));
 
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
+  clearReply();
   $('age-gate').classList.add('hidden');
   closeProfilePopout();
   closeSettings();
@@ -2949,8 +3168,12 @@ socket.on('message', (m) => {
 socket.on('system', addSystem);
 
 // Nowa wiadomość na kanale, którego akurat nie oglądasz – zapalamy kropkę przy jego nazwie.
-socket.on('activity', ({ channel }) => {
+socket.on('activity', ({ channel, mention }) => {
   if (channel === currentChannel) return;
+  if (mention) {
+    mentionCounts.set(channel, (mentionCounts.get(channel) || 0) + 1);
+    beep([880, 1175]); // wzmianka zasługuje na wyraźniejszy dźwięk niż zwykła wiadomość
+  }
   unreadChannels.add(channel);
   renderChannels();
 });
@@ -2972,7 +3195,9 @@ function renderChannels() {
       item.dataset.channel = c.id;
       item.appendChild(el('span', 'hash', '#'));
       item.appendChild(document.createTextNode(` ${c.name}`));
-      if (c.nsfw) item.appendChild(el('span', 'channel__badge', '18+'));
+      const mentions = active ? 0 : mentionCounts.get(c.id) || 0;
+      if (mentions) item.appendChild(el('span', 'channel__mentions', String(mentions)));
+      else if (c.nsfw) item.appendChild(el('span', 'channel__badge', '18+'));
       else if (unread) item.appendChild(el('span', 'channel__dot'));
       item.addEventListener('click', () => switchChannel(c.id));
       return item;
@@ -3025,6 +3250,8 @@ function switchChannel(id) {
   historyLoading = true; // nowe wiadomości czekają, aż przyjdzie historia tego kanału
   pendingLive.length = 0;
   unreadChannels.delete(id);
+  mentionCounts.delete(id);
+  clearReply(); // odpowiedź dotyczy wiadomości z poprzedniego kanału
   typingUsers.clear();
   renderTyping();
   messagesEl.replaceChildren();
@@ -3054,6 +3281,9 @@ async function applyDeletions(ids) {
     removeMessageNode(id);
     sessionLog.delete(id);
     localFileIds.delete(id);
+    // Odpowiedzi na usuniętą wiadomość przestają ją cytować.
+    messagesEl.querySelectorAll(`.msg__reply[data-reply-id="${CSS.escape(id)}"]`).forEach(markReplyMissing);
+    if (replyingTo && replyingTo.id === id) clearReply();
   });
   try {
     await archive.opening;

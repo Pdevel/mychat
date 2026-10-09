@@ -125,6 +125,12 @@ class FileStore {
     return this.tombstones.filter((t) => t.at > since).slice(0, limit).map((t) => t.id);
   }
 
+  // Kilka wiadomości naraz (do rozwiązywania odpowiedzi): Map id -> wiadomość
+  async getMany(ids) {
+    const wanted = new Set(ids);
+    return new Map(this.messages.filter((m) => wanted.has(m.id)).map((m) => [m.id, m]));
+  }
+
   async remove(id) {
     const idx = this.messages.findIndex((m) => m.id === id);
     if (idx < 0) return false;
@@ -289,6 +295,14 @@ class MongoStore {
   async tombstonesSince(since, limit = 20000) {
     const docs = await this.deletedCol.find({ at: { $gt: since } }).sort({ at: 1 }).limit(limit).toArray();
     return docs.map((d) => d._id);
+  }
+
+  async getMany(ids) {
+    if (!ids.length) return new Map();
+    const docs = await this.col
+      .find({ _id: { $in: ids } }, { projection: { data: 0, createdAt: 0 } })
+      .toArray();
+    return new Map(docs.map(({ _id, ...rest }) => [_id, rest]));
   }
 
   async remove(id) {

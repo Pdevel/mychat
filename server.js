@@ -532,6 +532,53 @@ function enterChannel(socket, channelId) {
   socket.join(`ch:${channelId}`);
 }
 
+// ---------- Wzmianki (@nick) i odpowiedzi ----------
+// Wzmianki rozpoznajemy po stronie serwera: po „@” szukamy najdłuższego pasującego nicku (nick może mieć spacje).
+// Dzięki temu serwer wie, kogo powiadomić, a klient dostaje listę osób do podświetlenia.
+const WORD_CHAR = /[\p{L}\p{N}_]/u;
+
+function parseMentions(text) {
+  const found = new Map();
+  for (let i = text.indexOf('@'); i !== -1 && found.size < 10; i = text.indexOf('@', i + 1)) {
+    if (i > 0 && WORD_CHAR.test(text[i - 1])) continue; // np. adres e-mail, to nie wzmianka
+    const rest = text.slice(i + 1);
+    for (let len = Math.min(MAX_NICK_LENGTH, rest.length); len >= 1; len--) {
+      const account = accountsByNick.get(rest.slice(0, len).toLowerCase());
+      if (!account) continue;
+      if (rest.length > len && WORD_CHAR.test(rest[len])) continue; // „@Ania2” to nie „@Ania”
+      found.set(account.id, { id: account.id, nick: account.nick });
+      break;
+    }
+  }
+  return Array.from(found.values());
+}
+
+// Krótki opis oryginału, który widać nad odpowiedzią. Treści nie kopiujemy do odpowiedzi na stałe –
+// gdy autor usunie wiadomość, odpowiedź przestaje ją cytować.
+function replySnapshot(id, original) {
+  if (!original) return { id, missing: true };
+  const preview =
+    original.kind === 'gif' ? 'GIF' : original.kind === 'file' ? `📎 ${original.name}` : String(original.text || '').slice(0, 120);
+  return { id, accountId: original.accountId || null, nick: original.nick, kind: original.kind, preview };
+}
+
+// Zamienia w wiadomościach `replyToId` na opis oryginału (`replyTo`), jednym zapytaniem do magazynu.
+async function attachReplies(messages) {
+  const ids = Array.from(new Set(messages.map((m) => m.replyToId).filter(Boolean)));
+  if (!ids.length) return messages;
+  let originals = new Map();
+  try {
+    originals = await store.getMany(ids);
+  } catch (err) {
+    console.error('Nie udało się wczytać oryginałów odpowiedzi:', err.message);
+  }
+  return messages.map((m) => {
+    if (!m.replyToId) return m;
+    const { replyToId, ...rest } = m;
+    return { ...rest, replyTo: replySnapshot(replyToId, originals.get(replyToId)) };
+  });
+}
+
 async function sendHistory(socket, channelId) {
   let messages = [];
   try {
@@ -547,7 +594,7 @@ async function sendHistory(socket, channelId) {
     if (a && (a.nickColor || a.nickFont)) styles[a.id] = { nickColor: a.nickColor || null, nickFont: a.nickFont || null };
   }
   const withReactions = messages.map((m) => (m.reactions ? { ...m, reactions: publicReactions(m.reactions) } : m));
-  socket.emit('history', { channel: channelId, messages: withReactions, styles });
+  socket.emit('history', { channel: channelId, messages: await attachReplies(withReactions), styles });
 }
 
 async function emitMessage(socket, nick, extra) {
@@ -561,10 +608,21 @@ async function emitMessage(socket, nick, extra) {
     time: Date.now(),
     ...extra,
   };
-  io.to(`ch:${channel}`).emit('message', msg);
-  io.to(CHANNELS_BY_ID.get(channel)?.nsfw ? 'adult' : 'lobby')
-    .except(`ch:${channel}`)
-    .emit('activity', { channel });
+  const nsfw = Boolean(CHANNELS_BY_ID.get(channel)?.nsfw);
+  // Klienci dostają opis oryginału (`replyTo`), a w magazynie zostaje samo `replyToId`.
+  const [wire] = await attachReplies([msg]);
+  io.to(`ch:${channel}`).emit('message', wire);
+  io.to(nsfw ? 'adult' : 'lobby').except(`ch:${channel}`).emit('activity', { channel });
+
+  // Oznaczone osoby, które oglądają inny kanał, dostają osobne powiadomienie (czerwony licznik przy kanale).
+  for (const mention of msg.mentions || []) {
+    for (const [socketId, u] of users) {
+      if (u.accountId !== mention.id) continue;
+      const target = io.sockets.sockets.get(socketId);
+      if (!target || target.rooms.has(`ch:${channel}`) || (nsfw && !target.data.adult)) continue;
+      target.emit('activity', { channel, mention: true });
+    }
+  }
   try {
     await store.add(msg);
   } catch (err) {
@@ -985,12 +1043,56 @@ io.on('connection', (socket) => {
     broadcastUsers();
   });
 
-  socket.on('message', (rawText) => {
+  // Wiadomość tekstowa: albo sam tekst, albo { text, replyTo: id wiadomości, ping: czy powiadomić autora oryginału }
+  socket.on('message', async (payload) => {
     const user = users.get(socket.id);
-    const text = cleanText(rawText, MAX_MESSAGE_LENGTH);
+    const body = typeof payload === 'string' ? { text: payload } : payload && typeof payload === 'object' ? payload : null;
+    const text = body ? cleanText(body.text, MAX_MESSAGE_LENGTH) : '';
     if (!user || !text) return;
     if (rateLimited(socket, 'msg', 10, 10000)) return;
-    emitMessage(socket, user.nick, { kind: 'text', text });
+
+    const extra = { kind: 'text', text };
+    const mentions = parseMentions(text);
+
+    if (typeof body.replyTo === 'string' && body.replyTo.length <= 64) {
+      const original = await store.get(body.replyTo).catch(() => null);
+      // Odpowiedzieć można tylko na wiadomość z tego samego kanału; w przeciwnym razie wysyłamy zwykłą wiadomość.
+      if (original && (original.channel || DEFAULT_CHANNEL) === (socket.data.channel || DEFAULT_CHANNEL)) {
+        extra.replyToId = original.id;
+        const author = original.accountId && accountsById.get(original.accountId);
+        // Odpowiedź domyślnie powiadamia autora oryginału (jak „@WŁ.” na Discordzie), chyba że to my.
+        if (body.ping !== false && author && author.id !== user.accountId && !mentions.some((m) => m.id === author.id)) {
+          mentions.push({ id: author.id, nick: author.nick, reply: true });
+        }
+      }
+    }
+    if (mentions.length) extra.mentions = mentions;
+    await emitMessage(socket, user.nick, extra);
+  });
+
+  // Podpowiedzi do @: osoby pasujące do wpisanych liter (online na początku)
+  socket.on('mention:search', (query, ack) => {
+    const reply = typeof ack === 'function' ? ack : () => {};
+    if (!users.has(socket.id)) return reply({ ok: false });
+    if (rateLimited(socket, 'mentionSearch', 30, 10000)) return reply({ ok: false });
+    const q = cleanText(typeof query === 'string' ? query : '', MAX_NICK_LENGTH).toLowerCase();
+    const matches = [];
+    for (const account of accountsById.values()) {
+      const lower = account.nick.toLowerCase();
+      if (q && !lower.includes(q)) continue;
+      matches.push({ account, online: isOnline(account.id), starts: lower.startsWith(q) });
+    }
+    matches.sort((a, b) => b.online - a.online || b.starts - a.starts || a.account.nick.localeCompare(b.account.nick));
+    reply({
+      ok: true,
+      results: matches.slice(0, 8).map(({ account, online }) => ({
+        id: account.id,
+        nick: account.nick,
+        avatar: mediaUrl(account, 'avatar'),
+        online,
+        status: account.status || 'online',
+      })),
+    });
   });
 
   socket.on('gif', async (rawUrl, ack) => {

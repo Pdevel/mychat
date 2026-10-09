@@ -1347,6 +1347,157 @@ audio.media {
   text-align: center;
 }
 
+/* Wzmianki (@nick) */
+.mention {
+  padding: 0 3px;
+  font-weight: 500;
+  color: color-mix(in srgb, var(--accent) 80%, #fff);
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.mention:hover {
+  color: #fff;
+  background: var(--accent);
+}
+.mention--me {
+  color: #f7c457;
+  background: rgba(250, 166, 26, 0.18);
+}
+.mention--me:hover {
+  color: #1c1000;
+  background: #faa61a;
+}
+/* Wiadomość, w której Ciebie oznaczono (lub odpowiedziano Tobie) – żółty pasek jak na Discordzie */
+.msg--mentioned {
+  background: rgba(250, 166, 26, 0.08);
+  box-shadow: inset 3px 0 0 #faa61a;
+}
+.msg--mentioned:hover {
+  background: rgba(250, 166, 26, 0.13);
+}
+.msg--flash {
+  animation: flash 1.6s ease-out;
+}
+@keyframes flash {
+  0%,
+  35% {
+    background: color-mix(in srgb, var(--accent) 38%, transparent);
+  }
+}
+
+/* Odpowiedź: odnośnik do oryginału nad wiadomością */
+.msg--reply .msg__avatar {
+  top: 30px;
+}
+.msg--reply.msg--first {
+  margin-top: 8px;
+}
+.msg__reply {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin: 0 0 2px;
+  padding-left: 18px;
+  font-size: 13px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+/* Łącznik od avatara do odnośnika (zakrzywiona linia) */
+.msg__reply::before {
+  content: '';
+  position: absolute;
+  left: -38px;
+  top: 50%;
+  width: 34px;
+  height: 14px;
+  border-top: 2px solid var(--bg-active);
+  border-left: 2px solid var(--bg-active);
+  border-radius: 8px 0 0 0;
+}
+.msg__reply:hover .msg__reply-text {
+  color: var(--text-strong);
+}
+.msg__reply .avatar {
+  width: 16px;
+  height: 16px;
+  font-size: 9px;
+}
+.msg__reply-nick {
+  font-weight: 600;
+  white-space: nowrap;
+}
+.msg__reply-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.msg__reply--missing {
+  font-style: italic;
+  cursor: default;
+}
+
+/* Pasek „odpowiadasz do…” nad polem wiadomości */
+.replybar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: -6px;
+  padding: 8px 12px 14px;
+  font-size: 13px;
+  color: var(--text-muted);
+  background: var(--bg-secondary);
+  border-radius: 8px 8px 0 0;
+  animation: bar-in 0.18s ease-out;
+}
+.replybar__text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.replybar__text b {
+  font-weight: 600;
+}
+.replybar .ping-toggle {
+  padding: 2px 8px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-muted);
+  background: var(--bg-input);
+  border: 0;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.replybar .ping-toggle.is-on {
+  color: #fff;
+  background: var(--accent);
+}
+.replybar .icon-btn {
+  width: 28px;
+  height: 28px;
+}
+
+/* Licznik wzmianek przy kanale */
+.channel__mentions {
+  min-width: 18px;
+  margin-left: auto;
+  padding: 0 6px;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 18px;
+  color: #fff;
+  text-align: center;
+  background: var(--red);
+  border-radius: 999px;
+}
+
 /* Własne emoji w tekście i w reakcjach */
 .emoji {
   display: inline-block;
@@ -1460,6 +1611,23 @@ audio.media {
   width: 26px;
   height: 26px;
   margin: 0;
+}
+.suggest__item .avatar {
+  width: 24px;
+  height: 24px;
+  font-size: 11px;
+}
+.suggest__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.suggest__meta {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-muted);
 }
 .suggest__item.is-selected,
 .suggest__item:hover {
