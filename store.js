@@ -8,6 +8,8 @@
 const fs = require('fs/promises');
 const path = require('path');
 
+const TOMBSTONE_MS = 365 * 24 * 60 * 60 * 1000; // jak długo pamiętamy, że wiadomość usunięto
+
 class FileStore {
   constructor({ dir, retentionMs, maxBytes }) {
     this.dir = dir;
@@ -16,6 +18,8 @@ class FileStore {
     this.retentionMs = retentionMs;
     this.maxBytes = maxBytes;
     this.accountsPath = path.join(dir, 'accounts.json');
+    this.deletedPath = path.join(dir, 'deleted.json');
+    this.tombstones = []; // [{ id, at }] – ślady usuniętych wiadomości, żeby urządzenia mogły wyczyścić archiwum
     this.messages = [];
     this.accounts = new Map(); // id -> konto
     this.saveTimer = null;
@@ -37,6 +41,11 @@ class FileStore {
       this.accounts = new Map(list.map((a) => [a.id, a]));
     } catch {
       this.accounts = new Map();
+    }
+    try {
+      this.tombstones = JSON.parse(await fs.readFile(this.deletedPath, 'utf8'));
+    } catch {
+      this.tombstones = [];
     }
     await this.prune();
 
@@ -73,6 +82,16 @@ class FileStore {
     return this.messages.find((m) => m.id === id) || null;
   }
 
+  // Zapamiętuje, że wiadomość została usunięta przez autora (na rok – tyle, ile urządzenia mogą być offline).
+  async addTombstone(id) {
+    this.tombstones.push({ id, at: Date.now() });
+    this.scheduleSave();
+  }
+
+  async tombstonesSince(since, limit = 20000) {
+    return this.tombstones.filter((t) => t.at > since).slice(0, limit).map((t) => t.id);
+  }
+
   async remove(id) {
     const idx = this.messages.findIndex((m) => m.id === id);
     if (idx < 0) return false;
@@ -97,6 +116,12 @@ class FileStore {
     const cutoff = Date.now() - this.retentionMs;
     const dropped = this.messages.filter((m) => m.time < cutoff);
     this.messages = this.messages.filter((m) => m.time >= cutoff);
+
+    const tombstoneCutoff = Date.now() - TOMBSTONE_MS;
+    if (this.tombstones.some((t) => t.at < tombstoneCutoff)) {
+      this.tombstones = this.tombstones.filter((t) => t.at >= tombstoneCutoff);
+      this.scheduleSave();
+    }
 
     // Limit łącznego rozmiaru plików – najpierw znikają najstarsze.
     let total = this.messages.reduce((sum, m) => sum + (m.kind === 'file' ? m.size : 0), 0);
@@ -129,6 +154,7 @@ class FileStore {
       for (const [file, value] of [
         [this.metaPath, this.messages],
         [this.accountsPath, Array.from(this.accounts.values())],
+        [this.deletedPath, this.tombstones],
       ]) {
         const tmp = `${file}.tmp`;
         await fs.writeFile(tmp, JSON.stringify(value));
@@ -159,6 +185,9 @@ class MongoStore {
     this.accountsCol = this.client.db(this.dbName).collection('accounts');
     await this.accountsCol.createIndex({ tokenHash: 1 }, { unique: true });
     await this.accountsCol.createIndex({ nickLower: 1 }, { unique: true });
+    this.deletedCol = this.client.db(this.dbName).collection('deleted');
+    await this.deletedCol.createIndex({ at: 1 });
+    await this.deletedCol.createIndex({ atDate: 1 }, { expireAfterSeconds: Math.ceil(TOMBSTONE_MS / 1000) });
     await this.col.createIndex({ time: 1 });
     // Indeks TTL: MongoDB sam usuwa dokumenty po upływie czasu od `createdAt`.
     await this.col.createIndex({ createdAt: 1 }, { expireAfterSeconds: Math.ceil(this.retentionMs / 1000) });
@@ -196,6 +225,16 @@ class MongoStore {
 
   async get(id) {
     return this.col.findOne({ _id: id }, { projection: { data: 0, _id: 0, createdAt: 0 } });
+  }
+
+  async addTombstone(id) {
+    const at = Date.now();
+    await this.deletedCol.replaceOne({ _id: id }, { _id: id, at, atDate: new Date(at) }, { upsert: true });
+  }
+
+  async tombstonesSince(since, limit = 20000) {
+    const docs = await this.deletedCol.find({ at: { $gt: since } }).sort({ at: 1 }).limit(limit).toArray();
+    return docs.map((d) => d._id);
   }
 
   async remove(id) {

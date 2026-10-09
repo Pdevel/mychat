@@ -498,11 +498,29 @@ io.on('connection', (socket) => {
       const owner = msg.accountId ? msg.accountId === user.accountId : msg.nick === user.nick;
       if (!owner) return reply({ ok: false, error: 'Możesz usuwać tylko własne wiadomości.' });
       await store.remove(id);
+      // Ślad usunięcia: urządzenia, które były offline, dowiedzą się o nim przy następnym logowaniu
+      // ('sync:deleted') i usuną wiadomość ze swojego archiwum lokalnego.
+      await store.addTombstone(id).catch((err) => console.error('Nie udało się zapisać śladu usunięcia:', err.message));
       io.emit('messageDeleted', id);
       reply({ ok: true });
     } catch (err) {
       console.error('Błąd usuwania wiadomości:', err.message);
       reply({ ok: false, error: 'Nie udało się usunąć wiadomości.' });
+    }
+  });
+
+  // Lista wiadomości usuniętych od `since` (czas serwera). Klient czyści na jej podstawie archiwum lokalne.
+  socket.on('sync:deleted', async (since, ack) => {
+    const reply = typeof ack === 'function' ? ack : () => {};
+    if (!users.has(socket.id)) return reply({ ok: false });
+    if (rateLimited(socket, 'syncDeleted', 10, 60000)) return reply({ ok: false });
+    try {
+      const now = Date.now();
+      const ids = await store.tombstonesSince(Number(since) > 0 ? Number(since) : 0);
+      reply({ ok: true, ids, now });
+    } catch (err) {
+      console.error('Błąd synchronizacji usuniętych wiadomości:', err.message);
+      reply({ ok: false });
     }
   });
 
