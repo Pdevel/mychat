@@ -61,7 +61,9 @@ const THEMES = [
   { id: 'midnight', name: 'Północ (AMOLED)', colors: ['#000000', '#0a0a0c', '#17171a'] },
   { id: 'forest', name: 'Las', colors: ['#121b16', '#19261f', '#1f2f26'] },
   { id: 'sunset', name: 'Zachód słońca', colors: ['#1d1424', '#2a1b33', '#33213e'] },
+  { id: 'red', name: 'Czerwony', colors: ['#260b0f', '#3b1218', '#4a1a21'], accent: '#ed4245' },
 ];
+const DEFAULT_ACCENT = '#5865f2';
 const ACCENTS = ['#5865f2', '#3ba55d', '#eb459e', '#ed4245', '#faa61a', '#1abc9c', '#9b59b6'];
 
 let settings = store.get('mychat.settings', {
@@ -232,6 +234,8 @@ function renderSettingsOptions() {
       card.append(preview, el('span', '', t.name));
       card.addEventListener('click', () => {
         settings.theme = t.id;
+        // Motyw może mieć własny kolor akcentu (np. czerwony) – ustawiamy go, o ile nie wybrano innego.
+        if (t.accent && settings.accent === DEFAULT_ACCENT) settings.accent = t.accent;
         applySettings();
       });
       return card;
@@ -1149,8 +1153,7 @@ function openProfile(query, anchor) {
       isMe: p.id === myAccountId,
       onEdit: () => {
         closeProfilePopout();
-        openSettings();
-        $('profile-section').scrollIntoView({ block: 'start' });
+        openSettings('profile');
       },
     });
     popout.classList.remove('hidden');
@@ -1171,8 +1174,18 @@ document.addEventListener('click', (e) => {
 // Edycja własnego profilu w ustawieniach (zmiany widać na żywo w podglądzie, zapisujemy przyciskiem)
 let draft = { ...myProfile };
 
+// Czy w formularzu profilu są zmiany, których jeszcze nie zapisano?
+function updateProfileDirty() {
+  const keys = ['status', 'statusText', 'pronouns', 'bio', 'bannerColor', 'nickColor', 'nickFont'];
+  const dirty = bannerChanged || keys.some((k) => (draft[k] ?? null) !== (myProfile[k] ?? null));
+  const label = $('profile-dirty');
+  label.textContent = dirty ? 'Masz niezapisane zmiany' : '';
+  label.classList.toggle('is-dirty', dirty);
+}
+
 function updateProfilePreview() {
   if (!myNick) return;
+  updateProfileDirty();
   renderProfileCard($('profile-preview'), {
     id: myAccountId,
     nick: myNick,
@@ -1765,10 +1778,36 @@ gifUrlInput.addEventListener('keydown', (e) => {
 });
 
 // ---------- Ustawienia, lightbox, klawisze ----------
-function openSettings() {
+// Kategorie ustawień: pokazujemy jedną na raz (zamiast jednej długiej listy do przewijania).
+const SETTINGS_PROFILE_TABS = new Set(['profile', 'nick']); // te dwie mają podgląd karty i przycisk zapisu
+let settingsTab = 'account';
+
+function showSettingsTab(name) {
+  settingsTab = name;
+  document.querySelectorAll('.settings__tab').forEach((btn) => {
+    const active = btn.dataset.tab === name;
+    btn.classList.toggle('is-active', active);
+    btn.setAttribute('aria-selected', String(active));
+  });
+  document.querySelectorAll('.settings__pane').forEach((pane) => {
+    pane.hidden = pane.dataset.pane !== name;
+  });
+  const profileTab = SETTINGS_PROFILE_TABS.has(name);
+  $('settings-preview').hidden = !profileTab;
+  $('profile-footer').hidden = !profileTab;
+  document.querySelector('.settings__panes').scrollTop = 0;
+}
+
+document.querySelectorAll('.settings__tab').forEach((btn) => {
+  btn.addEventListener('click', () => showSettingsTab(btn.dataset.tab));
+});
+
+// `tab` bywa zdarzeniem kliknięcia (gdy funkcja jest podpięta jako obsługa) – przyjmujemy tylko nazwę kategorii.
+function openSettings(tab) {
   closeProfilePopout();
   loadProfileForm();
   renderSettingsOptions();
+  showSettingsTab(typeof tab === 'string' ? tab : settingsTab);
   updateArchiveStats();
   $('rename-input').value = myNick || '';
   settingsModal.classList.remove('hidden');

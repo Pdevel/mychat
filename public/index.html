@@ -184,113 +184,150 @@
     </main>
   </div>
 
-  <!-- Ustawienia -->
+  <!-- Ustawienia: po lewej kategorie, po prawej zawartość wybranej kategorii (bez długiego przewijania) -->
   <div id="settings" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="settings-title">
-    <div class="modal__card">
-      <button type="button" id="settings-close" class="modal__close" aria-label="Zamknij">✕</button>
-      <h3 id="settings-title">Ustawienia</h3>
+    <div class="settings">
+      <nav class="settings__nav" role="tablist" aria-label="Kategorie ustawień">
+        <div id="settings-title" class="settings__nav-title">USTAWIENIA</div>
+        <button type="button" class="settings__tab is-active" role="tab" data-tab="account"><span class="settings__tab-icon">👤</span>Konto</button>
+        <button type="button" class="settings__tab" role="tab" data-tab="profile"><span class="settings__tab-icon">🪪</span>Profil</button>
+        <button type="button" class="settings__tab" role="tab" data-tab="nick"><span class="settings__tab-icon">🔤</span>Nick</button>
+        <button type="button" class="settings__tab" role="tab" data-tab="look"><span class="settings__tab-icon">🎨</span>Wygląd</button>
+        <button type="button" class="settings__tab" role="tab" data-tab="chat"><span class="settings__tab-icon">💬</span>Czat i archiwum</button>
+      </nav>
 
-      <section>
-        <div class="section-title">KONTO</div>
-        <div class="rename-row">
-          <input id="rename-input" type="text" maxlength="20" placeholder="Twój nick" autocomplete="off" />
-          <button type="button" id="rename-btn" class="btn-primary btn-sm">Zmień nick</button>
-        </div>
-        <p class="settings-note">Konto jest przypisane do tego urządzenia i przeglądarki. Wyczyszczenie danych przeglądarki oznacza utratę dostępu do konta.</p>
-      </section>
+      <div class="settings__main">
+        <button type="button" id="settings-close" class="modal__close" aria-label="Zamknij">✕</button>
 
-      <section id="profile-section">
-        <div class="section-title">PROFIL</div>
-        <div id="profile-preview" class="pcard pcard--preview"></div>
+        <div class="settings__body">
+          <div class="settings__panes">
+            <!-- KONTO -->
+            <section class="settings__pane" data-pane="account">
+              <h4 class="settings__title">Konto</h4>
 
-        <label class="field-label" for="profile-status">Status</label>
-        <select id="profile-status" class="field">
-          <option value="online">🟢 Online</option>
-          <option value="idle">🌙 Zaraz wracam</option>
-          <option value="dnd">⛔ Nie przeszkadzać</option>
-        </select>
+              <div class="section-title">NICK</div>
+              <div class="rename-row">
+                <input id="rename-input" type="text" maxlength="20" placeholder="Twój nick" autocomplete="off" />
+                <button type="button" id="rename-btn" class="btn-primary btn-sm">Zmień nick</button>
+              </div>
+              <p class="settings-note">Konto jest przypisane do tego urządzenia i przeglądarki. Wyczyszczenie danych przeglądarki oznacza utratę dostępu do konta.</p>
 
-        <label class="field-label" for="profile-status-text">Własny status</label>
-        <input id="profile-status-text" class="field" type="text" maxlength="60" placeholder="Co słychać?" autocomplete="off" />
+              <div class="section-title section-title--spaced">AVATAR</div>
+              <div class="avatar-edit">
+                <div id="settings-avatar" class="avatar avatar--lg"></div>
+                <div class="avatar-edit__buttons">
+                  <button type="button" id="avatar-change" class="btn-primary btn-sm">Zmień</button>
+                  <button type="button" id="avatar-remove" class="btn-secondary btn-sm">Usuń</button>
+                </div>
+              </div>
+              <p class="settings-note">Obsługiwane: JPG, PNG, WebP oraz animowany GIF (do 600 KB).</p>
+            </section>
 
-        <label class="field-label" for="profile-pronouns">Zaimki</label>
-        <input id="profile-pronouns" class="field" type="text" maxlength="30" placeholder="np. on/jego, ona/jej, oni/ich" autocomplete="off" />
+            <!-- PROFIL -->
+            <section class="settings__pane" data-pane="profile" hidden>
+              <h4 class="settings__title">Profil</h4>
 
-        <div class="field-label">Kolor nicku</div>
-        <div class="banner-row">
-          <input id="nick-color" type="color" class="swatch-custom" title="Własny kolor nicku" />
-          <div id="nick-swatches" class="accent-row"></div>
-          <button type="button" id="nick-color-reset" class="btn-secondary btn-sm">Automatyczny</button>
-        </div>
+              <div class="settings__grid">
+                <div>
+                  <label class="field-label" for="profile-status">Status</label>
+                  <select id="profile-status" class="field">
+                    <option value="online">🟢 Online</option>
+                    <option value="idle">🌙 Zaraz wracam</option>
+                    <option value="dnd">⛔ Nie przeszkadzać</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="field-label" for="profile-pronouns">Zaimki</label>
+                  <input id="profile-pronouns" class="field" type="text" maxlength="30" placeholder="np. on/jego, ona/jej" autocomplete="off" />
+                </div>
+              </div>
 
-        <div class="field-label">Czcionka nicku</div>
-        <div id="font-grid" class="font-grid"></div>
+              <label class="field-label" for="profile-status-text">Własny status</label>
+              <input id="profile-status-text" class="field" type="text" maxlength="60" placeholder="Co słychać?" autocomplete="off" />
 
-        <label class="field-label" for="profile-bio">O mnie <span id="bio-counter" class="field-counter"></span></label>
-        <textarea id="profile-bio" class="field" maxlength="190" rows="3" placeholder="Napisz coś o sobie…"></textarea>
+              <label class="field-label" for="profile-bio">O mnie <span id="bio-counter" class="field-counter"></span></label>
+              <textarea id="profile-bio" class="field" maxlength="190" rows="3" placeholder="Napisz coś o sobie…"></textarea>
 
-        <div class="field-label">Baner</div>
-        <div class="banner-row">
-          <input id="profile-banner-color" type="color" class="swatch-custom" title="Kolor banera" />
-          <button type="button" id="banner-upload" class="btn-secondary btn-sm">Wgraj obraz</button>
-          <button type="button" id="banner-remove" class="btn-secondary btn-sm">Usuń baner</button>
-          <input type="file" id="banner-file" accept="image/*" hidden />
-        </div>
-        <p class="settings-note">Baner może być obrazkiem lub animowanym GIF-em (do 1,5 MB).</p>
+              <div class="field-label">Baner</div>
+              <div class="banner-row">
+                <input id="profile-banner-color" type="color" class="swatch-custom" title="Kolor banera" />
+                <button type="button" id="banner-upload" class="btn-secondary btn-sm">Wgraj obraz</button>
+                <button type="button" id="banner-remove" class="btn-secondary btn-sm">Usuń baner</button>
+                <input type="file" id="banner-file" accept="image/*" hidden />
+              </div>
+              <p class="settings-note">Baner może być obrazkiem lub animowanym GIF-em (do 1,5 MB).</p>
+            </section>
 
-        <button type="button" id="profile-save" class="btn-primary profile-save">Zapisz profil</button>
-      </section>
+            <!-- NICK -->
+            <section class="settings__pane" data-pane="nick" hidden>
+              <h4 class="settings__title">Wygląd nicku</h4>
 
-      <section>
-        <div class="section-title">AVATAR</div>
-        <div class="avatar-edit">
-          <div id="settings-avatar" class="avatar avatar--lg"></div>
-          <div class="avatar-edit__buttons">
-            <button type="button" id="avatar-change" class="btn-primary btn-sm">Zmień</button>
-            <button type="button" id="avatar-remove" class="btn-secondary btn-sm">Usuń</button>
+              <div class="field-label">Kolor nicku</div>
+              <div class="banner-row">
+                <input id="nick-color" type="color" class="swatch-custom" title="Własny kolor nicku" />
+                <div id="nick-swatches" class="accent-row"></div>
+                <button type="button" id="nick-color-reset" class="btn-secondary btn-sm">Automatyczny</button>
+              </div>
+
+              <div class="field-label">Czcionka nicku</div>
+              <div id="font-grid" class="font-grid"></div>
+            </section>
+
+            <!-- WYGLĄD -->
+            <section class="settings__pane" data-pane="look" hidden>
+              <h4 class="settings__title">Wygląd aplikacji</h4>
+
+              <div class="section-title">MOTYW</div>
+              <div id="theme-grid" class="theme-grid"></div>
+
+              <div class="section-title section-title--spaced">KOLOR AKCENTU</div>
+              <div id="accent-row" class="accent-row"></div>
+            </section>
+
+            <!-- CZAT I ARCHIWUM -->
+            <section class="settings__pane" data-pane="chat" hidden>
+              <h4 class="settings__title">Czat i archiwum</h4>
+
+              <label class="switch">
+                <input type="checkbox" id="sound-toggle" />
+                <span class="switch__track"></span>
+                <span>Dźwięk nowej wiadomości</span>
+              </label>
+
+              <div class="section-title section-title--spaced">ARCHIWUM LOKALNE</div>
+              <label class="switch">
+                <input type="checkbox" id="archive-toggle" />
+                <span class="switch__track"></span>
+                <span>Zapisuj wiadomości na tym urządzeniu</span>
+              </label>
+              <label class="switch switch--sub">
+                <input type="checkbox" id="archive-files-toggle" />
+                <span class="switch__track"></span>
+                <span>Zapisuj też pliki (zajmuje więcej miejsca)</span>
+              </label>
+              <p class="settings-note">Serwer usuwa wiadomości po 7 dniach, ale kopia zapisana tutaj zostaje. Usunięcie wiadomości przez autora kasuje ją też z archiwum osób, które były wtedy online.</p>
+              <p id="archive-stats" class="settings-note"></p>
+              <div class="archive-actions">
+                <button type="button" id="export-txt" class="btn-secondary btn-sm">Pobierz (.txt)</button>
+                <button type="button" id="export-json" class="btn-secondary btn-sm">Pobierz (.json)</button>
+                <button type="button" id="archive-clear" class="btn-secondary btn-sm btn-danger">Wyczyść archiwum</button>
+              </div>
+            </section>
           </div>
+
+          <!-- Podgląd karty profilu (przy zakładkach Profil i Nick) -->
+          <aside id="settings-preview" class="settings__preview" hidden>
+            <div class="section-title">PODGLĄD</div>
+            <div id="profile-preview" class="pcard pcard--preview"></div>
+          </aside>
         </div>
-        <p class="settings-note">Obsługiwane: JPG, PNG, WebP oraz animowany GIF (do 600 KB).</p>
-      </section>
 
-      <section>
-        <div class="section-title">MOTYW</div>
-        <div id="theme-grid" class="theme-grid"></div>
-      </section>
-
-      <section>
-        <div class="section-title">KOLOR AKCENTU</div>
-        <div id="accent-row" class="accent-row"></div>
-      </section>
-
-      <section>
-        <label class="switch">
-          <input type="checkbox" id="sound-toggle" />
-          <span class="switch__track"></span>
-          <span>Dźwięk nowej wiadomości</span>
-        </label>
-      </section>
-
-      <section>
-        <div class="section-title">ARCHIWUM LOKALNE</div>
-        <label class="switch">
-          <input type="checkbox" id="archive-toggle" />
-          <span class="switch__track"></span>
-          <span>Zapisuj wiadomości na tym urządzeniu</span>
-        </label>
-        <label class="switch switch--sub">
-          <input type="checkbox" id="archive-files-toggle" />
-          <span class="switch__track"></span>
-          <span>Zapisuj też pliki (zajmuje więcej miejsca)</span>
-        </label>
-        <p class="settings-note">Serwer usuwa wiadomości po 7 dniach, ale kopia zapisana tutaj zostaje. Usunięcie wiadomości przez autora kasuje ją też z archiwum osób, które były wtedy online.</p>
-        <p id="archive-stats" class="settings-note"></p>
-        <div class="archive-actions">
-          <button type="button" id="export-txt" class="btn-secondary btn-sm">Pobierz (.txt)</button>
-          <button type="button" id="export-json" class="btn-secondary btn-sm">Pobierz (.json)</button>
-          <button type="button" id="archive-clear" class="btn-secondary btn-sm btn-danger">Wyczyść archiwum</button>
+        <!-- Pasek zapisu profilu (przy zakładkach Profil i Nick) -->
+        <div id="profile-footer" class="settings__footer" hidden>
+          <span id="profile-dirty" class="settings__dirty"></span>
+          <button type="button" id="profile-save" class="btn-primary">Zapisz profil</button>
         </div>
-      </section>
+      </div>
     </div>
   </div>
 
