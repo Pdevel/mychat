@@ -195,14 +195,61 @@ function validAvatar(value) {
   );
 }
 
-function validImageUrl(value) {
-  if (typeof value !== 'string' || value.length > 600) return false;
+// Zamienia link do STRONY z GIFem (Tenor, Giphy) na bezpośredni adres obrazka.
+// Zwykłe linki do obrazków (.gif/.png/.jpg/.webp) przechodzą bez zmian. Zwraca null, gdy się nie da.
+const resolvedLinks = new Map();
+
+async function resolveGifLink(raw) {
+  if (typeof raw !== 'string' || raw.length > 600) return null;
+  let u;
   try {
-    const u = new URL(value);
-    return u.protocol === 'https:' && /\.(gif|png|jpe?g|webp)$/i.test(u.pathname);
+    u = new URL(raw);
   } catch {
-    return false;
+    return null;
   }
+  if (u.protocol !== 'https:') return null;
+  const host = u.hostname.toLowerCase();
+
+  // Bezpośredni link do obrazka
+  if (/\.(gif|png|jpe?g|webp)$/i.test(u.pathname)) return u.href;
+
+  // Giphy: https://giphy.com/gifs/nazwa-ID  ->  https://media.giphy.com/media/ID/giphy.gif
+  if (host === 'giphy.com' || host === 'www.giphy.com') {
+    const m = u.pathname.match(/^\/gifs\/(?:[^/]*-)?([A-Za-z0-9]+)\/?$/);
+    return m ? `https://media.giphy.com/media/${m[1]}/giphy.gif` : null;
+  }
+
+  // Tenor: https://tenor.com/view/...  (także z prefiksem języka, np. /pl/view/...)
+  if (host === 'tenor.com' || host === 'www.tenor.com') {
+    if (!/^\/(?:[a-z]{2}(?:-[A-Za-z]{2})?\/)?view\/[^/]+\/?$/.test(u.pathname)) return null;
+
+    const cached = resolvedLinks.get(u.href);
+    if (cached && Date.now() - cached.time < 60 * 60 * 1000) return cached.url;
+
+    try {
+      // Pobieramy wyłącznie stronę z tenor.com; adres obrazka czytamy z metadanych Open Graph.
+      const res = await fetch(u.href, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; MyChatBot/1.0)', Accept: 'text/html' },
+        signal: AbortSignal.timeout(6000),
+      });
+      if (!res.ok || !new URL(res.url).hostname.endsWith('tenor.com')) return null;
+      const html = await res.text();
+      const m = html.match(/<meta[^>]+property="og:image"[^>]+content="([^"]+)"/i);
+      if (!m) return null;
+      const image = new URL(m[1]);
+      if (image.protocol !== 'https:' || !image.hostname.endsWith('.tenor.com')) return null;
+      if (!/\.(gif|png|jpe?g|webp)$/i.test(image.pathname)) return null;
+
+      if (resolvedLinks.size > 200) resolvedLinks.clear();
+      resolvedLinks.set(u.href, { time: Date.now(), url: image.href });
+      return image.href;
+    } catch (err) {
+      console.error('Nie udało się odczytać linku Tenor:', err.message);
+      return null;
+    }
+  }
+
+  return null;
 }
 
 // Prosty limit zapytań: maksymalnie `max` zdarzeń w oknie `windowMs`.
@@ -402,17 +449,21 @@ io.on('connection', (socket) => {
     emitMessage(socket, user.nick, { kind: 'text', text });
   });
 
-  socket.on('gif', (url, ack) => {
+  socket.on('gif', async (rawUrl, ack) => {
     const reply = typeof ack === 'function' ? ack : () => {};
     const user = users.get(socket.id);
     if (!user) return reply({ ok: false, error: 'Najpierw dołącz do czatu.' });
-    if (!validImageUrl(url)) {
-      return reply({ ok: false, error: 'Podaj bezpieczny link (https) do obrazka lub GIFa.' });
-    }
     if (rateLimited(socket, 'gif', 5, 10000)) {
       return reply({ ok: false, error: 'Zwolnij trochę – za dużo GIFów naraz.' });
     }
-    emitMessage(socket, user.nick, { kind: 'gif', url });
+    const url = await resolveGifLink(rawUrl);
+    if (!url) {
+      return reply({
+        ok: false,
+        error: 'Nie znaleziono GIFa pod tym linkiem. Wklej link https do strony GIFa na Tenor/Giphy albo bezpośredni link do obrazka.',
+      });
+    }
+    await emitMessage(socket, user.nick, { kind: 'gif', url });
     reply({ ok: true });
   });
 

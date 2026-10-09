@@ -411,7 +411,7 @@ function sweepExpired() {
 }
 
 function addMessage(m, { historic = false } = {}) {
-  const mine = m.senderId === socket.id;
+  const mine = m.nick === myNick; // nicki są unikalne, więc to jednoznacznie wskazuje moje wiadomości
   const stick = historic || mine || isNearBottom();
   const first = m.nick !== lastNick || m.time - lastMessageTime > GROUP_WINDOW_MS;
   const wrap = el('div', 'msg' + (first ? ' msg--first' : '') + (historic ? ' msg--static' : ''));
@@ -515,16 +515,58 @@ function beep(freqs = [660, 880]) {
 }
 
 // ---------- Logowanie ----------
+// Konto jest przypisane do urządzenia: losowy, tajny token w localStorage (serwer zna tylko jego skrót).
+let memoryToken = null; // zapas, gdy przeglądarka blokuje localStorage (konto trwa wtedy do zamknięcia karty)
+
+function randomToken() {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+function getDeviceToken() {
+  try {
+    let token = localStorage.getItem('mychat.device');
+    if (!token || token.length < 32) {
+      token = randomToken();
+      localStorage.setItem('mychat.device', token);
+    }
+    return token;
+  } catch {
+    memoryToken = memoryToken || randomToken();
+    return memoryToken;
+  }
+}
+
+const loginFields = $('login-fields');
+const loginAuto = $('login-auto');
+
+function showLoginFields() {
+  loginAuto.classList.add('hidden');
+  loginFields.classList.remove('hidden');
+  loginScreen.classList.remove('hidden');
+  chatScreen.classList.add('hidden');
+}
+
+function showAutoLogin(nick) {
+  $('login-auto-name').textContent = nick;
+  loginFields.classList.add('hidden');
+  loginAuto.classList.remove('hidden');
+}
+
 function join(nick) {
-  socket.emit('join', { nick, avatar: profile.avatar }, (res) => {
+  socket.emit('join', { token: getDeviceToken(), nick, avatar: profile.avatar }, (res) => {
     if (!res || !res.ok) {
-      loginError.textContent = (res && res.error) || 'Nie udało się dołączyć.';
       myNick = null;
-      loginScreen.classList.remove('hidden');
-      chatScreen.classList.add('hidden');
+      loginError.textContent = (res && res.error) || 'Nie udało się dołączyć.';
+      nickInput.value = profile.nick || '';
+      showLoginFields();
       return;
     }
     myNick = res.nick;
+    profile = { nick: res.nick, avatar: res.avatar || null };
+    pendingAvatar = profile.avatar;
+    store.set('mychat.profile', profile);
     avatars.set(myNick, profile.avatar);
     loginError.textContent = '';
     loginScreen.classList.add('hidden');
@@ -543,8 +585,33 @@ loginForm.addEventListener('submit', (e) => {
   const nick = nickInput.value.trim();
   if (!nick) return;
   profile = { nick, avatar: pendingAvatar };
-  store.set('mychat.profile', profile);
   join(nick);
+});
+
+// Zmiana nicku (konto zostaje to samo, zmienia się tylko nazwa)
+function renameMe() {
+  const input = $('rename-input');
+  const nick = input.value.trim();
+  if (!nick || nick === myNick) return;
+  socket.timeout(10000).emit('rename', nick, (err, res) => {
+    if (err || !res || !res.ok) return toast((res && res.error) || 'Nie udało się zmienić nicku.');
+    myNick = res.nick;
+    profile.nick = res.nick;
+    store.set('mychat.profile', profile);
+    avatars.set(myNick, profile.avatar);
+    meNameEl.textContent = myNick;
+    meAvatarEl.dataset.nick = myNick;
+    $('settings-avatar').dataset.nick = myNick;
+    refreshAvatars();
+    toast(`Twój nick to teraz ${myNick}`, true);
+  });
+}
+$('rename-btn').addEventListener('click', renameMe);
+$('rename-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    renameMe();
+  }
 });
 
 // ---------- Wysyłanie wiadomości ----------
@@ -722,7 +789,10 @@ async function loadGifs(query) {
 
 function sendGif(url) {
   if (!socket.connected) return toast('Brak połączenia z serwerem.');
-  socket.timeout(10000).emit('gif', url, (err, res) => {
+  const sendBtn = $('gif-url-send');
+  sendBtn.disabled = true; // serwer może chwilę szukać obrazka na stronie Tenor/Giphy
+  socket.timeout(15000).emit('gif', url, (err, res) => {
+    sendBtn.disabled = false;
     if (err || !res || !res.ok) return toast((res && res.error) || 'Nie udało się wysłać GIFa.');
     gifUrlInput.value = '';
     closePopups();
@@ -739,7 +809,7 @@ $('gif-btn').addEventListener('click', () => {
     gifSearch.classList.add('hidden');
     gifGrid.replaceChildren();
     gifHint.textContent =
-      'Wyszukiwarka GIFów jest wyłączona (brak klucza GIPHY_API_KEY na serwerze). Wklej link https do GIFa lub obrazka.';
+      'Wyszukiwarka GIFów jest wyłączona (brak klucza GIPHY_API_KEY na serwerze). Wklej link do GIFa z Tenor lub Giphy albo bezpośredni link do obrazka.';
     gifUrlInput.focus();
   }
 });
@@ -763,6 +833,7 @@ gifUrlInput.addEventListener('keydown', (e) => {
 // ---------- Ustawienia, lightbox, klawisze ----------
 function openSettings() {
   renderSettingsOptions();
+  $('rename-input').value = myNick || '';
   settingsModal.classList.remove('hidden');
 }
 function closeSettings() {
@@ -1115,8 +1186,9 @@ socket.on('typing', ({ nick, isTyping }) => {
 
 socket.on('connect', () => {
   statusEl.textContent = 'połączono';
-  // Po utracie połączenia (np. uśpienie serwera na Renderze) dołącz ponownie automatycznie.
-  if (myNick) join(myNick);
+  // Zapamiętane konto loguje się samo – także po utracie połączenia (np. uśpieniu serwera na Renderze).
+  const nick = myNick || profile.nick;
+  if (nick) join(nick);
 });
 
 socket.on('disconnect', () => {
@@ -1135,6 +1207,7 @@ socket.on('disconnect', () => {
 applySettings();
 nickInput.value = profile.nick || '';
 updateLoginAvatar();
+if (profile.nick) showAutoLogin(profile.nick); // zapamiętane konto – logujemy się automatycznie
 
 fetch('/api/config')
   .then((r) => r.json())

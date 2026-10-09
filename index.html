@@ -12,15 +12,26 @@
   <section id="login-screen" class="login">
     <form id="login-form" class="login__card" autocomplete="off">
       <h1>Witaj w MyChat!</h1>
-      <p class="login__sub">Wybierz nick i avatar, aby dołączyć do rozmowy.</p>
 
-      <button type="button" id="login-avatar" class="avatar avatar--xl avatar--picker" title="Wybierz avatar"></button>
-      <input type="file" id="avatar-file" accept="image/*" hidden />
+      <!-- Zapamiętane konto: logowanie dzieje się samo -->
+      <div id="login-auto" class="login__auto hidden">
+        <div class="spinner" aria-hidden="true"></div>
+        <p>Logowanie jako <strong id="login-auto-name"></strong>…</p>
+        <p class="login__hint">Jeśli serwer był uśpiony, może to potrwać do minuty.</p>
+      </div>
 
-      <label for="nick-input">NICK <span class="login__req">*</span></label>
-      <input id="nick-input" type="text" maxlength="20" required autofocus />
-      <p id="login-error" class="login__error" role="alert"></p>
-      <button type="submit" class="btn-primary">Dołącz</button>
+      <!-- Nowe urządzenie: wybierz nick (tworzy konto przypisane do tej przeglądarki) -->
+      <div id="login-fields">
+        <p class="login__sub">Wybierz nick i avatar. Konto zostanie zapamiętane na tym urządzeniu, więc następnym razem zalogujesz się automatycznie.</p>
+
+        <button type="button" id="login-avatar" class="avatar avatar--xl avatar--picker" title="Wybierz avatar"></button>
+        <input type="file" id="avatar-file" accept="image/*" hidden />
+
+        <label for="nick-input">NICK <span class="login__req">*</span></label>
+        <input id="nick-input" type="text" maxlength="20" required autofocus />
+        <p id="login-error" class="login__error" role="alert"></p>
+        <button type="submit" class="btn-primary">Utwórz konto i dołącz</button>
+      </div>
     </form>
   </section>
 
@@ -115,7 +126,7 @@
               <div id="gif-grid" class="gif-grid"></div>
               <div id="gif-hint" class="gif-hint"></div>
               <div class="gif-url">
-                <input id="gif-url" type="url" placeholder="…lub wklej link https do GIFa / obrazka" />
+                <input id="gif-url" type="url" placeholder="…lub wklej link do GIFa (Tenor, Giphy, obrazek)" />
                 <button type="button" id="gif-url-send" class="btn-primary btn-sm">Wyślij</button>
               </div>
             </div>
@@ -162,6 +173,15 @@
     <div class="modal__card">
       <button type="button" id="settings-close" class="modal__close" aria-label="Zamknij">✕</button>
       <h3 id="settings-title">Ustawienia</h3>
+
+      <section>
+        <div class="section-title">KONTO</div>
+        <div class="rename-row">
+          <input id="rename-input" type="text" maxlength="20" placeholder="Twój nick" autocomplete="off" />
+          <button type="button" id="rename-btn" class="btn-primary btn-sm">Zmień nick</button>
+        </div>
+        <p class="settings-note">Konto jest przypisane do tego urządzenia i przeglądarki. Wyczyszczenie danych przeglądarki oznacza utratę dostępu do konta.</p>
+      </section>
 
       <section>
         <div class="section-title">AVATAR</div>
