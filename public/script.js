@@ -2092,6 +2092,18 @@ function showScreen(key, stream, label) {
   updateScreenView();
 }
 
+// Kafelek cudzego ekranu istnieje, gdy serwer mówi, że osoba nadaje, i mamy od niej strumień. Nadajniki są
+// używane wielokrotnie, więc kolejne udostępnianie nie wywołuje nowego `ontrack` – stąd stan z serwera.
+function syncScreen(id) {
+  const peer = voice.peers.get(id);
+  const user = voice.users.find((u) => u.id === id);
+  if (peer && peer.screenStream && user && user.sharing) {
+    showScreen(id, peer.screenStream, `${user.nick} udostępnia ekran`);
+  } else {
+    removeScreen(id);
+  }
+}
+
 function removeScreen(key) {
   const entry = screens.get(key);
   if (!entry) return;
@@ -2104,22 +2116,35 @@ function removeScreen(key) {
 // Limit przepływności: nadawca wysyła obraz osobno do każdego widza, więc im więcej osób, tym mniej na osobę.
 async function applyScreenBitrate(peer) {
   const bps = Math.max(500_000, Math.min(2_500_000, Math.floor(6_000_000 / Math.max(1, voice.peers.size))));
-  for (const sender of peer.screenSenders) {
-    if (!sender.track || sender.track.kind !== 'video') continue;
-    try {
-      const params = sender.getParameters();
-      if (!params.encodings || !params.encodings.length) params.encodings = [{}];
-      params.encodings[0].maxBitrate = bps;
-      await sender.setParameters(params);
-    } catch {
-      /* przeglądarka nie pozwala – zostaje domyślna przepływność */
-    }
+  const sender = peer.screen.video;
+  if (!sender || !sender.track) return;
+  try {
+    const params = sender.getParameters();
+    if (!params.encodings || !params.encodings.length) params.encodings = [{}];
+    params.encodings[0].maxBitrate = bps;
+    await sender.setParameters(params);
+  } catch {
+    /* przeglądarka nie pozwala – zostaje domyślna przepływność */
+  }
+}
+
+// Nadajniki ekranu (osobno obraz i dźwięk) tworzymy RAZ na połączenie i potem tylko podmieniamy w nich
+// ścieżkę. Dzięki temu kolejne udostępnianie nie dokłada pozycji do opisu sesji (SDP) – wcześniej opis
+// puchł z każdym cyklem aż do zawieszenia połączenia – i nie wymaga nowej negocjacji.
+function setScreenTrack(peer, kind, track) {
+  const sender = peer.screen[kind];
+  if (sender) {
+    sender.replaceTrack(track).catch((err) => console.warn('Nie udało się podmienić ścieżki ekranu:', err));
+  } else if (track) {
+    peer.screen[kind] = peer.pc.addTransceiver(track, { direction: 'sendonly', streams: [voice.screen] }).sender;
   }
 }
 
 function addScreenTracks(peer) {
-  if (!voice.screen || peer.screenSenders.length) return;
-  peer.screenSenders = voice.screen.getTracks().map((track) => peer.pc.addTrack(track, voice.screen));
+  if (!voice.screen) return;
+  for (const kind of ['video', 'audio']) {
+    setScreenTrack(peer, kind, voice.screen.getTracks().find((t) => t.kind === kind) || null);
+  }
 }
 
 async function startScreenShare() {
@@ -2148,15 +2173,9 @@ function stopScreenShare() {
   if (!voice.screen) return;
   const stream = voice.screen;
   voice.screen = null;
+  // Nadajniki zostają (do ponownego użycia) – tylko przestają nadawać.
   voice.peers.forEach((peer) => {
-    peer.screenSenders.forEach((sender) => {
-      try {
-        peer.pc.removeTrack(sender);
-      } catch {
-        /* połączenie już zamknięte */
-      }
-    });
-    peer.screenSenders = [];
+    for (const kind of ['video', 'audio']) if (peer.screen[kind]) setScreenTrack(peer, kind, null);
   });
   stream.getTracks().forEach((t) => t.stop());
   removeScreen('me');
@@ -2168,6 +2187,7 @@ function closePeer(id) {
   if (!peer) return;
   peer.pc.onicecandidate = peer.pc.ontrack = peer.pc.onconnectionstatechange = null;
   peer.pc.onnegotiationneeded = peer.pc.onsignalingstatechange = null;
+  clearTimeout(peer.offerWatch);
   peer.pc.close();
   peer.audio?.remove();
   unwatchSpeaking(id);
@@ -2186,7 +2206,10 @@ function createPeer(id) {
     pending: [], // kandydaci ICE, którzy dotarli przed opisem sesji
     audio: null,
     micStreamId: null, // strumień z mikrofonem tej osoby; każdy inny to udostępniany ekran
-    screenSenders: [], // nasze nadajniki ekranu do tej osoby
+    screen: { video: null, audio: null }, // nasze nadajniki ekranu do tej osoby (używane wielokrotnie)
+    screenStream: null, // strumień z ekranem, który ta osoba udostępnia nam
+    offerWatch: null, // zegar pilnujący, czy ktoś odpowiedział na naszą ofertę
+    offerRetries: 0,
     // „Perfect negotiation”: gdy obie strony wyślą ofertę naraz, jedna (uprzejma) ustępuje.
     polite: socket.id > id,
     makingOffer: false,
@@ -2201,6 +2224,19 @@ function createPeer(id) {
       peer.makingOffer = true;
       await pc.setLocalDescription();
       sendSdp(id, pc.localDescription);
+      // Zabezpieczenie: jeśli nikt nie odpowie na ofertę (zgubiona po drodze), połączenie utknęłoby na zawsze.
+      // Wycofujemy ofertę – przeglądarka sama zgłosi potrzebę negocjacji i wyśle ją ponownie.
+      clearTimeout(peer.offerWatch);
+      peer.offerWatch = setTimeout(async () => {
+        if (pc.signalingState !== 'have-local-offer' || peer.offerRetries >= 5) return;
+        peer.offerRetries += 1;
+        console.warn('Brak odpowiedzi na ofertę głosową – ponawiam.');
+        try {
+          await pc.setLocalDescription({ type: 'rollback' });
+        } catch {
+          /* połączenie już się zmieniło */
+        }
+      }, 8000);
     } catch (err) {
       console.warn('Błąd negocjacji połączenia głosowego:', err);
     } finally {
@@ -2208,7 +2244,10 @@ function createPeer(id) {
     }
   };
   pc.onsignalingstatechange = () => {
-    if (pc.signalingState === 'stable' && peer.screenSenders.length) applyScreenBitrate(peer);
+    if (pc.signalingState !== 'stable') return;
+    clearTimeout(peer.offerWatch);
+    peer.offerRetries = 0;
+    if (peer.screen.video) applyScreenBitrate(peer);
   };
 
   voice.stream.getTracks().forEach((track) => pc.addTrack(track, voice.stream));
@@ -2221,8 +2260,8 @@ function createPeer(id) {
     // Pierwszy dźwięk od tej osoby to mikrofon; wszystko inne (obraz i dźwięk ekranu) trafia do kafelka.
     const isMic = e.track.kind === 'audio' && (peer.micStreamId === null || peer.micStreamId === stream.id);
     if (!isMic) {
-      const owner = voice.users.find((u) => u.id === id);
-      showScreen(id, stream, `${owner ? owner.nick : 'Ktoś'} udostępnia ekran`);
+      peer.screenStream = stream; // kafelek pokażemy, gdy serwer potwierdzi, że ta osoba nadaje (syncScreen)
+      syncScreen(id);
       return;
     }
     peer.micStreamId = stream.id;
@@ -2376,9 +2415,9 @@ socket.on('voice:users', (list) => {
     Array.from(voice.peers.keys()).forEach((id) => {
       if (!ids.has(id)) closePeer(id);
     });
-    // Osoba przestała udostępniać ekran – zamykamy jej kafelek.
+    // Pokaż lub zamknij kafelki ekranów zgodnie z tym, kto teraz nadaje.
     list.forEach((u) => {
-      if (!u.sharing) removeScreen(u.id);
+      if (u.id !== socket.id) syncScreen(u.id);
     });
     if (list.length > previous) beep([660, 880]);
     else if (list.length < previous) beep([520, 380]);

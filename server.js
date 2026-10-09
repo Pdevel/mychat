@@ -17,6 +17,7 @@ const HISTORY_LIMIT = 100; // ile ostatnich wiadomości dostaje nowo dołączona
 
 // Czat głosowy (WebRTC peer-to-peer). Każdy łączy się z każdym, więc liczba osób jest ograniczona.
 const MAX_VOICE_USERS = 8;
+const MAX_SIGNAL_CHARS = 200000; // maksymalny rozmiar jednego sygnału WebRTC (oferta/odpowiedź/kandydat)
 // Serwer STUN jest darmowy. Za zaporami sieciowymi bywa potrzebny też serwer TURN (zmienne TURN_URL,
 // TURN_USERNAME, TURN_CREDENTIAL) – patrz instrukcja.
 const ICE_SERVERS = [{ urls: process.env.STUN_URL || 'stun:stun.l.google.com:19302' }];
@@ -734,7 +735,13 @@ io.on('connection', (socket) => {
     if (!voice.has(socket.id) || !payload) return;
     const { to, data } = payload;
     if (typeof to !== 'string' || !voice.has(to) || to === socket.id) return;
-    if (!data || typeof data !== 'object' || JSON.stringify(data).length > 20000) return;
+    // Opis sesji WebRTC z obrazem ekranu potrafi mieć dziesiątki tysięcy znaków, więc limit jest hojny
+    // (ma tylko chronić przed nadużyciami). Wcześniejsze 20 000 po cichu gubiło oferty i zawieszało połączenie.
+    if (!data || typeof data !== 'object') return;
+    if (JSON.stringify(data).length > MAX_SIGNAL_CHARS) {
+      console.warn(`Odrzucono zbyt duży sygnał głosowy (> ${MAX_SIGNAL_CHARS} znaków).`);
+      return;
+    }
     if (rateLimited(socket, 'signal', 300, 10000)) return;
     io.to(to).emit('voice:signal', { from: socket.id, data });
   });
