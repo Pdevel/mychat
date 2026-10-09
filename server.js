@@ -169,6 +169,8 @@ async function persistAccount(account) {
   }
 }
 
+const restorable = new Map(); // id świeżo założonych kont -> kiedy (okno na odtworzenie profilu z kopii zapasowej)
+
 // socket.id -> { accountId, nick } (aktywne połączenia; jedno konto może mieć kilka kart)
 const users = new Map();
 
@@ -362,6 +364,35 @@ function profileOf(account) {
   };
 }
 
+// Waliduje pola profilu z `payload` (tylko te, które przyszły). Zwraca poprawne pola w `next`
+// i listę błędów – zapis profilu odrzuca całość przy błędzie, a odtwarzanie po resecie pomija błędne pola.
+function sanitizeProfile(account, payload) {
+  const next = {};
+  const errors = [];
+  if ('bio' in payload) next.bio = cleanMultiline(payload.bio, MAX_BIO);
+  if ('pronouns' in payload) next.pronouns = cleanText(payload.pronouns, MAX_PRONOUNS);
+  if ('statusText' in payload) next.statusText = cleanText(payload.statusText, MAX_STATUS_TEXT);
+  if ('status' in payload) {
+    if (STATUSES.has(payload.status)) next.status = payload.status;
+    else errors.push('Nieprawidłowy status.');
+  }
+  if ('bannerColor' in payload) {
+    if (payload.bannerColor === null || validColor(payload.bannerColor)) next.bannerColor = payload.bannerColor;
+    else errors.push('Nieprawidłowy kolor banera.');
+  }
+  if ('banner' in payload) {
+    if (payload.banner !== null && !validBanner(payload.banner)) {
+      errors.push('Nieprawidłowy obraz banera (GIF do 1,5 MB, inne formaty są zmniejszane).');
+    } else if (payload.banner && !mediaBudgetOk(account, 'banner', payload.banner)) {
+      errors.push('Serwer wyczerpał limit miejsca na avatary i banery.');
+    } else {
+      next.banner = payload.banner;
+      next.bannerV = mediaVersion(payload.banner);
+    }
+  }
+  return { next, errors };
+}
+
 // Profil widoczny dla innych (po kliknięciu osoby)
 function publicProfile(account) {
   return {
@@ -460,6 +491,7 @@ io.on('connection', (socket) => {
     }
 
     let account = accountsByToken.get(hashToken(token));
+    let isNewAccount = false;
     if (!account) {
       // Nowe urządzenie – tworzymy konto z wybranym nickiem (nick musi być unikalny).
       const nick = cleanText(payload.nick, MAX_NICK_LENGTH);
@@ -482,6 +514,8 @@ io.on('connection', (socket) => {
         tokenHash: hashToken(token),
         createdAt: Date.now(),
       };
+      isNewAccount = true;
+      restorable.set(account.id, Date.now()); // przez chwilę urządzenie może odtworzyć profil z kopii zapasowej
       indexAccount(account); // od razu, żeby nikt nie zajął nicka w trakcie zapisu
       await persistAccount(account);
     }
@@ -507,6 +541,7 @@ io.on('connection', (socket) => {
       accountId: account.id,
       createdAt: account.createdAt,
       profile: profileOf(account),
+      isNew: isNewAccount, // true = konto właśnie utworzono (np. serwer zgubił dane po restarcie)
       channel,
       channels: CHANNELS,
     });
@@ -530,35 +565,43 @@ io.on('connection', (socket) => {
       return reply({ ok: false, error: 'Zbyt wiele zmian profilu. Spróbuj za chwilę.' });
     }
 
-    const next = {};
-    if ('bio' in payload) next.bio = cleanMultiline(payload.bio, MAX_BIO);
-    if ('pronouns' in payload) next.pronouns = cleanText(payload.pronouns, MAX_PRONOUNS);
-    if ('statusText' in payload) next.statusText = cleanText(payload.statusText, MAX_STATUS_TEXT);
-    if ('status' in payload) {
-      if (!STATUSES.has(payload.status)) return reply({ ok: false, error: 'Nieprawidłowy status.' });
-      next.status = payload.status;
-    }
-    if ('bannerColor' in payload) {
-      if (payload.bannerColor !== null && !validColor(payload.bannerColor)) {
-        return reply({ ok: false, error: 'Nieprawidłowy kolor banera.' });
-      }
-      next.bannerColor = payload.bannerColor;
-    }
-    if ('banner' in payload) {
-      if (payload.banner !== null && !validBanner(payload.banner)) {
-        return reply({ ok: false, error: 'Nieprawidłowy obraz banera (GIF do 1,5 MB, inne formaty są zmniejszane).' });
-      }
-      if (payload.banner && !mediaBudgetOk(account, 'banner', payload.banner)) {
-        return reply({ ok: false, error: 'Serwer wyczerpał limit miejsca na avatary i banery.' });
-      }
-      next.banner = payload.banner;
-      next.bannerV = mediaVersion(payload.banner);
-    }
+    const { next, errors } = sanitizeProfile(account, payload);
+    if (errors.length) return reply({ ok: false, error: errors[0] });
 
     Object.assign(account, next);
     await persistAccount(account);
     reply({ ok: true, profile: profileOf(account) });
     broadcastUsers(); // zmienił się status widoczny na liście osób
+  });
+
+  // Odtworzenie profilu z lokalnej kopii zapasowej urządzenia. Dozwolone raz, tuż po założeniu konta –
+  // tak urządzenie naprawia się samo, gdy serwer zgubi dane (restart darmowego Rendera).
+  socket.on('profile:restore', async (payload, ack) => {
+    const reply = typeof ack === 'function' ? ack : () => {};
+    const user = users.get(socket.id);
+    const account = user && accountsById.get(user.accountId);
+    if (!account) return reply({ ok: false, error: 'Najpierw dołącz do czatu.' });
+    const since = restorable.get(account.id);
+    if (!since || Date.now() - since > 10 * 60 * 1000) return reply({ ok: false, error: 'Odtwarzanie niedostępne.' });
+    if (!payload || typeof payload !== 'object') return reply({ ok: false, error: 'Nieprawidłowe dane.' });
+    restorable.delete(account.id);
+
+    // Avatar (jeśli kopia go zawiera i mieści się w limitach)
+    if (validAvatar(payload.avatar) && mediaBudgetOk(account, 'avatar', payload.avatar)) {
+      account.avatar = payload.avatar;
+      account.avatarV = mediaVersion(payload.avatar);
+    }
+    // Data założenia konta („Członek od”) – tylko rozsądna wartość z przeszłości
+    if (Number.isFinite(payload.createdAt) && payload.createdAt > 1.6e12 && payload.createdAt <= Date.now()) {
+      account.createdAt = payload.createdAt;
+    }
+    // Pozostałe pola profilu: błędne pomijamy, poprawne zapisujemy
+    const { bio, pronouns, statusText, status, bannerColor, banner } = payload;
+    Object.assign(account, sanitizeProfile(account, { bio, pronouns, statusText, status, bannerColor, banner }).next);
+
+    await persistAccount(account);
+    reply({ ok: true, avatar: mediaUrl(account, 'avatar'), createdAt: account.createdAt, profile: profileOf(account) });
+    broadcastUsers();
   });
 
   // Profil dowolnej osoby (po id konta albo nicku) – także gdy jest offline.
@@ -822,6 +865,19 @@ async function start() {
 
   for (const account of await store.loadAccounts()) indexAccount(account);
   console.log(`Wczytano kont: ${accountsById.size}`);
+
+  // Darmowy Render usypia usługę po ok. 15 minutach bez ruchu z zewnątrz (rozmowa głosowa idzie
+  // bezpośrednio między użytkownikami, więc serwer nic nie widzi), a przy wznowieniu kasuje dane.
+  // Pingując własny publiczny adres co 10 minut, nie dopuszczamy do uśpienia.
+  const publicUrl = process.env.RENDER_EXTERNAL_URL || process.env.KEEPALIVE_URL;
+  if (publicUrl) {
+    setInterval(() => {
+      fetch(`${publicUrl.replace(/\/$/, '')}/health`, { signal: AbortSignal.timeout(15000) }).catch((err) =>
+        console.error('Keep-alive nie powiódł się:', err.message)
+      );
+    }, 10 * 60 * 1000).unref();
+    console.log(`Keep-alive: ping ${publicUrl}/health co 10 min`);
+  }
 
   // Co 10 minut usuwamy przeterminowane wiadomości i pliki.
   setInterval(() => {

@@ -302,6 +302,7 @@ function setMyAvatar(avatar) {
   updateProfilePreview();
   socket.timeout(20000).emit('avatar', avatar, (err, res) => {
     if (err || !res || !res.ok) return toast((res && res.error) || 'Nie udało się zapisać avatara.');
+    backup.save({ avatar, avatarUrl: res.avatar || null }); // pełny obraz (także GIF) trafia do kopii zapasowej
     // Od teraz używamy adresu z serwera (jak wszyscy inni) zamiast ciężkiego data-URL.
     profile.avatar = res.avatar || null;
     store.set('mychat.profile', profile);
@@ -526,6 +527,109 @@ const archive = {
   },
 };
 archive.opening = archive.open();
+
+// ---------- Kopia zapasowa profilu (w tej przeglądarce) ----------
+// Gdy serwer zgubi konta (restart darmowego Rendera), urządzenie samo odtwarza z niej avatar, baner,
+// opis i status. Kopia zawiera też pełne obrazy (także GIF-y), których nie mieści localStorage.
+const backup = {
+  db: null,
+  data: null, // { avatar, banner, bio, pronouns, statusText, status, bannerColor, createdAt, avatarUrl, bannerUrl }
+
+  open() {
+    return new Promise((resolve) => {
+      if (!window.indexedDB) return resolve();
+      try {
+        const req = indexedDB.open('mychat-profile', 1);
+        req.onupgradeneeded = () => req.result.createObjectStore('kv');
+        req.onsuccess = async () => {
+          this.db = req.result;
+          try {
+            this.data = (await reqP(this.db.transaction('kv').objectStore('kv').get('backup'))) || null;
+          } catch {
+            this.data = null;
+          }
+          resolve();
+        };
+        req.onerror = () => resolve();
+      } catch {
+        resolve(); // np. tryb prywatny – czat działa dalej bez kopii
+      }
+    });
+  },
+
+  async save(patch) {
+    this.data = { ...(this.data || {}), ...patch };
+    if (!this.db) return;
+    try {
+      const tx = this.db.transaction('kv', 'readwrite');
+      tx.objectStore('kv').put(this.data, 'backup');
+      await txDone(tx);
+    } catch (err) {
+      handleArchiveError(err);
+    }
+  },
+};
+backup.ready = backup.open();
+
+async function urlToDataUrl(url) {
+  const res = await fetch(url);
+  const blob = await res.blob();
+  if (!res.ok || blob.size > 2 * 1024 * 1024) throw new Error('Nie udało się pobrać obrazu.');
+  return readAsDataUrl(blob);
+}
+
+// Po zwykłym logowaniu: zapisz w kopii aktualny stan profilu z serwera (obrazy tylko gdy się zmieniły).
+async function refreshBackup(res) {
+  const p = res.profile || {};
+  const known = backup.data || {};
+  const patch = {
+    bio: p.bio,
+    pronouns: p.pronouns,
+    statusText: p.statusText,
+    status: p.status,
+    bannerColor: p.bannerColor,
+    createdAt: res.createdAt,
+  };
+  for (const [field, url] of [['avatar', res.avatar || null], ['banner', p.banner || null]]) {
+    const urlKey = `${field}Url`;
+    if (url === (known[urlKey] ?? null) && (!url || known[field])) continue; // bez zmian
+    try {
+      patch[field] = url ? await urlToDataUrl(url) : null;
+      patch[urlKey] = url;
+    } catch {
+      /* brak sieci albo obraz za duży – zostaje poprzednia kopia */
+    }
+  }
+  await backup.save(patch);
+}
+
+// Serwer założył konto od nowa (zgubił dane) – odtwórz profil z kopii zapasowej.
+function restoreProfile() {
+  const b = backup.data;
+  if (!b) return;
+  const payload = {
+    avatar: b.avatar || null,
+    createdAt: b.createdAt,
+    bio: b.bio || '',
+    pronouns: b.pronouns || '',
+    statusText: b.statusText || '',
+    status: b.status || 'online',
+    bannerColor: b.bannerColor ?? null,
+  };
+  if (b.banner) payload.banner = b.banner;
+  socket.timeout(30000).emit('profile:restore', payload, (err, r) => {
+    if (err || !r || !r.ok) return;
+    myProfile = r.profile;
+    myCreatedAt = r.createdAt;
+    profile.avatar = r.avatar || null;
+    store.set('mychat.profile', profile);
+    avatars.set(myNick, profile.avatar);
+    refreshAvatars();
+    updateMeStatus();
+    backup.save({ avatarUrl: r.avatar || null, bannerUrl: r.profile.banner || null, createdAt: r.createdAt });
+    toast('Serwer zgubił dane – przywrócono Twój profil z kopii zapasowej.', true);
+  });
+}
 
 const sessionLog = new Map(); // id -> wiadomość (bez zawartości plików) widziana w tej sesji
 const localFileIds = new Set(); // id plików zapisanych lokalnie
@@ -1074,11 +1178,21 @@ $('profile-save').addEventListener('click', () => {
   const btn = $('profile-save');
   btn.disabled = true;
   const { banner, bannerPreview, ...fields } = draft;
-  const payload = bannerChanged ? { ...fields, banner } : fields;
+  const changedBanner = bannerChanged;
+  const payload = changedBanner ? { ...fields, banner } : fields;
   socket.timeout(30000).emit('profile:update', payload, (err, res) => {
     btn.disabled = false;
     if (err || !res || !res.ok) return toast((res && res.error) || 'Nie udało się zapisać profilu.');
     myProfile = res.profile;
+    const { bio, pronouns, statusText, status, bannerColor } = res.profile;
+    backup.save({
+      bio,
+      pronouns,
+      statusText,
+      status,
+      bannerColor,
+      ...(changedBanner ? { banner, bannerUrl: res.profile.banner || null } : {}),
+    });
     bannerChanged = false;
     setBannerPreview(null);
     draft.banner = myProfile.banner; // od teraz adres z serwera
@@ -1204,6 +1318,16 @@ function join(nick) {
     refreshAvatars();
     updateMeStatus();
     messageInput.focus();
+
+    // Kopia zapasowa profilu: po zwykłym logowaniu odświeżamy ją, a gdy serwer założył konto od nowa
+    // (zgubił dane), odtwarzamy z niej profil.
+    backup.ready.then(() => (res.isNew ? restoreProfile() : refreshBackup(res)));
+
+    // Po utracie połączenia wracamy na kanał głosowy (każda osoba robi to sama, więc rozmowa się odtwarza).
+    if (voiceRejoin) {
+      voiceRejoin = false;
+      joinVoice();
+    }
   });
 }
 
@@ -1621,6 +1745,7 @@ const voice = {
   peers: new Map(), // socket.id -> { pc, pending, audio }
 };
 
+let voiceRejoin = false; // true = byliśmy na kanale głosowym, gdy zerwało się połączenie z serwerem
 const analysers = new Map(); // 'me' lub socket.id -> { source, analyser, buf, speaking }
 let speakingTimer = null;
 
@@ -2147,8 +2272,9 @@ socket.on('connect', () => {
 
 socket.on('disconnect', () => {
   if (voice.active) {
+    voiceRejoin = true; // wrócimy na kanał, gdy tylko uda się zalogować ponownie
     leaveVoice(false);
-    toast('Utracono połączenie – rozłączono z kanałem głosowym.');
+    toast('Utracono połączenie z serwerem – próbuję wrócić na kanał głosowy…');
   }
   voice.users = [];
   renderVoiceUsers();
