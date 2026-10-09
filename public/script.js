@@ -72,6 +72,7 @@ let settings = store.get('mychat.settings', {
   sound: true,
   screenQuality: 'high', // jakość udostępniania ekranu: low | standard | high | ultra
   screenMode: 'motion', // 'motion' = płynność, 'detail' = ostrość
+  screenAudio: 'on', // dźwięk karty przy udostępnianiu ekranu: 'on' | 'off'
   archive: true, // zapisuj wiadomości na tym urządzeniu (nie znikają po okresie przechowywania na serwerze)
   archiveFiles: false, // zapisuj też zawartość plików (zajmuje więcej miejsca)
 });
@@ -270,6 +271,7 @@ function renderSettingsOptions() {
   $('sound-toggle').checked = settings.sound;
   $('screen-quality').value = settings.screenQuality;
   $('screen-mode').value = settings.screenMode;
+  $('screen-audio').value = settings.screenAudio;
   $('archive-toggle').checked = settings.archive;
   $('archive-files-toggle').checked = settings.archiveFiles;
   $('archive-files-toggle').disabled = !settings.archive;
@@ -3220,21 +3222,103 @@ const SCREEN_PRESETS = {
 };
 const screenPreset = () => SCREEN_PRESETS[settings.screenQuality] || SCREEN_PRESETS.high;
 
+// Ochrona głosu: gdy łącze wysyłania nie wyrabia, w pierwszej kolejności tracą pakiety z dźwiękiem i rozmówcy
+// „znikają”. Co kilka sekund sprawdzamy, czy odbiorcy gubią nasz głos albo opóźnienia rosną – jeśli tak, obraz
+// ekranu dostaje mniejszą przepływność (mnożnik `factor`), a gdy łącze się uspokoi, jakość wraca.
+const screenLoad = { factor: 1, bad: 0, good: 0, timer: null };
+
+// Czysta funkcja decyzyjna (łatwa do przetestowania): zwraca 'down', 'up' albo null.
+function nextScreenLoad(state, sample) {
+  const bad = sample.loss > 0.05 || sample.rtt > 0.5; // >5% utraconych pakietów głosu albo RTT > 0,5 s
+  state.bad = bad ? state.bad + 1 : 0;
+  state.good = bad ? 0 : state.good + 1;
+  if (state.bad >= 2 && state.factor > 0.25) {
+    state.factor = Math.max(0.25, state.factor / 2);
+    state.bad = 0;
+    return 'down';
+  }
+  if (state.good >= 8 && state.factor < 1) {
+    state.factor = Math.min(1, state.factor * 2);
+    state.good = 0;
+    return 'up';
+  }
+  return null;
+}
+
+async function checkShareHealth() {
+  if (!voice.screen) return;
+  const sample = { loss: 0, rtt: 0 };
+  for (const peer of voice.peers.values()) {
+    try {
+      const stats = await peer.pc.getStats();
+      stats.forEach((r) => {
+        // raport odbiorcy o naszym głosie (mikrofonie): ile pakietów zgubił i jak długo trwa obieg
+        if (r.type === 'remote-inbound-rtp' && r.kind === 'audio') {
+          sample.loss = Math.max(sample.loss, r.fractionLost || 0);
+          sample.rtt = Math.max(sample.rtt, r.roundTripTime || 0);
+        }
+      });
+    } catch {
+      /* połączenie właśnie się zamyka */
+    }
+  }
+  const change = nextScreenLoad(screenLoad, sample);
+  if (!change) return;
+  voice.peers.forEach(applyScreenBitrate);
+  if (change === 'down') {
+    toast('Łącze jest przeciążone – obniżyłem jakość udostępniania, żeby głos nie przerywał.', true);
+  }
+}
+
+function startShareHealth() {
+  screenLoad.factor = 1;
+  screenLoad.bad = 0;
+  screenLoad.good = 0;
+  clearInterval(screenLoad.timer);
+  screenLoad.timer = setInterval(checkShareHealth, 4000);
+}
+
+function stopShareHealth() {
+  clearInterval(screenLoad.timer);
+  screenLoad.timer = null;
+  screenLoad.factor = 1;
+}
+
 // Limit przepływności i liczby klatek dla jednego widza.
 async function applyScreenBitrate(peer) {
   const preset = screenPreset();
   const viewers = Math.max(1, voice.peers.size);
-  const bps = Math.max(600_000, Math.min(preset.perViewer, Math.floor(preset.total / viewers)));
+  const base = Math.min(preset.perViewer, Math.floor(preset.total / viewers));
+  const bps = Math.max(300_000, Math.floor(base * screenLoad.factor));
+  const fps = screenLoad.factor <= 0.5 ? Math.min(preset.fps, 30) : preset.fps; // przy przeciążeniu mniej klatek
   const sender = peer.screen.video;
   if (!sender || !sender.track) return;
   try {
     const params = sender.getParameters();
     if (!params.encodings || !params.encodings.length) params.encodings = [{}];
     params.encodings[0].maxBitrate = bps;
-    params.encodings[0].maxFramerate = preset.fps;
+    params.encodings[0].maxFramerate = fps;
+    // obraz ma niższy priorytet w sieci niż głos
+    params.encodings[0].priority = 'low';
+    params.encodings[0].networkPriority = 'low';
     await sender.setParameters(params);
   } catch {
     /* przeglądarka nie pozwala – zostają ustawienia domyślne */
+  }
+}
+
+// Mikrofon dostaje najwyższy priorytet w sieci – gdy łącze jest przeciążone, głos ma wygrać z obrazem.
+async function prioritizeMic(peer) {
+  const sender = peer.micSender;
+  if (!sender) return;
+  try {
+    const params = sender.getParameters();
+    if (!params.encodings || !params.encodings.length) params.encodings = [{}];
+    params.encodings[0].priority = 'high';
+    params.encodings[0].networkPriority = 'high';
+    await sender.setParameters(params);
+  } catch {
+    /* przeglądarka nie pozwala – zostaje domyślnie */
   }
 }
 
@@ -3279,7 +3363,8 @@ function screenInfoLabel() {
   const parts = [];
   if (s.width && s.height) parts.push(`${s.width}×${s.height}`);
   if (s.frameRate) parts.push(`${Math.round(s.frameRate)} kl./s`);
-  return `Twój ekran${parts.length ? ` – ${parts.join(', ')}` : ''}`;
+  parts.push(voice.screen.getAudioTracks().length ? 'z dźwiękiem' : 'bez dźwięku');
+  return `Twój ekran – ${parts.join(', ')}`;
 }
 
 // Zmiana jakości w trakcie udostępniania działa od razu (bez ponownego wybierania okna).
@@ -3308,28 +3393,52 @@ async function startScreenShare() {
     return toast('Ta przeglądarka nie obsługuje udostępniania ekranu (na telefonach zwykle jest niedostępne).');
   }
   const preset = screenPreset();
+  const wantAudio = settings.screenAudio !== 'off';
   const getDisplay = (constraints) => navigator.mediaDevices.getDisplayMedia(constraints);
   let stream;
   try {
     // Prosimy o wybraną rozdzielczość i liczbę klatek; dźwięk bez filtrów, bo to dźwięk systemu, nie mikrofon.
+    // `selfBrowserSurface: 'exclude'` – karta z tym czatem w ogóle nie jest proponowana do udostępnienia
+    // (jej dźwięk to rozmowa, czyli gotowe echo). `restrictOwnAudio` prosi o wycięcie dźwięku tej przeglądarki
+    // z dźwięku systemu (nie każda wersja Chrome to potrafi – patrz niżej).
     stream = await getDisplay({
       video: {
         frameRate: { ideal: preset.fps, max: preset.fps },
         width: { ideal: preset.width, max: preset.width },
         height: { ideal: preset.height, max: preset.height },
       },
-      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+      audio: wantAudio
+        ? { echoCancellation: false, noiseSuppression: false, autoGainControl: false, restrictOwnAudio: true }
+        : false,
+      selfBrowserSurface: 'exclude',
     });
   } catch (err) {
     if (err.name === 'NotAllowedError') return; // anulowanie w oknie wyboru nie jest błędem
     try {
-      stream = await getDisplay({ video: true, audio: true }); // przeglądarka nie zna tych ograniczeń – prosta wersja
+      stream = await getDisplay({ video: true, audio: wantAudio }); // przeglądarka nie zna tych ograniczeń – prosta wersja
     } catch (err2) {
       if (err2.name !== 'NotAllowedError') toast('Nie udało się rozpocząć udostępniania ekranu.');
       return;
     }
   }
   if (!voice.active) return stream.getTracks().forEach((t) => t.stop()); // w międzyczasie opuszczono kanał
+
+  // Echo: dźwięk CAŁEGO ekranu zawiera to, co gra w przeglądarce, czyli głosy z rozmowy. Wróciłyby one do wszystkich
+  // jako „dźwięk ekranu” – każdy słyszałby siebie z opóźnieniem i innych podwójnie. Dźwięk zostawiamy więc tylko
+  // przy udostępnianiu karty (to wyłącznie dźwięk tej karty) albo gdy przeglądarka potwierdza wycięcie własnego dźwięku.
+  const surface = stream.getVideoTracks()[0].getSettings().displaySurface;
+  const [shareAudio] = stream.getAudioTracks();
+  if (shareAudio) {
+    const ownAudioExcluded = shareAudio.getSettings().restrictOwnAudio === true;
+    if (surface !== 'browser' && !ownAudioExcluded) {
+      stream.removeTrack(shareAudio);
+      shareAudio.stop();
+      toast(
+        'Pominąłem dźwięk systemowy – zawiera głosy z rozmowy i wywołałby echo. Żeby udostępnić dźwięk, wybierz kartę przeglądarki zamiast całego ekranu.',
+        true
+      );
+    }
+  }
 
   voice.screen = stream;
   const videoTrack = stream.getVideoTracks()[0];
@@ -3340,6 +3449,7 @@ async function startScreenShare() {
   videoTrack.addEventListener('ended', stopScreenShare);
   voice.peers.forEach(addScreenTracks);
   voice.peers.forEach(applyScreenBitrate);
+  startShareHealth();
   showScreen('me', stream, screenInfoLabel());
   applyVoiceState();
 }
@@ -3353,6 +3463,7 @@ function stopScreenShare() {
     for (const kind of ['video', 'audio']) if (peer.screen[kind]) setScreenTrack(peer, kind, null);
   });
   stream.getTracks().forEach((t) => t.stop());
+  stopShareHealth();
   removeScreen('me');
   applyVoiceState();
 }
@@ -3363,6 +3474,7 @@ function closePeer(id) {
   peer.pc.onicecandidate = peer.pc.ontrack = peer.pc.onconnectionstatechange = null;
   peer.pc.onnegotiationneeded = peer.pc.onsignalingstatechange = null;
   clearTimeout(peer.offerWatch);
+  clearTimeout(peer.disconnectTimer);
   peer.pc.close();
   peer.audio?.remove();
   unwatchSpeaking(id);
@@ -3422,10 +3534,16 @@ function createPeer(id) {
     if (pc.signalingState !== 'stable') return;
     clearTimeout(peer.offerWatch);
     peer.offerRetries = 0;
+    if (!peer.micPrioritized) {
+      peer.micPrioritized = true;
+      prioritizeMic(peer); // parametry nadajnika da się ustawić dopiero po pierwszej wymianie opisów
+    }
     if (peer.screen.video) applyScreenBitrate(peer);
   };
 
-  voice.stream.getTracks().forEach((track) => pc.addTrack(track, voice.stream));
+  voice.stream.getTracks().forEach((track) => {
+    peer.micSender = pc.addTrack(track, voice.stream);
+  });
 
   pc.onicecandidate = (e) => {
     if (e.candidate) socket.emit('voice:signal', { to: id, data: { candidate: e.candidate.toJSON() } });
@@ -3453,13 +3571,82 @@ function createPeer(id) {
     if (!analysers.has(id)) watchSpeaking(id, stream);
   };
   pc.onconnectionstatechange = () => {
-    if (pc.connectionState === 'failed') {
-      toast('Nie udało się połączyć głosowo z jedną z osób (sieć może wymagać serwera TURN).');
+    clearTimeout(peer.disconnectTimer);
+    if (pc.connectionState === 'connected') {
+      peer.failedToastShown = false;
+    } else if (pc.connectionState === 'failed') {
+      // Połączenie padło (np. łącze było chwilowo przeciążone) – próbujemy je naprawić zamiast zostawiać ciszę.
+      if (!restartPeerIce(peer, 'połączenie padło') && !peer.failedToastShown) {
+        peer.failedToastShown = true;
+        toast('Nie udało się połączyć głosowo z jedną z osób (sieć może wymagać serwera TURN).');
+      }
+    } else if (pc.connectionState === 'disconnected') {
+      // „Disconnected” bywa chwilowe; jeśli trwa dłużej niż kilka sekund, odświeżamy połączenie.
+      peer.disconnectTimer = setTimeout(() => {
+        if (pc.connectionState === 'disconnected') restartPeerIce(peer, 'przerwane połączenie');
+      }, 4000);
     }
   };
 
   voice.peers.set(id, peer);
   return peer;
+}
+
+// Restart ICE szuka nowej ścieżki sieciowej bez zrywania rozmowy (wymaga nowej oferty – robi to negocjacja).
+// Nie częściej niż 4 razy na minutę, żeby nie wpaść w pętlę przy trwałej awarii.
+function restartPeerIce(peer, reason) {
+  const now = Date.now();
+  peer.iceRestartLog = (peer.iceRestartLog || []).filter((t) => now - t < 60000);
+  if (!peer.negotiationEnabled || peer.iceRestartLog.length >= 4) return false;
+  peer.iceRestartLog.push(now);
+  console.warn(`Restart połączenia głosowego (${reason}).`);
+  try {
+    peer.pc.restartIce();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Straż: jeśli od rozmówcy przez kilka sekund nie dochodzą żadne pakiety głosu (a połączenie wygląda na żywe),
+// odświeżamy połączenie. Mikrofon zawsze wysyła pakiety – także wyciszony (cisza) – więc brak ruchu to awaria.
+const VOICE_WATCH_MS = 3000;
+let voiceStallLimit = 3; // tyle kolejnych kontroli bez ruchu = awaria (domyślnie ok. 9 s)
+let voiceWatchTimer = null;
+
+async function checkVoiceHealth() {
+  for (const peer of voice.peers.values()) {
+    const micTrack = peer.audio && peer.audio.srcObject && peer.audio.srcObject.getAudioTracks()[0];
+    if (!micTrack || peer.pc.connectionState !== 'connected') {
+      peer.micStall = 0;
+      continue;
+    }
+    try {
+      let bytes = null;
+      (await peer.pc.getStats(micTrack)).forEach((r) => {
+        if (r.type === 'inbound-rtp' && r.kind === 'audio') bytes = r.bytesReceived;
+      });
+      if (bytes === null) continue;
+      peer.micStall = peer.lastMicBytes !== undefined && bytes <= peer.lastMicBytes ? (peer.micStall || 0) + 1 : 0;
+      peer.lastMicBytes = bytes;
+      if (peer.micStall >= voiceStallLimit) {
+        peer.micStall = 0;
+        restartPeerIce(peer, 'brak dźwięku od rozmówcy');
+      }
+    } catch {
+      /* połączenie właśnie się zamyka */
+    }
+  }
+}
+
+function startVoiceWatch() {
+  clearInterval(voiceWatchTimer);
+  voiceWatchTimer = setInterval(checkVoiceHealth, VOICE_WATCH_MS);
+}
+
+function stopVoiceWatch() {
+  clearInterval(voiceWatchTimer);
+  voiceWatchTimer = null;
 }
 
 // Po pierwszej wymianie ofert włączamy negocjację zmian i dokładamy ekran, jeśli właśnie go udostępniamy.
@@ -3559,6 +3746,7 @@ async function joinVoice() {
     voice.muted = false;
     voice.deafened = false;
     watchSpeaking('me', voice.stream);
+    startVoiceWatch();
     res.peers.forEach((id) => callPeer(id).catch((e) => console.warn('Błąd połączenia głosowego:', e)));
     updateVoiceUI();
   });
@@ -3567,9 +3755,11 @@ async function joinVoice() {
 function leaveVoice(notify = true) {
   if (!voice.active && !voice.stream) return;
   if (notify && voice.active && socket.connected) socket.emit('voice:leave');
+  stopVoiceWatch();
   if (voice.screen) {
     voice.screen.getTracks().forEach((t) => t.stop());
     voice.screen = null;
+    stopShareHealth();
     removeScreen('me');
   }
   Array.from(voice.peers.keys()).forEach(closePeer);
@@ -3615,6 +3805,10 @@ $('screen-mode').addEventListener('change', (e) => {
   settings.screenMode = e.target.value;
   store.set('mychat.settings', settings);
   applyScreenQuality();
+});
+$('screen-audio').addEventListener('change', (e) => {
+  settings.screenAudio = e.target.value; // zadziała przy następnym udostępnianiu (dźwięk wybiera się przy starcie)
+  store.set('mychat.settings', settings);
 });
 $('voice-screen-settings').addEventListener('click', () => openSettings('chat'));
 // Na urządzeniach bez udostępniania ekranu (np. telefony) ukrywamy przycisk – oglądanie cudzego ekranu działa.
