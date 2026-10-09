@@ -712,7 +712,8 @@ io.on('connection', (socket) => {
     }
     try {
       const msg = await store.get(id);
-      if (!msg) return reply({ ok: false, error: 'Ta wiadomość już nie istnieje.' });
+      // `code: 'gone'` – serwer już jej nie ma (wygasła lub serwer zgubił dane); klient usunie wtedy swoją lokalną kopię.
+      if (!msg) return reply({ ok: false, code: 'gone', error: 'Ta wiadomość już nie istnieje na serwerze.' });
       // Starsze wiadomości (sprzed kont) nie mają accountId – wtedy rozpoznajemy autora po nicku.
       const owner = msg.accountId ? msg.accountId === user.accountId : msg.nick === user.nick;
       if (!owner) return reply({ ok: false, error: 'Możesz usuwać tylko własne wiadomości.' });

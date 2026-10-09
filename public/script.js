@@ -785,8 +785,42 @@ function sweepExpired() {
 }
 
 // Moja wiadomość? Po koncie (przeżywa zmianę nicku); stare wiadomości bez konta – po nicku.
+// Urządzenie może mieć za sobą kilka kont (serwer na darmowym Renderze gubi je przy restarcie, a po
+// ponownym zalogowaniu powstaje nowe) i kilka nicków (zmiana nicku). Pamiętamy je wszystkie, żeby
+// stare wiadomości w archiwum nadal były rozpoznawane jako Twoje – i dało się je usunąć.
+const identity = {
+  accountIds: new Set(store.get('mychat.ids', { list: [] }).list),
+  nicks: new Set(store.get('mychat.nicks', { list: [] }).list),
+};
+
+function rememberIdentity(accountId, nick) {
+  if (accountId) identity.accountIds.add(accountId);
+  if (nick) identity.nicks.add(nick);
+  store.set('mychat.ids', { list: Array.from(identity.accountIds).slice(-50) });
+  store.set('mychat.nicks', { list: Array.from(identity.nicks).slice(-50) });
+}
+
 function isMine(m) {
-  return m.accountId ? m.accountId === myAccountId : m.nick === myNick;
+  return m.accountId ? identity.accountIds.has(m.accountId) : identity.nicks.has(m.nick);
+}
+
+// Wiadomości z archiwum napisane Twoim nickiem przez wcześniejsze konta (sprzed resetów serwera) też są Twoje.
+let identityBackfill = null;
+async function backfillIdentity() {
+  try {
+    await archive.opening;
+    if (!archive.ready) return;
+    let changed = false;
+    for (const m of await archive.all()) {
+      if (m.accountId && !identity.accountIds.has(m.accountId) && identity.nicks.has(m.nick)) {
+        identity.accountIds.add(m.accountId);
+        changed = true;
+      }
+    }
+    if (changed) rememberIdentity();
+  } catch (err) {
+    handleArchiveError(err);
+  }
 }
 
 function dayLabel(ts) {
@@ -843,9 +877,15 @@ function removeMessageNode(id) {
 }
 
 function requestDelete(id) {
-  if (!confirm('Usunąć tę wiadomość dla wszystkich? Tej operacji nie można cofnąć.')) return;
+  if (!confirm('Usunąć tę wiadomość? Zniknie u wszystkich, którzy mają ją na serwerze, oraz z Twojego archiwum.')) return;
   socket.timeout(10000).emit('deleteMessage', id, (err, res) => {
-    if (err || !res || !res.ok) toast((res && res.error) || 'Nie udało się usunąć wiadomości.');
+    if (!err && res && res.ok) return; // serwer rozesłał usunięcie – ekran i archiwum posprzątają się same
+    if (res && res.code === 'gone') {
+      // Serwer już nie ma tej wiadomości (wygasła albo serwer zgubił dane), ale jest jeszcze w Twoim archiwum.
+      applyDeletions([id]);
+      return toast('Usunięto wiadomość z tego urządzenia (serwer już jej nie przechowywał).', true);
+    }
+    toast((res && res.error) || 'Nie udało się usunąć wiadomości.');
   });
 }
 
@@ -1291,6 +1331,8 @@ function join(nick) {
     }
     myNick = res.nick;
     myAccountId = res.accountId || null;
+    rememberIdentity(myAccountId, res.nick);
+    identityBackfill = backfillIdentity();
     myCreatedAt = res.createdAt || null;
     if (res.profile) myProfile = res.profile;
     if (Array.isArray(res.channels) && res.channels.length) channels = res.channels;
@@ -1347,6 +1389,7 @@ function renameMe() {
   socket.timeout(10000).emit('rename', nick, (err, res) => {
     if (err || !res || !res.ok) return toast((res && res.error) || 'Nie udało się zmienić nicku.');
     myNick = res.nick;
+    rememberIdentity(myAccountId, myNick);
     profile.nick = res.nick;
     store.set('mychat.profile', profile);
     avatars.set(myNick, profile.avatar);
@@ -2180,6 +2223,7 @@ function mergeById(...lists) {
 
 // Rysuje czat: wiadomości z serwera (ostatnie dni) połączone z archiwum lokalnym (wszystko, co zapisano).
 async function renderChat() {
+  if (identityBackfill) await identityBackfill; // najpierw ustalamy, które stare wiadomości są Twoje (ikona kosza)
   let list = serverHistory;
   let hasOlder = false;
 
