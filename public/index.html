@@ -47,7 +47,7 @@
       <div class="channels__header">MyChat</div>
       <div class="channels__list">
         <div class="channels__category">KANAŁY TEKSTOWE</div>
-        <div class="channel channel--active"><span class="hash">#</span> ogólny</div>
+        <div id="channel-list"></div>
 
         <div class="channels__category channels__category--spaced">KANAŁY GŁOSOWE</div>
         <button type="button" id="voice-channel" class="channel channel--voice" title="Dołącz do kanału głosowego">
@@ -69,7 +69,8 @@
     <main class="main">
       <header class="topbar">
         <span class="hash hash--lg">#</span>
-        <h2>ogólny</h2>
+        <h2 id="channel-title">ogólny</h2>
+        <select id="channel-select" class="channel-select" aria-label="Kanał"></select>
         <span id="status" class="topbar__status">łączenie…</span>
         <span id="online-count" class="topbar__online">0 online</span>
         <button type="button" id="voice-btn" class="icon-btn" aria-label="Kanał głosowy" title="Dołącz do kanału głosowego">
@@ -232,6 +233,18 @@
           <button type="button" id="archive-clear" class="btn-secondary btn-sm btn-danger">Wyczyść archiwum</button>
         </div>
       </section>
+    </div>
+  </div>
+
+  <!-- Bramka wiekowa kanału nsfw -->
+  <div id="age-gate" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="age-title">
+    <div class="modal__card modal__card--small">
+      <h3 id="age-title">🔞 Kanał #nsfw</h3>
+      <p class="age-text">Ten kanał może zawierać treści dla dorosłych. Wejście jest dozwolone tylko dla osób, które ukończyły 18 lat.</p>
+      <div class="age-actions">
+        <button type="button" id="age-no" class="btn-secondary">Wróć</button>
+        <button type="button" id="age-yes" class="btn-primary">Mam ukończone 18 lat</button>
+      </div>
     </div>
   </div>
 

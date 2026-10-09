@@ -475,6 +475,73 @@ button {
   color: var(--text-muted);
   border-radius: 4px;
 }
+button.channel {
+  width: 100%;
+  font: inherit;
+  font-weight: 500;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+button.channel:hover {
+  color: var(--text-strong);
+  background: var(--bg-hover);
+}
+.channel--unread {
+  font-weight: 700;
+  color: var(--text-strong);
+}
+.channel__dot {
+  width: 8px;
+  height: 8px;
+  margin-left: auto;
+  background: var(--text-strong);
+  border-radius: 50%;
+  animation: pulse-dot 1.6s ease-in-out infinite;
+}
+.channel__badge {
+  margin-left: auto;
+  padding: 1px 5px;
+  font-size: 10px;
+  font-weight: 700;
+  color: #fff;
+  background: var(--red);
+  border-radius: 4px;
+}
+.channel-select {
+  display: none;
+  max-width: 45vw;
+  padding: 4px 8px;
+  font: inherit;
+  font-size: 14px;
+  color: var(--text-strong);
+  background: var(--bg-input);
+  border: 0;
+  border-radius: 6px;
+  outline: none;
+}
+.age-text {
+  margin: 0 0 20px;
+  line-height: 1.45;
+  color: var(--text);
+}
+.age-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.modal__card--small {
+  max-width: 400px;
+}
+/* Obrazy i wideo na kanale nsfw są rozmyte, dopóki ich nie klikniesz */
+.messages[data-nsfw='1'] .media:not(.revealed) {
+  filter: blur(26px);
+  cursor: pointer;
+}
+
 .channel--active {
   color: var(--text-strong);
   background: var(--bg-active);
@@ -1553,6 +1620,17 @@ audio.media {
   .rail,
   .channels {
     display: none;
+  }
+  /* Bez panelu bocznego kanał wybiera się z listy w nagłówku */
+  .channel-select {
+    display: block;
+  }
+  #channel-title,
+  .topbar__status {
+    display: none;
+  }
+  .topbar__online {
+    white-space: nowrap;
   }
   .msg {
     padding-left: 64px;

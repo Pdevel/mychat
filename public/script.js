@@ -75,6 +75,13 @@ let profile = store.get('mychat.profile', { nick: '', avatar: null });
 
 let myNick = null;
 let myAccountId = null;
+
+// Kanały tekstowe
+const DEFAULT_CHANNEL = 'ogolny';
+let channels = [{ id: DEFAULT_CHANNEL, name: 'ogólny' }]; // pełna lista przychodzi z serwera po zalogowaniu
+let currentChannel = store.get('mychat.channel', { id: DEFAULT_CHANNEL }).id;
+let adultConfirmed = store.get('mychat.adult', { ok: false }).ok === true; // potwierdzenie pełnoletności (nsfw)
+const unreadChannels = new Set(); // kanały z nowymi wiadomościami, których nie oglądasz
 let pendingAvatar = profile.avatar; // avatar wybrany na ekranie logowania
 let avatarTarget = 'login';
 let lastNick = null;
@@ -313,7 +320,14 @@ function makeImage(src, onLoad) {
   img.alt = 'obrazek';
   img.addEventListener('load', onLoad);
   img.addEventListener('error', () => img.replaceWith(el('div', 'msg__text', '[nie udało się załadować obrazka]')));
-  img.addEventListener('click', () => openLightbox(img.src));
+  img.addEventListener('click', () => {
+    // Na kanale nsfw obrazki są rozmyte – pierwsze kliknięcie je odsłania.
+    if (messagesEl.dataset.nsfw === '1' && !img.classList.contains('revealed')) {
+      img.classList.add('revealed');
+      return;
+    }
+    openLightbox(img.src);
+  });
   img.src = src;
   return img;
 }
@@ -353,11 +367,27 @@ const archive = {
     return new Promise((resolve) => {
       if (!window.indexedDB) return resolve(false);
       try {
-        const req = indexedDB.open('mychat-archive', 1);
-        req.onupgradeneeded = () => {
+        const req = indexedDB.open('mychat-archive', 2);
+        req.onupgradeneeded = (ev) => {
           const db = req.result;
-          db.createObjectStore('messages', { keyPath: 'id' }).createIndex('time', 'time');
-          db.createObjectStore('files');
+          let messages;
+          if (ev.oldVersion < 1) {
+            messages = db.createObjectStore('messages', { keyPath: 'id' });
+            messages.createIndex('time', 'time');
+            db.createObjectStore('files');
+          } else {
+            messages = req.transaction.objectStore('messages');
+          }
+          if (ev.oldVersion < 2) {
+            // wersja 2: kanały – indeks po (kanał, czas); starsze wiadomości trafiają do #ogólny
+            messages.createIndex('channel_time', ['channel', 'time']);
+            messages.openCursor().onsuccess = (e) => {
+              const cur = e.target.result;
+              if (!cur) return;
+              if (!cur.value.channel) cur.update({ ...cur.value, channel: 'ogolny' });
+              cur.continue();
+            };
+          }
         };
         req.onsuccess = () => {
           this.db = req.result;
@@ -387,17 +417,26 @@ const archive = {
   getFile: (id) => reqP(archive.db.transaction('files').objectStore('files').get(id)),
   fileIds: () => reqP(archive.db.transaction('files').objectStore('files').getAllKeys()),
   count: () => reqP(archive.db.transaction('messages').objectStore('messages').count()),
+  countChannel: (channel) =>
+    reqP(
+      archive.db
+        .transaction('messages')
+        .objectStore('messages')
+        .index('channel_time')
+        .count(IDBKeyRange.bound([channel, 0], [channel, Number.MAX_SAFE_INTEGER]))
+    ),
 
   async all() {
     const list = await reqP(this.db.transaction('messages').objectStore('messages').getAll());
     return list.sort((a, b) => a.time - b.time);
   },
 
-  // `limit` najnowszych wiadomości, od najstarszej do najnowszej
-  recent(limit) {
+  // `limit` najnowszych wiadomości z kanału, od najstarszej do najnowszej
+  recent(channel, limit) {
     return new Promise((resolve, reject) => {
       const out = [];
-      const cursor = this.db.transaction('messages').objectStore('messages').index('time').openCursor(null, 'prev');
+      const range = IDBKeyRange.bound([channel, 0], [channel, Number.MAX_SAFE_INTEGER]);
+      const cursor = this.db.transaction('messages').objectStore('messages').index('channel_time').openCursor(range, 'prev');
       cursor.onsuccess = () => {
         const cur = cursor.result;
         if (cur && out.length < limit) {
@@ -435,7 +474,7 @@ let quotaWarned = false;
 
 function slimMessage(m) {
   const { data, senderId, ...rest } = m; // bez bajtów pliku i tymczasowego id połączenia
-  return rest;
+  return { ...rest, channel: rest.channel || 'ogolny' };
 }
 
 function logMessage(m) {
@@ -801,7 +840,14 @@ function showAutoLogin(nick) {
 }
 
 function join(nick) {
-  socket.emit('join', { token: getDeviceToken(), nick, avatar: profile.avatar }, (res) => {
+  const payload = {
+    token: getDeviceToken(),
+    nick,
+    avatar: profile.avatar,
+    channel: currentChannel,
+    adult: adultConfirmed,
+  };
+  socket.emit('join', payload, (res) => {
     if (!res || !res.ok) {
       myNick = null;
       loginError.textContent = (res && res.error) || 'Nie udało się dołączyć.';
@@ -811,6 +857,12 @@ function join(nick) {
     }
     myNick = res.nick;
     myAccountId = res.accountId || null;
+    if (Array.isArray(res.channels) && res.channels.length) channels = res.channels;
+    currentChannel = res.channel || DEFAULT_CHANNEL; // serwer mógł zmienić kanał (np. brak zgody na nsfw)
+    historyLoading = true; // zaraz po zalogowaniu serwer wyśle historię kanału
+    pendingLive.length = 0;
+    unreadChannels.delete(currentChannel);
+    renderChannels();
     profile = { nick: res.nick, avatar: res.avatar || null };
     pendingAvatar = profile.avatar;
     store.set('mychat.profile', profile);
@@ -1189,9 +1241,9 @@ async function exportChat(format) {
     const lines = list.map((m) => {
       const d = new Date(m.time);
       const when = `${d.toLocaleDateString('pl-PL')} ${d.toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' })}`;
-      return `[${when}] ${m.nick}: ${describeMessage(m)}`;
+      return `[${when}] #${m.channel || DEFAULT_CHANNEL} ${m.nick}: ${describeMessage(m)}`;
     });
-    downloadText(`mychat-${stamp}.txt`, `MyChat – #ogólny\n${'='.repeat(30)}\n${lines.join('\n')}\n`, 'text/plain');
+    downloadText(`mychat-${stamp}.txt`, `MyChat\n${'='.repeat(30)}\n${lines.join('\n')}\n`, 'text/plain');
   }
   toast(`Zapisano ${list.length} wiadomości do pliku.`, true);
 }
@@ -1210,6 +1262,7 @@ lightbox.addEventListener('click', () => lightbox.classList.add('hidden'));
 
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
+  $('age-gate').classList.add('hidden');
   closeSettings();
   closePopups();
   lightbox.classList.add('hidden');
@@ -1528,8 +1581,112 @@ function handleLive(m) {
   addMessage(m);
 }
 
-socket.on('message', (m) => (historyLoading ? pendingLive.push(m) : handleLive(m)));
+socket.on('message', (m) => {
+  if ((m.channel || DEFAULT_CHANNEL) !== currentChannel) return;
+  if (historyLoading) pendingLive.push(m);
+  else handleLive(m);
+});
 socket.on('system', addSystem);
+
+// Nowa wiadomość na kanale, którego akurat nie oglądasz – zapalamy kropkę przy jego nazwie.
+socket.on('activity', ({ channel }) => {
+  if (channel === currentChannel) return;
+  unreadChannels.add(channel);
+  renderChannels();
+});
+
+// ---------- Kanały tekstowe: lista, przełączanie, bramka wiekowa ----------
+function channelById(id) {
+  return channels.find((c) => c.id === id) || channels[0];
+}
+
+function renderChannels() {
+  const current = channelById(currentChannel);
+
+  $('channel-list').replaceChildren(
+    ...channels.map((c) => {
+      const active = c.id === currentChannel;
+      const unread = unreadChannels.has(c.id) && !active;
+      const item = el('button', 'channel' + (active ? ' channel--active' : '') + (unread ? ' channel--unread' : ''));
+      item.type = 'button';
+      item.dataset.channel = c.id;
+      item.appendChild(el('span', 'hash', '#'));
+      item.appendChild(document.createTextNode(` ${c.name}`));
+      if (c.nsfw) item.appendChild(el('span', 'channel__badge', '18+'));
+      else if (unread) item.appendChild(el('span', 'channel__dot'));
+      item.addEventListener('click', () => switchChannel(c.id));
+      return item;
+    })
+  );
+
+  const select = $('channel-select');
+  select.replaceChildren(
+    ...channels.map((c) => {
+      const opt = el('option', '', `# ${c.name}${c.nsfw ? ' (18+)' : ''}${unreadChannels.has(c.id) && c.id !== currentChannel ? ' •' : ''}`);
+      opt.value = c.id;
+      return opt;
+    })
+  );
+  select.value = currentChannel;
+
+  $('channel-title').textContent = current.name;
+  messageInput.placeholder = `Napisz wiadomość na #${current.name}`;
+  messagesEl.dataset.nsfw = current.nsfw ? '1' : '';
+}
+
+$('channel-select').addEventListener('change', (e) => switchChannel(e.target.value));
+
+function showAgeGate(onConfirm) {
+  const gate = $('age-gate');
+  gate.classList.remove('hidden');
+  $('age-no').onclick = () => gate.classList.add('hidden');
+  $('age-yes').onclick = () => {
+    gate.classList.add('hidden');
+    adultConfirmed = true;
+    store.set('mychat.adult', { ok: true });
+    onConfirm();
+  };
+}
+
+function switchChannel(id) {
+  if (id === currentChannel || !channels.some((c) => c.id === id)) return renderChannels();
+  const target = channelById(id);
+  if (target.nsfw && !adultConfirmed) {
+    renderChannels(); // przywraca poprzedni wybór na liście (telefon)
+    return showAgeGate(() => switchChannel(id));
+  }
+  if (!socket.connected) {
+    renderChannels();
+    return toast('Brak połączenia z serwerem.');
+  }
+
+  const previous = currentChannel;
+  currentChannel = id;
+  historyLoading = true; // nowe wiadomości czekają, aż przyjdzie historia tego kanału
+  pendingLive.length = 0;
+  unreadChannels.delete(id);
+  typingUsers.clear();
+  renderTyping();
+  messagesEl.replaceChildren();
+  lastNick = null;
+  lastDay = null;
+  archiveLimit = 300;
+  store.set('mychat.channel', { id });
+  renderChannels();
+  closePopups();
+
+  socket.timeout(10000).emit('switchChannel', { channel: id, adult: adultConfirmed }, (err, res) => {
+    if (!err && res && res.ok) return;
+    // Nie udało się – wracamy na poprzedni kanał.
+    if (res && res.needAdult) {
+      adultConfirmed = false;
+      store.set('mychat.adult', { ok: false });
+    }
+    toast((res && res.error) || 'Nie udało się zmienić kanału.');
+    historyLoading = false;
+    if (currentChannel === id) switchChannel(previous);
+  });
+}
 
 socket.on('messageDeleted', (id) => {
   removeMessageNode(id);
@@ -1551,8 +1708,9 @@ async function renderChat() {
 
   if (settings.archive && archive.ready) {
     try {
-      const local = await archive.recent(archiveLimit);
-      hasOlder = (await archive.count()) > local.length;
+      const channel = currentChannel;
+      const local = await archive.recent(channel, archiveLimit);
+      hasOlder = (await archive.countChannel(channel)) > local.length;
       list = mergeById(local, serverHistory);
     } catch (err) {
       handleArchiveError(err);
@@ -1594,8 +1752,10 @@ async function renderChat() {
 }
 
 // Historia z ostatnich dni – przychodzi po (ponownym) dołączeniu do czatu.
-socket.on('history', async (list) => {
+socket.on('history', async ({ channel, messages }) => {
+  if (channel !== currentChannel) return; // spóźniona historia kanału, który już opuściłeś
   historyLoading = true;
+  const list = messages.map((m) => ({ ...m, channel: m.channel || channel }));
   try {
     await archive.opening;
     if (archive.ready && !localFileIds.size) {
@@ -1607,17 +1767,20 @@ socket.on('history', async (list) => {
   } catch (err) {
     handleArchiveError(err);
   }
+  if (channel !== currentChannel) return; // w międzyczasie przełączono kanał
   try {
     await renderChat();
   } catch (err) {
     console.warn('Nie udało się narysować historii:', err);
   }
+  if (channel !== currentChannel) return;
   historyLoading = false;
   pendingLive.splice(0).forEach(handleLive);
 });
 socket.on('users', renderMembers);
 
-socket.on('typing', ({ nick, isTyping }) => {
+socket.on('typing', ({ nick, isTyping, channel }) => {
+  if (channel && channel !== currentChannel) return;
   if (isTyping) typingUsers.add(nick);
   else typingUsers.delete(nick);
   renderTyping();

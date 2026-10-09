@@ -277,16 +277,53 @@ function systemMessage(text) {
   io.emit('system', { text, time: Date.now() });
 }
 
+// ---------- Kanały tekstowe ----------
+// Każdy kanał ma osobną historię. Pełne wiadomości dostają tylko osoby, które oglądają dany kanał
+// (pokój `ch:<id>`); reszta dostaje lekkie powiadomienie `activity` (kropka przy kanale).
+// Kanał nsfw jest dostępny dopiero po potwierdzeniu pełnoletności (pokój `adult`).
+const CHANNELS = [
+  { id: 'ogolny', name: 'ogólny' },
+  { id: 'ogolny2', name: 'ogólny2' },
+  { id: 'screeny', name: 'screeny' },
+  { id: 'granie', name: 'granie' },
+  { id: 'nsfw', name: 'nsfw', nsfw: true },
+];
+const CHANNELS_BY_ID = new Map(CHANNELS.map((c) => [c.id, c]));
+const DEFAULT_CHANNEL = 'ogolny';
+
+// Przenosi połączenie do kanału (opuszcza poprzedni pokój, wchodzi do nowego).
+function enterChannel(socket, channelId) {
+  if (socket.data.channel) socket.leave(`ch:${socket.data.channel}`);
+  socket.data.channel = channelId;
+  socket.join(`ch:${channelId}`);
+}
+
+async function sendHistory(socket, channelId) {
+  let messages = [];
+  try {
+    // Pliki bez zawartości – pobierane na żądanie przez 'getFile'.
+    messages = await store.recent(Date.now() - RETENTION_MS, HISTORY_LIMIT, channelId);
+  } catch (err) {
+    console.error('Nie udało się wczytać historii:', err.message);
+  }
+  socket.emit('history', { channel: channelId, messages });
+}
+
 async function emitMessage(socket, nick, extra) {
+  const channel = socket.data.channel || DEFAULT_CHANNEL;
   const msg = {
     id: crypto.randomUUID(),
     senderId: socket.id,
     accountId: users.get(socket.id)?.accountId, // pozwala autorowi usunąć własną wiadomość
+    channel,
     nick,
     time: Date.now(),
     ...extra,
   };
-  io.emit('message', msg);
+  io.to(`ch:${channel}`).emit('message', msg);
+  io.to(CHANNELS_BY_ID.get(channel)?.nsfw ? 'adult' : 'lobby')
+    .except(`ch:${channel}`)
+    .emit('activity', { channel });
   try {
     await store.add(msg);
   } catch (err) {
@@ -334,20 +371,54 @@ io.on('connection', (socket) => {
     const firstSession = !isOnline(account.id);
     users.set(socket.id, { accountId: account.id, nick });
 
-    reply({ ok: true, nick, avatar: account.avatar, id: socket.id, accountId: account.id });
+    // Kanał, w którym klient był ostatnio (kanał nsfw tylko po potwierdzeniu pełnoletności).
+    socket.data.adult = payload.adult === true;
+    let channel = CHANNELS_BY_ID.has(payload.channel) ? payload.channel : DEFAULT_CHANNEL;
+    if (CHANNELS_BY_ID.get(channel).nsfw && !socket.data.adult) channel = DEFAULT_CHANNEL;
+    socket.join('lobby');
+    if (socket.data.adult) socket.join('adult');
+    enterChannel(socket, channel);
+
+    reply({
+      ok: true,
+      nick,
+      avatar: account.avatar,
+      id: socket.id,
+      accountId: account.id,
+      channel,
+      channels: CHANNELS,
+    });
 
     if (!alreadyIn) {
-      // Historia z ostatnich dni (pliki bez zawartości – pobierane na żądanie przez 'getFile').
-      try {
-        socket.emit('history', await store.recent(Date.now() - RETENTION_MS, HISTORY_LIMIT));
-      } catch (err) {
-        console.error('Nie udało się wczytać historii:', err.message);
-        socket.emit('history', []);
-      }
+      await sendHistory(socket, channel);
       socket.emit('voice:users', voiceList());
       if (firstSession) systemMessage(`${nick} dołączył(a) do czatu`);
     }
     broadcastUsers();
+  });
+
+  socket.on('switchChannel', async (payload, ack) => {
+    const reply = typeof ack === 'function' ? ack : () => {};
+    const user = users.get(socket.id);
+    if (!user) return reply({ ok: false, error: 'Najpierw dołącz do czatu.' });
+    const channel = payload && CHANNELS_BY_ID.get(payload.channel);
+    if (!channel) return reply({ ok: false, error: 'Nie ma takiego kanału.' });
+    if (rateLimited(socket, 'switch', 20, 10000)) {
+      return reply({ ok: false, error: 'Zwolnij trochę – za szybko zmieniasz kanały.' });
+    }
+    if (channel.nsfw && !socket.data.adult) {
+      if (payload.adult !== true) {
+        return reply({ ok: false, needAdult: true, error: 'Ten kanał jest tylko dla osób pełnoletnich.' });
+      }
+      socket.data.adult = true;
+      socket.join('adult');
+    }
+
+    const previous = socket.data.channel;
+    if (previous) socket.to(`ch:${previous}`).emit('typing', { nick: user.nick, isTyping: false, channel: previous });
+    enterChannel(socket, channel.id);
+    reply({ ok: true, channel: channel.id });
+    await sendHistory(socket, channel.id);
   });
 
   socket.on('rename', async (rawNick, ack) => {
@@ -443,6 +514,11 @@ io.on('connection', (socket) => {
       return reply({ ok: false, error: 'Zwolnij trochę – za dużo pobrań naraz.' });
     }
     try {
+      // Pliki z kanału nsfw tylko dla osób, które potwierdziły pełnoletność.
+      const meta = await store.get(id);
+      if (meta && CHANNELS_BY_ID.get(meta.channel)?.nsfw && !socket.data.adult) {
+        return reply({ ok: false, error: 'Ten plik jest tylko dla osób pełnoletnich.' });
+      }
       const data = await store.fileData(id);
       if (!data) return reply({ ok: false, error: 'Ten plik wygasł lub został usunięty.' });
       reply({ ok: true, data });
@@ -522,7 +598,8 @@ io.on('connection', (socket) => {
   socket.on('typing', (isTyping) => {
     const user = users.get(socket.id);
     if (!user) return;
-    socket.broadcast.emit('typing', { nick: user.nick, isTyping: Boolean(isTyping) });
+    const channel = socket.data.channel || DEFAULT_CHANNEL;
+    socket.to(`ch:${channel}`).emit('typing', { nick: user.nick, isTyping: Boolean(isTyping), channel });
   });
 
   socket.on('disconnect', () => {
@@ -532,7 +609,8 @@ io.on('connection', (socket) => {
     users.delete(socket.id);
     // Komunikat o wyjściu tylko gdy to była ostatnia otwarta karta tego konta.
     if (!isOnline(user.accountId)) {
-      socket.broadcast.emit('typing', { nick: user.nick, isTyping: false });
+      const channel = socket.data.channel || DEFAULT_CHANNEL;
+      socket.to(`ch:${channel}`).emit('typing', { nick: user.nick, isTyping: false, channel });
       systemMessage(`${user.nick} opuścił(a) czat`);
     }
     broadcastUsers();

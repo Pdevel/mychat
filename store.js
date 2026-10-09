@@ -64,8 +64,9 @@ class FileStore {
     if (msg.kind === 'file') await this.prune(); // pilnuje też limitu miejsca
   }
 
-  async recent(since, limit) {
-    return this.messages.filter((m) => m.time >= since).slice(-limit);
+  // Wiadomości sprzed wprowadzenia kanałów nie mają pola `channel` – należą do kanału „ogolny”.
+  async recent(since, limit, channel = 'ogolny') {
+    return this.messages.filter((m) => m.time >= since && (m.channel || 'ogolny') === channel).slice(-limit);
   }
 
   async get(id) {
@@ -178,9 +179,15 @@ class MongoStore {
     await this.col.insertOne({ _id: msg.id, ...msg, createdAt: new Date(msg.time) });
   }
 
-  async recent(since, limit) {
+  async recent(since, limit, channel = 'ogolny') {
+    const filter = { time: { $gte: since } };
+    if (channel === 'ogolny') {
+      filter.$or = [{ channel: 'ogolny' }, { channel: { $exists: false } }]; // starsze wiadomości bez kanału
+    } else {
+      filter.channel = channel;
+    }
     const docs = await this.col
-      .find({ time: { $gte: since } }, { projection: { data: 0, _id: 0, createdAt: 0 } })
+      .find(filter, { projection: { data: 0, _id: 0, createdAt: 0 } })
       .sort({ time: -1 })
       .limit(limit)
       .toArray();
