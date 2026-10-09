@@ -695,6 +695,13 @@ audio.media {
   content: '←';
   color: var(--red);
 }
+.system--info::before {
+  content: 'ℹ';
+  color: var(--accent);
+}
+.msg--static {
+  animation: none;
+}
 
 /* ============ Pole wpisywania ============ */
 .composer {

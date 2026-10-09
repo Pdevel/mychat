@@ -1,12 +1,27 @@
 const path = require('path');
 const http = require('http');
+const crypto = require('crypto');
 const express = require('express');
 const cors = require('cors');
 const { Server } = require('socket.io');
+const { createStore } = require('./store');
 
 const PORT = process.env.PORT || 3000;
 // Opcjonalny klucz do wyszukiwarki GIFów (darmowy: developers.giphy.com)
 const GIPHY_API_KEY = process.env.GIPHY_API_KEY || '';
+
+// Po ilu dniach wiadomości i pliki są usuwane (można zmienić zmienną RETENTION_DAYS).
+const RETENTION_DAYS = Number(process.env.RETENTION_DAYS) > 0 ? Number(process.env.RETENTION_DAYS) : 7;
+const RETENTION_MS = RETENTION_DAYS * 24 * 60 * 60 * 1000;
+const HISTORY_LIMIT = 100; // ile ostatnich wiadomości dostaje nowo dołączona osoba
+
+const store = createStore({
+  retentionMs: RETENTION_MS,
+  dataDir: process.env.DATA_DIR || path.join(__dirname, 'data'),
+  maxStorageBytes: (Number(process.env.MAX_STORAGE_MB) || 300) * 1024 * 1024,
+  mongoUri: process.env.MONGODB_URI || '',
+  mongoDb: process.env.MONGODB_DB || 'mychat',
+});
 
 const MAX_NICK_LENGTH = 20;
 const MAX_MESSAGE_LENGTH = 500;
@@ -21,7 +36,12 @@ app.use(express.static(path.join(__dirname, 'public')));
 app.get('/health', (req, res) => res.send('OK'));
 
 app.get('/api/config', (req, res) => {
-  res.json({ gifSearch: Boolean(GIPHY_API_KEY), maxFileBytes: MAX_FILE_BYTES });
+  res.json({
+    gifSearch: Boolean(GIPHY_API_KEY),
+    maxFileBytes: MAX_FILE_BYTES,
+    retentionMs: RETENTION_MS,
+    retentionDays: RETENTION_DAYS,
+  });
 });
 
 // Proxy do Giphy – klucz zostaje na serwerze i nie trafia do przeglądarki.
@@ -66,7 +86,6 @@ const io = new Server(server, {
 
 // socket.id -> { nick, avatar }
 const users = new Map();
-let messageCounter = 0;
 
 // ---------- Walidacja ----------
 function cleanText(value, maxLength) {
@@ -128,18 +147,24 @@ function systemMessage(text) {
   io.emit('system', { text, time: Date.now() });
 }
 
-function emitMessage(socket, nick, extra) {
-  io.emit('message', {
-    id: ++messageCounter,
+async function emitMessage(socket, nick, extra) {
+  const msg = {
+    id: crypto.randomUUID(),
     senderId: socket.id,
     nick,
     time: Date.now(),
     ...extra,
-  });
+  };
+  io.emit('message', msg);
+  try {
+    await store.add(msg);
+  } catch (err) {
+    console.error('Nie udało się zapisać wiadomości:', err.message);
+  }
 }
 
 io.on('connection', (socket) => {
-  socket.on('join', (payload, ack) => {
+  socket.on('join', async (payload, ack) => {
     const reply = typeof ack === 'function' ? ack : () => {};
     const nick = cleanText(payload && payload.nick, MAX_NICK_LENGTH);
     if (!nick) return reply({ ok: false, error: 'Podaj nick.' });
@@ -154,8 +179,35 @@ io.on('connection', (socket) => {
     users.set(socket.id, { nick, avatar });
 
     reply({ ok: true, nick, id: socket.id });
-    if (!alreadyIn) systemMessage(`${nick} dołączył(a) do czatu`);
+
+    if (!alreadyIn) {
+      // Historia z ostatnich dni (pliki bez zawartości – pobierane na żądanie przez 'getFile').
+      try {
+        socket.emit('history', await store.recent(Date.now() - RETENTION_MS, HISTORY_LIMIT));
+      } catch (err) {
+        console.error('Nie udało się wczytać historii:', err.message);
+        socket.emit('history', []);
+      }
+      systemMessage(`${nick} dołączył(a) do czatu`);
+    }
     broadcastUsers();
+  });
+
+  socket.on('getFile', async (id, ack) => {
+    const reply = typeof ack === 'function' ? ack : () => {};
+    if (!users.has(socket.id)) return reply({ ok: false, error: 'Najpierw dołącz do czatu.' });
+    if (typeof id !== 'string' || id.length > 64) return reply({ ok: false, error: 'Nieprawidłowy plik.' });
+    if (rateLimited(socket, 'getFile', 20, 10000)) {
+      return reply({ ok: false, error: 'Zwolnij trochę – za dużo pobrań naraz.' });
+    }
+    try {
+      const data = await store.fileData(id);
+      if (!data) return reply({ ok: false, error: 'Ten plik wygasł lub został usunięty.' });
+      reply({ ok: true, data });
+    } catch (err) {
+      console.error('Błąd odczytu pliku:', err.message);
+      reply({ ok: false, error: 'Nie udało się pobrać pliku.' });
+    }
   });
 
   socket.on('avatar', (value, ack) => {
@@ -192,7 +244,7 @@ io.on('connection', (socket) => {
     reply({ ok: true });
   });
 
-  socket.on('file', (payload, ack) => {
+  socket.on('file', async (payload, ack) => {
     const reply = typeof ack === 'function' ? ack : () => {};
     const user = users.get(socket.id);
     if (!user) return reply({ ok: false, error: 'Najpierw dołącz do czatu.' });
@@ -209,7 +261,7 @@ io.on('connection', (socket) => {
     }
 
     // Plik nie jest nigdzie zapisywany – serwer tylko przekazuje go dalej.
-    emitMessage(socket, user.nick, {
+    await emitMessage(socket, user.nick, {
       kind: 'file',
       name: cleanFileName(payload.name),
       mime: safeMime(payload.mime),
@@ -235,7 +287,30 @@ io.on('connection', (socket) => {
   });
 });
 
-server.listen(PORT, () => {
-  console.log(`Serwer czatu działa na porcie ${PORT}`);
-  if (!GIPHY_API_KEY) console.log('Brak GIPHY_API_KEY – wyszukiwarka GIFów wyłączona (działa wklejanie linków).');
+async function start() {
+  await store.init();
+  console.log(`Historia: ${store.label}, wiadomości i pliki usuwane po ${RETENTION_DAYS} dn.`);
+
+  // Co 10 minut usuwamy przeterminowane wiadomości i pliki.
+  setInterval(() => {
+    store.prune().catch((err) => console.error('Błąd czyszczenia historii:', err.message));
+  }, 10 * 60 * 1000).unref();
+
+  // Przy zamykaniu (np. nowe wdrożenie na Renderze) zapisz stan historii.
+  const shutdown = async () => {
+    await store.flush();
+    process.exit(0);
+  };
+  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', shutdown);
+
+  server.listen(PORT, () => {
+    console.log(`Serwer czatu działa na porcie ${PORT}`);
+    if (!GIPHY_API_KEY) console.log('Brak GIPHY_API_KEY – wyszukiwarka GIFów wyłączona (działa wklejanie linków).');
+  });
+}
+
+start().catch((err) => {
+  console.error('Nie udało się uruchomić serwera:', err);
+  process.exit(1);
 });

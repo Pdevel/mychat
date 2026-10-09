@@ -33,6 +33,8 @@ const dropOverlay = $('drop-overlay');
 const GROUP_WINDOW_MS = 5 * 60 * 1000; // wiadomości tej samej osoby w 5 min są grupowane
 let maxFileBytes = 5 * 1024 * 1024;
 let gifSearchEnabled = false;
+let retentionMs = 7 * 24 * 60 * 60 * 1000;
+let retentionDays = 7;
 
 // ---------- Zapis ustawień w przeglądarce ----------
 const store = {
@@ -68,7 +70,7 @@ let profile = store.get('mychat.profile', { nick: '', avatar: null });
 let myNick = null;
 let pendingAvatar = profile.avatar; // avatar wybrany na ekranie logowania
 let avatarTarget = 'login';
-let lastSenderId = null;
+let lastNick = null;
 let lastMessageTime = 0;
 let typingTimeout = null;
 let unread = 0;
@@ -315,13 +317,46 @@ function fileIcon(mime, name) {
   return '📎';
 }
 
+const INLINE_IMAGE = /^image\/(png|jpe?g|gif|webp|avif|bmp)$/;
+const INLINE_VIDEO = /^video\/(mp4|webm|ogg|quicktime)$/;
+const INLINE_AUDIO = /^audio\/(mpeg|mp3|ogg|wav|webm|mp4|aac|x-m4a|flac)$/;
+
+// Karta pliku z historii: zawartość jest pobierana z serwera dopiero po kliknięciu.
+function makeRemoteFileCard(m, onLoad) {
+  const card = el('div', 'filecard');
+  card.appendChild(el('div', 'filecard__icon', fileIcon(m.mime, m.name)));
+  const info = el('div', 'filecard__info');
+  info.appendChild(el('div', 'filecard__name', m.name));
+  info.appendChild(el('div', 'filecard__size', formatSize(m.size)));
+  card.appendChild(info);
+
+  const inline = INLINE_IMAGE.test(m.mime) || INLINE_VIDEO.test(m.mime) || INLINE_AUDIO.test(m.mime);
+  const btn = el('button', 'icon-btn', inline ? '👁' : '⬇');
+  btn.type = 'button';
+  btn.title = inline ? 'Pokaż' : 'Pobierz';
+  btn.addEventListener('click', () => {
+    btn.disabled = true;
+    socket.timeout(60000).emit('getFile', m.id, (err, res) => {
+      btn.disabled = false;
+      if (err || !res || !res.ok) return toast((res && res.error) || 'Nie udało się pobrać pliku.');
+      const content = makeFileContent({ ...m, data: res.data }, onLoad);
+      card.replaceWith(content);
+      if (!inline) content.querySelector('a[download]')?.click(); // od razu pobierz
+      onLoad();
+    });
+  });
+  card.appendChild(btn);
+  return card;
+}
+
 function makeFileContent(m, onLoad) {
+  if (!m.data) return makeRemoteFileCard(m, onLoad);
   const blob = new Blob([m.data], { type: m.mime });
   const url = URL.createObjectURL(blob);
 
-  if (/^image\/(png|jpe?g|gif|webp|avif|bmp)$/.test(m.mime)) return makeImage(url, onLoad);
+  if (INLINE_IMAGE.test(m.mime)) return makeImage(url, onLoad);
 
-  if (/^video\/(mp4|webm|ogg|quicktime)$/.test(m.mime)) {
+  if (INLINE_VIDEO.test(m.mime)) {
     const v = el('video', 'media');
     v.controls = true;
     v.preload = 'metadata';
@@ -330,7 +365,7 @@ function makeFileContent(m, onLoad) {
     return v;
   }
 
-  if (/^audio\/(mpeg|mp3|ogg|wav|webm|mp4|aac|x-m4a|flac)$/.test(m.mime)) {
+  if (INLINE_AUDIO.test(m.mime)) {
     const a = el('audio', 'media');
     a.controls = true;
     a.src = url;
@@ -353,19 +388,34 @@ function makeFileContent(m, onLoad) {
 
 const ONLY_EMOJI = /^(?:\p{Extended_Pictographic}|‍|️|\s){1,8}$/u;
 
-function addSystem(text) {
+function addSystem(m) {
   const stick = isNearBottom();
-  const leave = text.includes('opuścił');
-  messagesEl.appendChild(el('div', 'system' + (leave ? ' system--leave' : ''), text));
-  lastSenderId = null;
+  const leave = m.text.includes('opuścił');
+  const node = el('div', 'system' + (leave ? ' system--leave' : ''), m.text);
+  node.dataset.time = m.time;
+  messagesEl.appendChild(node);
+  lastNick = null;
   if (stick) scrollToBottom();
 }
 
-function addMessage(m) {
+// Usuwa z ekranu wiadomości starsze niż okres przechowywania (to samo robi serwer w historii).
+function sweepExpired() {
+  const cutoff = Date.now() - retentionMs;
+  messagesEl.querySelectorAll('[data-time]').forEach((node) => {
+    if (Number(node.dataset.time) >= cutoff) return;
+    node.querySelectorAll('[src^="blob:"], [href^="blob:"]').forEach((n) => {
+      URL.revokeObjectURL(n.getAttribute('src') || n.getAttribute('href'));
+    });
+    node.remove();
+  });
+}
+
+function addMessage(m, { historic = false } = {}) {
   const mine = m.senderId === socket.id;
-  const stick = mine || isNearBottom();
-  const first = m.senderId !== lastSenderId || m.time - lastMessageTime > GROUP_WINDOW_MS;
-  const wrap = el('div', 'msg' + (first ? ' msg--first' : ''));
+  const stick = historic || mine || isNearBottom();
+  const first = m.nick !== lastNick || m.time - lastMessageTime > GROUP_WINDOW_MS;
+  const wrap = el('div', 'msg' + (first ? ' msg--first' : '') + (historic ? ' msg--static' : ''));
+  wrap.dataset.time = m.time;
 
   if (first) {
     wrap.appendChild(makeAvatar(m.nick, 'msg__avatar'));
@@ -394,11 +444,11 @@ function addMessage(m) {
   }
 
   messagesEl.appendChild(wrap);
-  lastSenderId = m.senderId;
+  lastNick = m.nick;
   lastMessageTime = m.time;
   if (stick) scrollToBottom();
 
-  if (!mine) {
+  if (!mine && !historic) {
     beep();
     if (document.hidden) {
       unread += 1;
@@ -741,8 +791,20 @@ document.addEventListener('visibilitychange', () => {
 });
 
 // ---------- Zdarzenia z serwera ----------
-socket.on('message', addMessage);
-socket.on('system', (m) => addSystem(m.text));
+socket.on('message', (m) => addMessage(m));
+socket.on('system', addSystem);
+
+// Historia z ostatnich dni – przychodzi po (ponownym) dołączeniu do czatu.
+socket.on('history', (list) => {
+  messagesEl.replaceChildren();
+  lastNick = null;
+  lastMessageTime = 0;
+  const days = retentionDays === 1 ? '1 dniu' : `${retentionDays} dniach`;
+  messagesEl.appendChild(el('div', 'system system--info', `Wiadomości i pliki są usuwane po ${days}.`));
+  list.forEach((m) => addMessage(m, { historic: true }));
+  sweepExpired();
+  scrollToBottom();
+});
 socket.on('users', renderMembers);
 
 socket.on('typing', ({ nick, isTyping }) => {
@@ -773,5 +835,12 @@ fetch('/api/config')
   .then((cfg) => {
     gifSearchEnabled = Boolean(cfg.gifSearch);
     if (cfg.maxFileBytes) maxFileBytes = cfg.maxFileBytes;
+    if (cfg.retentionMs) {
+      retentionMs = cfg.retentionMs;
+      retentionDays = cfg.retentionDays;
+    }
   })
   .catch(() => {});
+
+// Co 10 minut sprawdzamy, czy jakieś wiadomości na ekranie nie wygasły (np. przy długo otwartej karcie).
+setInterval(sweepExpired, 10 * 60 * 1000);
