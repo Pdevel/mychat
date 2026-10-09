@@ -184,6 +184,37 @@
         <p class="settings-note">Konto jest przypisane do tego urządzenia i przeglądarki. Wyczyszczenie danych przeglądarki oznacza utratę dostępu do konta.</p>
       </section>
 
+      <section id="profile-section">
+        <div class="section-title">PROFIL</div>
+        <div id="profile-preview" class="pcard pcard--preview"></div>
+
+        <label class="field-label" for="profile-status">Status</label>
+        <select id="profile-status" class="field">
+          <option value="online">🟢 Online</option>
+          <option value="idle">🌙 Zaraz wracam</option>
+          <option value="dnd">⛔ Nie przeszkadzać</option>
+        </select>
+
+        <label class="field-label" for="profile-status-text">Własny status</label>
+        <input id="profile-status-text" class="field" type="text" maxlength="60" placeholder="Co słychać?" autocomplete="off" />
+
+        <label class="field-label" for="profile-pronouns">Zaimki</label>
+        <input id="profile-pronouns" class="field" type="text" maxlength="30" placeholder="np. on/jego, ona/jej, oni/ich" autocomplete="off" />
+
+        <label class="field-label" for="profile-bio">O mnie <span id="bio-counter" class="field-counter"></span></label>
+        <textarea id="profile-bio" class="field" maxlength="190" rows="3" placeholder="Napisz coś o sobie…"></textarea>
+
+        <div class="field-label">Baner</div>
+        <div class="banner-row">
+          <input id="profile-banner-color" type="color" class="swatch-custom" title="Kolor banera" />
+          <button type="button" id="banner-upload" class="btn-secondary btn-sm">Wgraj obraz</button>
+          <button type="button" id="banner-remove" class="btn-secondary btn-sm">Usuń baner</button>
+          <input type="file" id="banner-file" accept="image/*" hidden />
+        </div>
+
+        <button type="button" id="profile-save" class="btn-primary profile-save">Zapisz profil</button>
+      </section>
+
       <section>
         <div class="section-title">AVATAR</div>
         <div class="avatar-edit">
@@ -235,6 +266,9 @@
       </section>
     </div>
   </div>
+
+  <!-- Miniprofil (po kliknięciu osoby) -->
+  <div id="profile-popout" class="pcard pcard--popout hidden" role="dialog" aria-label="Profil użytkownika"></div>
 
   <!-- Bramka wiekowa kanału nsfw -->
   <div id="age-gate" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="age-title">

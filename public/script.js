@@ -257,6 +257,7 @@ function setMyAvatar(avatar) {
   store.set('mychat.profile', profile);
   avatars.set(myNick, avatar);
   refreshAvatars();
+  updateProfilePreview();
   socket.timeout(10000).emit('avatar', avatar, (err, res) => {
     if (err || !res || !res.ok) toast((res && res.error) || 'Nie udało się zapisać avatara.');
   });
@@ -640,21 +641,35 @@ function dayLabel(ts) {
   return new Date(ts).toLocaleDateString('pl-PL', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
 }
 
-function makeMessageHeader(nick, time) {
+// Avatar i nick przy wiadomości otwierają miniprofil autora (obsługuje to jedno wspólne kliknięcie niżej).
+function markProfileTrigger(node, nick, accountId) {
+  node.classList.add('js-profile');
+  node.dataset.nick = nick;
+  node.dataset.account = accountId || '';
+}
+
+function makeMessageHeader(nick, time, accountId) {
   const head = el('div', 'msg__head');
   const author = el('span', 'msg__author', nick);
   author.style.color = colorFor(nick);
+  markProfileTrigger(author, nick, accountId);
   head.appendChild(author);
   head.appendChild(el('span', 'msg__time', formatTime(time)));
   return head;
+}
+
+function makeMessageAvatar(nick, accountId) {
+  const avatar = makeAvatar(nick, 'msg__avatar');
+  markProfileTrigger(avatar, nick, accountId);
+  return avatar;
 }
 
 // Gdy usunięto pierwszą wiadomość z grupy, następna musi dostać nagłówek (avatar i nick).
 function promoteToFirst(node) {
   node.classList.add('msg--first');
   node.querySelector('.msg__hovertime')?.remove();
-  node.prepend(makeMessageHeader(node.dataset.nick, Number(node.dataset.time)));
-  node.prepend(makeAvatar(node.dataset.nick, 'msg__avatar'));
+  node.prepend(makeMessageHeader(node.dataset.nick, Number(node.dataset.time), node.dataset.account));
+  node.prepend(makeMessageAvatar(node.dataset.nick, node.dataset.account));
 }
 
 function removeMessageNode(id) {
@@ -701,11 +716,12 @@ function addMessage(m, { historic = false } = {}) {
   const wrap = el('div', 'msg' + (first ? ' msg--first' : '') + (historic ? ' msg--static' : ''));
   wrap.dataset.time = m.time;
   wrap.dataset.nick = m.nick;
+  wrap.dataset.account = m.accountId || '';
   if (m.id) wrap.dataset.id = m.id;
 
   if (first) {
-    wrap.appendChild(makeAvatar(m.nick, 'msg__avatar'));
-    wrap.appendChild(makeMessageHeader(m.nick, m.time));
+    wrap.appendChild(makeMessageAvatar(m.nick, m.accountId));
+    wrap.appendChild(makeMessageHeader(m.nick, m.time, m.accountId));
   } else {
     wrap.appendChild(el('span', 'msg__hovertime', formatTime(m.time)));
   }
@@ -768,15 +784,233 @@ function renderMembers(list) {
   membersListEl.replaceChildren(
     ...list.map((u) => {
       const row = el('div', 'member');
-      row.appendChild(makeAvatar(u.nick, 'avatar--sm avatar--online'));
+      markProfileTrigger(row, u.nick, u.id);
+      const avatar = makeAvatar(u.nick, 'avatar--sm avatar--dot');
+      avatar.dataset.status = u.status || 'online';
+      row.appendChild(avatar);
+
+      const text = el('div', 'member__text');
       const name = el('span', 'member__name', u.nick);
       name.style.color = colorFor(u.nick);
-      row.appendChild(name);
+      text.appendChild(name);
+      if (u.statusText) text.appendChild(el('span', 'member__status', u.statusText));
+      row.appendChild(text);
       return row;
     })
   );
   refreshAvatars();
 }
+
+// ---------- Miniprofil ----------
+const STATUS_LABELS = { online: 'Online', idle: 'Zaraz wracam', dnd: 'Nie przeszkadzać', offline: 'Offline' };
+const SAFE_DATA_IMAGE = /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/;
+const popout = $('profile-popout');
+
+let myProfile = { bio: '', pronouns: '', statusText: '', status: 'online', bannerColor: null, banner: null };
+let myCreatedAt = null;
+
+// Rysuje kartę profilu (używaną w miniprofilu i w podglądzie w ustawieniach).
+function renderProfileCard(root, p, { isMe = false, onEdit = null } = {}) {
+  const presence = p.online === false ? 'offline' : p.status || 'online';
+
+  const banner = el('div', 'pcard__banner');
+  if (p.banner && SAFE_DATA_IMAGE.test(p.banner)) banner.style.backgroundImage = `url("${p.banner}")`;
+  else banner.style.background = p.bannerColor || colorFor(p.nick);
+
+  const body = el('div', 'pcard__body');
+  const avatar = el('div', 'avatar avatar--dot pcard__avatar');
+  avatar.dataset.status = presence;
+  setAvatarVisual(avatar, p.nick, p.avatar);
+  body.appendChild(avatar);
+
+  body.appendChild(el('div', 'pcard__name', p.nick));
+  if (p.pronouns) body.appendChild(el('div', 'pcard__pronouns', p.pronouns));
+  body.appendChild(
+    el('div', 'pcard__status' + (p.statusText ? '' : ' pcard__muted'), p.statusText || STATUS_LABELS[presence])
+  );
+
+  const box = el('div', 'pcard__box');
+  box.appendChild(el('div', 'pcard__label', 'O MNIE'));
+  box.appendChild(el('div', 'pcard__text' + (p.bio ? '' : ' pcard__muted'), p.bio || 'Brak opisu.'));
+  box.appendChild(el('div', 'pcard__label', 'CZŁONEK OD'));
+  const since = p.createdAt
+    ? new Date(p.createdAt).toLocaleDateString('pl-PL', { day: 'numeric', month: 'long', year: 'numeric' })
+    : '—';
+  box.appendChild(el('div', 'pcard__text', since));
+  body.appendChild(box);
+
+  if (isMe && onEdit) {
+    const edit = el('button', 'btn-secondary btn-sm pcard__edit', 'Edytuj profil');
+    edit.type = 'button';
+    edit.addEventListener('click', onEdit);
+    body.appendChild(edit);
+  }
+  root.replaceChildren(banner, body);
+}
+
+let popoutTrigger = null;
+
+function closeProfilePopout() {
+  popout.classList.add('hidden');
+  popoutTrigger = null;
+}
+
+function positionPopout(anchor) {
+  if (!anchor || window.innerWidth <= 720) return; // na telefonie karta jest wyśrodkowana przez CSS
+  const rect = anchor.getBoundingClientRect();
+  const w = popout.offsetWidth;
+  const h = popout.offsetHeight;
+  let left = rect.right + 10;
+  if (left + w > window.innerWidth - 8) left = rect.left - w - 10; // nie mieści się z prawej – na lewo od elementu
+  left = Math.max(8, Math.min(left, window.innerWidth - w - 8));
+  const top = Math.max(8, Math.min(rect.top, window.innerHeight - h - 8));
+  popout.style.left = `${left}px`;
+  popout.style.top = `${top}px`;
+}
+
+function openProfile(query, anchor) {
+  if (popoutTrigger === anchor && !popout.classList.contains('hidden')) return closeProfilePopout(); // drugie kliknięcie zamyka
+  socket.timeout(8000).emit('profile:get', query, (err, res) => {
+    if (err || !res || !res.ok) return toast((res && res.error) || 'Nie udało się wczytać profilu.');
+    const p = res.profile;
+    renderProfileCard(popout, p, {
+      isMe: p.id === myAccountId,
+      onEdit: () => {
+        closeProfilePopout();
+        openSettings();
+        $('profile-section').scrollIntoView({ block: 'start' });
+      },
+    });
+    popout.classList.remove('hidden');
+    positionPopout(anchor);
+    popoutTrigger = anchor;
+  });
+}
+
+document.addEventListener('click', (e) => {
+  const trigger = e.target.closest('.js-profile');
+  if (trigger) {
+    openProfile({ id: trigger.dataset.account || undefined, nick: trigger.dataset.nick }, trigger);
+  } else if (!e.target.closest('#profile-popout')) {
+    closeProfilePopout();
+  }
+});
+
+// Edycja własnego profilu w ustawieniach (zmiany widać na żywo w podglądzie, zapisujemy przyciskiem)
+let draft = { ...myProfile };
+
+function updateProfilePreview() {
+  if (!myNick) return;
+  renderProfileCard($('profile-preview'), {
+    id: myAccountId,
+    nick: myNick,
+    avatar: profile.avatar,
+    createdAt: myCreatedAt,
+    online: true,
+    ...draft,
+  });
+}
+
+function loadProfileForm() {
+  draft = { ...myProfile };
+  $('profile-status').value = draft.status;
+  $('profile-status-text').value = draft.statusText;
+  $('profile-pronouns').value = draft.pronouns;
+  $('profile-bio').value = draft.bio;
+  $('profile-banner-color').value = draft.bannerColor || colorFor(myNick || 'x');
+  $('bio-counter').textContent = `${draft.bio.length}/190`;
+  updateProfilePreview();
+}
+
+function updateMeStatus() {
+  meAvatarEl.classList.add('avatar--dot');
+  meAvatarEl.dataset.status = myProfile.status || 'online';
+  document.querySelector('.userpanel__status').textContent = myProfile.statusText || STATUS_LABELS[myProfile.status || 'online'];
+}
+
+$('profile-status').addEventListener('change', (e) => {
+  draft.status = e.target.value;
+  updateProfilePreview();
+});
+$('profile-status-text').addEventListener('input', (e) => {
+  draft.statusText = e.target.value;
+  updateProfilePreview();
+});
+$('profile-pronouns').addEventListener('input', (e) => {
+  draft.pronouns = e.target.value;
+  updateProfilePreview();
+});
+$('profile-bio').addEventListener('input', (e) => {
+  draft.bio = e.target.value;
+  $('bio-counter').textContent = `${draft.bio.length}/190`;
+  updateProfilePreview();
+});
+$('profile-banner-color').addEventListener('input', (e) => {
+  draft.bannerColor = e.target.value;
+  draft.banner = null; // wybór koloru zastępuje obraz
+  updateProfilePreview();
+});
+$('banner-remove').addEventListener('click', () => {
+  draft.bannerColor = null;
+  draft.banner = null;
+  $('profile-banner-color').value = colorFor(myNick || 'x');
+  updateProfilePreview();
+});
+$('banner-upload').addEventListener('click', () => $('banner-file').click());
+$('banner-file').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+  try {
+    draft.banner = await fileToBanner(file);
+    updateProfilePreview();
+  } catch (err) {
+    toast(err.message);
+  }
+});
+
+// Baner: kadrowanie do 600x200; jakość spada, aż obraz zmieści się w limicie serwera
+function fileToBanner(file) {
+  return new Promise((resolve, reject) => {
+    if (!file.type.startsWith('image/')) return reject(new Error('To nie jest obrazek.'));
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const W = 600;
+      const H = 200;
+      const canvas = document.createElement('canvas');
+      canvas.width = W;
+      canvas.height = H;
+      const scale = Math.max(W / img.width, H / img.height);
+      const sw = W / scale;
+      const sh = H / scale;
+      canvas.getContext('2d').drawImage(img, (img.width - sw) / 2, (img.height - sh) / 2, sw, sh, 0, 0, W, H);
+      for (const quality of [0.8, 0.65, 0.5, 0.35]) {
+        const dataUrl = canvas.toDataURL('image/jpeg', quality);
+        if (dataUrl.length <= 55000) return resolve(dataUrl);
+      }
+      reject(new Error('Ten obraz jest zbyt szczegółowy – wybierz prostszy.'));
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error('Nie udało się wczytać obrazka.'));
+    };
+    img.src = url;
+  });
+}
+
+$('profile-save').addEventListener('click', () => {
+  const btn = $('profile-save');
+  btn.disabled = true;
+  socket.timeout(10000).emit('profile:update', draft, (err, res) => {
+    btn.disabled = false;
+    if (err || !res || !res.ok) return toast((res && res.error) || 'Nie udało się zapisać profilu.');
+    myProfile = res.profile;
+    updateMeStatus();
+    toast('Profil zapisany.', true);
+  });
+});
 
 // ---------- Dźwięk ----------
 let audioCtx;
@@ -867,6 +1101,8 @@ function join(nick) {
     }
     myNick = res.nick;
     myAccountId = res.accountId || null;
+    myCreatedAt = res.createdAt || null;
+    if (res.profile) myProfile = res.profile;
     if (Array.isArray(res.channels) && res.channels.length) channels = res.channels;
     currentChannel = res.channel || DEFAULT_CHANNEL; // serwer mógł zmienić kanał (np. brak zgody na nsfw)
     historyLoading = true; // zaraz po zalogowaniu serwer wyśle historię kanału
@@ -886,6 +1122,7 @@ function join(nick) {
     meAvatarEl.dataset.nick = myNick;
     $('settings-avatar').dataset.nick = myNick;
     refreshAvatars();
+    updateMeStatus();
     messageInput.focus();
   });
 }
@@ -913,6 +1150,7 @@ function renameMe() {
     meAvatarEl.dataset.nick = myNick;
     $('settings-avatar').dataset.nick = myNick;
     refreshAvatars();
+    updateProfilePreview();
     toast(`Twój nick to teraz ${myNick}`, true);
   });
 }
@@ -1142,6 +1380,8 @@ gifUrlInput.addEventListener('keydown', (e) => {
 
 // ---------- Ustawienia, lightbox, klawisze ----------
 function openSettings() {
+  closeProfilePopout();
+  loadProfileForm();
   renderSettingsOptions();
   updateArchiveStats();
   $('rename-input').value = myNick || '';
@@ -1274,6 +1514,7 @@ lightbox.addEventListener('click', () => lightbox.classList.add('hidden'));
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
   $('age-gate').classList.add('hidden');
+  closeProfilePopout();
   closeSettings();
   closePopups();
   lightbox.classList.add('hidden');

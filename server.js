@@ -264,11 +264,75 @@ function rateLimited(socket, key, max, windowMs) {
 }
 
 // ---------- Wysyłanie do klientów ----------
+// ---------- Profil (miniprofil jak na Discordzie) ----------
+const STATUSES = new Set(['online', 'idle', 'dnd']);
+const MAX_BIO = 190;
+const MAX_PRONOUNS = 30;
+const MAX_STATUS_TEXT = 60;
+const MAX_BANNER_CHARS = 60000; // baner jako data-URL (klient zmniejsza go do 600x200)
+
+// Tekst wielowierszowy (opis „O mnie”): zachowuje maksymalnie jedną pustą linię między akapitami.
+function cleanMultiline(value, maxLength) {
+  if (typeof value !== 'string') return '';
+  return value
+    .replace(/\r/g, '')
+    .split('\n')
+    .map((line) => line.replace(/[ \t]+/g, ' ').trim())
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+    .slice(0, maxLength);
+}
+
+function validBanner(value) {
+  return (
+    typeof value === 'string' &&
+    value.length <= MAX_BANNER_CHARS &&
+    /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(value)
+  );
+}
+
+function validColor(value) {
+  return typeof value === 'string' && /^#[0-9a-fA-F]{6}$/.test(value);
+}
+
+// Pola profilu edytowane przez użytkownika
+function profileOf(account) {
+  return {
+    bio: account.bio || '',
+    pronouns: account.pronouns || '',
+    statusText: account.statusText || '',
+    status: account.status || 'online',
+    bannerColor: account.bannerColor || null,
+    banner: account.banner || null,
+  };
+}
+
+// Profil widoczny dla innych (po kliknięciu osoby)
+function publicProfile(account) {
+  return {
+    id: account.id,
+    nick: account.nick,
+    avatar: account.avatar,
+    createdAt: account.createdAt,
+    online: isOnline(account.id),
+    ...profileOf(account),
+  };
+}
+
 function broadcastUsers() {
   const online = new Map(); // jedna pozycja na konto, nawet gdy otwarto kilka kart
   for (const { accountId } of users.values()) {
     const account = accountsById.get(accountId);
-    if (account) online.set(accountId, { nick: account.nick, avatar: account.avatar });
+    if (account) {
+      online.set(accountId, {
+        id: account.id,
+        nick: account.nick,
+        avatar: account.avatar,
+        status: account.status || 'online',
+        statusText: account.statusText || '',
+      });
+    }
   }
   io.emit('users', Array.from(online.values()));
 }
@@ -385,6 +449,8 @@ io.on('connection', (socket) => {
       avatar: account.avatar,
       id: socket.id,
       accountId: account.id,
+      createdAt: account.createdAt,
+      profile: profileOf(account),
       channel,
       channels: CHANNELS,
     });
@@ -395,6 +461,56 @@ io.on('connection', (socket) => {
       if (firstSession) systemMessage(`${nick} dołączył(a) do czatu`);
     }
     broadcastUsers();
+  });
+
+  // Zapis własnego profilu (wszystkie pola opcjonalne – zmieniamy tylko te, które przyszły).
+  socket.on('profile:update', async (payload, ack) => {
+    const reply = typeof ack === 'function' ? ack : () => {};
+    const user = users.get(socket.id);
+    const account = user && accountsById.get(user.accountId);
+    if (!account) return reply({ ok: false, error: 'Najpierw dołącz do czatu.' });
+    if (!payload || typeof payload !== 'object') return reply({ ok: false, error: 'Nieprawidłowe dane.' });
+    if (rateLimited(socket, 'profile', 10, 60000)) {
+      return reply({ ok: false, error: 'Zbyt wiele zmian profilu. Spróbuj za chwilę.' });
+    }
+
+    const next = {};
+    if ('bio' in payload) next.bio = cleanMultiline(payload.bio, MAX_BIO);
+    if ('pronouns' in payload) next.pronouns = cleanText(payload.pronouns, MAX_PRONOUNS);
+    if ('statusText' in payload) next.statusText = cleanText(payload.statusText, MAX_STATUS_TEXT);
+    if ('status' in payload) {
+      if (!STATUSES.has(payload.status)) return reply({ ok: false, error: 'Nieprawidłowy status.' });
+      next.status = payload.status;
+    }
+    if ('bannerColor' in payload) {
+      if (payload.bannerColor !== null && !validColor(payload.bannerColor)) {
+        return reply({ ok: false, error: 'Nieprawidłowy kolor banera.' });
+      }
+      next.bannerColor = payload.bannerColor;
+    }
+    if ('banner' in payload) {
+      if (payload.banner !== null && !validBanner(payload.banner)) {
+        return reply({ ok: false, error: 'Nieprawidłowy obraz banera (maksymalnie ok. 45 KB po zmniejszeniu).' });
+      }
+      next.banner = payload.banner;
+    }
+
+    Object.assign(account, next);
+    await persistAccount(account);
+    reply({ ok: true, profile: profileOf(account) });
+    broadcastUsers(); // zmienił się status widoczny na liście osób
+  });
+
+  // Profil dowolnej osoby (po id konta albo nicku) – także gdy jest offline.
+  socket.on('profile:get', (query, ack) => {
+    const reply = typeof ack === 'function' ? ack : () => {};
+    if (!users.has(socket.id)) return reply({ ok: false, error: 'Najpierw dołącz do czatu.' });
+    if (rateLimited(socket, 'profileGet', 40, 10000)) return reply({ ok: false, error: 'Zwolnij trochę.' });
+    let account = null;
+    if (query && typeof query.id === 'string') account = accountsById.get(query.id);
+    if (!account && query && typeof query.nick === 'string') account = accountsByNick.get(query.nick.toLowerCase());
+    if (!account) return reply({ ok: false, error: 'Nie znaleziono profilu tej osoby.' });
+    reply({ ok: true, profile: publicProfile(account) });
   });
 
   socket.on('switchChannel', async (payload, ack) => {
