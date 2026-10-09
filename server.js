@@ -39,11 +39,34 @@ const store = createStore({
 const MAX_NICK_LENGTH = 20;
 const MAX_MESSAGE_LENGTH = 500;
 const MAX_FILE_BYTES = 5 * 1024 * 1024; // 5 MB
-const MAX_AVATAR_CHARS = 30000; // avatar jako mały data-URL (klient zmniejsza go do 128x128)
+// Avatar i baner: zwykłe obrazy klient zmniejsza (JPEG), a animowane GIF-y przesyła w oryginale.
+const MAX_AVATAR_CHARS = 30000; // statyczny avatar jako data-URL (klient zmniejsza go do 128x128)
+const GIF_AVATAR_BYTES = 600 * 1024; // animowany avatar (GIF)
+const GIF_BANNER_BYTES = 1536 * 1024; // animowany baner (GIF)
+const MAX_MEDIA_BYTES = (Number(process.env.MAX_MEDIA_MB) || 100) * 1024 * 1024; // łączny budżet avatarów i banerów
 
 const app = express();
 app.use(cors());
 app.use(express.static(path.join(__dirname, 'public')));
+
+// Avatary i banery jako zwykłe obrazy (a nie data-URL w każdej wiadomości socketowej). Adres zawiera
+// wersję (?v=…), więc przeglądarka trzyma obraz w pamięci podręcznej „na zawsze” i pobiera go raz.
+app.get('/media/:kind/:id', (req, res) => {
+  const { kind, id } = req.params;
+  if (!['avatar', 'banner'].includes(kind) || !/^[0-9a-f-]{36}$/.test(id)) return res.sendStatus(404);
+  const account = accountsById.get(id);
+  const dataUrl = account && account[kind];
+  const match = typeof dataUrl === 'string' && /^data:(image\/(?:jpeg|png|webp|gif));base64,/.exec(dataUrl);
+  if (!match) return res.sendStatus(404);
+  const body = Buffer.from(dataUrl.slice(match[0].length), 'base64');
+  res.set({
+    'Content-Type': match[1],
+    'Content-Length': body.length,
+    'Cache-Control': 'public, max-age=31536000, immutable',
+    'X-Content-Type-Options': 'nosniff',
+  });
+  res.send(body);
+});
 
 // Render używa tego endpointu do sprawdzania, czy aplikacja działa.
 app.get('/health', (req, res) => res.send('OK'));
@@ -56,6 +79,8 @@ app.get('/api/config', (req, res) => {
     retentionDays: RETENTION_DAYS,
     iceServers: ICE_SERVERS,
     maxVoiceUsers: MAX_VOICE_USERS,
+    gifAvatarBytes: GIF_AVATAR_BYTES,
+    gifBannerBytes: GIF_BANNER_BYTES,
   });
 });
 
@@ -187,12 +212,45 @@ function safeMime(value) {
   return 'application/octet-stream';
 }
 
+const dataUrlChars = (bytes) => Math.ceil(bytes / 3) * 4 + 40; // rozmiar obrazu po zakodowaniu w base64
+
+// Sprawdza data-URL obrazu: dozwolony typ, limit rozmiaru (GIF ma własny) i zgodność nagłówka pliku z typem.
+function isValidImageDataUrl(value, maxStaticChars, maxGifBytes) {
+  if (typeof value !== 'string') return false;
+  const m = /^data:image\/(jpeg|png|webp|gif);base64,([A-Za-z0-9+/=]+)$/.exec(value);
+  if (!m) return false;
+  const [, type, b64] = m;
+  if (value.length > (type === 'gif' ? dataUrlChars(maxGifBytes) : maxStaticChars)) return false;
+  const head = Buffer.from(b64.slice(0, 24), 'base64');
+  const tag = (from, to) => head.subarray(from, to).toString('latin1');
+  if (type === 'jpeg') return head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff;
+  if (type === 'png') return head[0] === 0x89 && tag(1, 4) === 'PNG';
+  if (type === 'gif') return tag(0, 4) === 'GIF8';
+  return tag(0, 4) === 'RIFF' && tag(8, 12) === 'WEBP';
+}
+
 function validAvatar(value) {
-  return (
-    typeof value === 'string' &&
-    value.length <= MAX_AVATAR_CHARS &&
-    /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(value)
-  );
+  return isValidImageDataUrl(value, MAX_AVATAR_CHARS, GIF_AVATAR_BYTES);
+}
+
+// Wersja obrazu w adresie – zmienia się razem z obrazem, więc cache przeglądarki nigdy nie jest nieaktualny.
+function mediaVersion(value) {
+  return value ? crypto.createHash('sha1').update(value).digest('hex').slice(0, 12) : null;
+}
+
+function mediaUrl(account, kind) {
+  if (!account[kind]) return null;
+  const versionKey = `${kind}V`;
+  account[versionKey] = account[versionKey] || mediaVersion(account[kind]);
+  return `/media/${kind}/${account.id}?v=${account[versionKey]}`;
+}
+
+// Czy mieści się jeszcze w łącznym budżecie na avatary i banery (chroni pamięć serwera przed wieloma GIF-ami)?
+function mediaBudgetOk(account, field, value) {
+  let total = 0;
+  for (const a of accountsById.values()) total += (a.avatar ? a.avatar.length : 0) + (a.banner ? a.banner.length : 0);
+  total -= account[field] ? account[field].length : 0;
+  return total + (value ? value.length : 0) <= MAX_MEDIA_BYTES * 1.4;
 }
 
 // Zamienia link do STRONY z GIFem (Tenor, Giphy) na bezpośredni adres obrazka.
@@ -285,11 +343,7 @@ function cleanMultiline(value, maxLength) {
 }
 
 function validBanner(value) {
-  return (
-    typeof value === 'string' &&
-    value.length <= MAX_BANNER_CHARS &&
-    /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(value)
-  );
+  return isValidImageDataUrl(value, MAX_BANNER_CHARS, GIF_BANNER_BYTES);
 }
 
 function validColor(value) {
@@ -304,7 +358,7 @@ function profileOf(account) {
     statusText: account.statusText || '',
     status: account.status || 'online',
     bannerColor: account.bannerColor || null,
-    banner: account.banner || null,
+    banner: mediaUrl(account, 'banner'),
   };
 }
 
@@ -313,7 +367,7 @@ function publicProfile(account) {
   return {
     id: account.id,
     nick: account.nick,
-    avatar: account.avatar,
+    avatar: mediaUrl(account, 'avatar'),
     createdAt: account.createdAt,
     online: isOnline(account.id),
     ...profileOf(account),
@@ -328,7 +382,7 @@ function broadcastUsers() {
       online.set(accountId, {
         id: account.id,
         nick: account.nick,
-        avatar: account.avatar,
+        avatar: mediaUrl(account, 'avatar'),
         status: account.status || 'online',
         statusText: account.statusText || '',
       });
@@ -419,10 +473,12 @@ io.on('connection', (socket) => {
       if (registrationLimited(clientIp(socket))) {
         return reply({ ok: false, needNick: true, error: 'Zbyt wiele nowych kont z tego adresu. Spróbuj później.' });
       }
+      const avatar = validAvatar(payload.avatar) ? payload.avatar : null;
       account = {
         id: crypto.randomUUID(),
         nick,
-        avatar: validAvatar(payload.avatar) ? payload.avatar : null,
+        avatar,
+        avatarV: mediaVersion(avatar),
         tokenHash: hashToken(token),
         createdAt: Date.now(),
       };
@@ -446,7 +502,7 @@ io.on('connection', (socket) => {
     reply({
       ok: true,
       nick,
-      avatar: account.avatar,
+      avatar: mediaUrl(account, 'avatar'),
       id: socket.id,
       accountId: account.id,
       createdAt: account.createdAt,
@@ -490,9 +546,13 @@ io.on('connection', (socket) => {
     }
     if ('banner' in payload) {
       if (payload.banner !== null && !validBanner(payload.banner)) {
-        return reply({ ok: false, error: 'Nieprawidłowy obraz banera (maksymalnie ok. 45 KB po zmniejszeniu).' });
+        return reply({ ok: false, error: 'Nieprawidłowy obraz banera (GIF do 1,5 MB, inne formaty są zmniejszane).' });
+      }
+      if (payload.banner && !mediaBudgetOk(account, 'banner', payload.banner)) {
+        return reply({ ok: false, error: 'Serwer wyczerpał limit miejsca na avatary i banery.' });
       }
       next.banner = payload.banner;
+      next.bannerV = mediaVersion(payload.banner);
     }
 
     Object.assign(account, next);
@@ -668,11 +728,15 @@ io.on('connection', (socket) => {
     const account = user && accountsById.get(user.accountId);
     if (!account) return reply({ ok: false });
     if (value !== null && !validAvatar(value)) {
-      return reply({ ok: false, error: 'Nieprawidłowy avatar.' });
+      return reply({ ok: false, error: 'Nieprawidłowy avatar (GIF do 600 KB, inne formaty są zmniejszane).' });
+    }
+    if (value && !mediaBudgetOk(account, 'avatar', value)) {
+      return reply({ ok: false, error: 'Serwer wyczerpał limit miejsca na avatary i banery.' });
     }
     account.avatar = value;
+    account.avatarV = mediaVersion(value);
     persistAccount(account);
-    reply({ ok: true });
+    reply({ ok: true, avatar: mediaUrl(account, 'avatar') });
     broadcastUsers();
   });
 

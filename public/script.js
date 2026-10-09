@@ -71,7 +71,13 @@ let settings = store.get('mychat.settings', {
   archive: true, // zapisuj wiadomości na tym urządzeniu (nie znikają po okresie przechowywania na serwerze)
   archiveFiles: false, // zapisuj też zawartość plików (zajmuje więcej miejsca)
 });
-let profile = store.get('mychat.profile', { nick: '', avatar: null });
+// avatar = adres obrazu z serwera; avatarData = mała lokalna kopia (pozwala odtworzyć avatar po zresetowaniu serwera)
+let profile = store.get('mychat.profile', { nick: '', avatar: null, avatarData: null });
+if (profile.avatar && profile.avatar.startsWith('data:')) {
+  // starszy format: avatar był zapisany jako data-URL
+  profile.avatarData = profile.avatarData || profile.avatar;
+  profile.avatar = null;
+}
 
 let myNick = null;
 let myAccountId = null;
@@ -82,7 +88,7 @@ let channels = [{ id: DEFAULT_CHANNEL, name: 'ogólny' }]; // pełna lista przyc
 let currentChannel = store.get('mychat.channel', { id: DEFAULT_CHANNEL }).id;
 let adultConfirmed = store.get('mychat.adult', { ok: false }).ok === true; // potwierdzenie pełnoletności (nsfw)
 const unreadChannels = new Set(); // kanały z nowymi wiadomościami, których nie oglądasz
-let pendingAvatar = profile.avatar; // avatar wybrany na ekranie logowania
+let pendingAvatar = profile.avatarData; // avatar wybrany na ekranie logowania (data-URL)
 let avatarTarget = 'login';
 let lastNick = null;
 let lastDay = null;
@@ -191,8 +197,33 @@ function renderSettingsOptions() {
 }
 
 // ---------- Avatary ----------
+// Dozwolone źródła obrazu: adres z serwera (/media/…) albo data-URL wybrany lokalnie (także animowany GIF).
+const MEDIA_URL = /^\/media\/(avatar|banner)\/[0-9a-f-]{36}\?v=[0-9a-f]+$/;
+const DATA_IMAGE_PREFIX = /^data:image\/(jpeg|png|webp|gif);base64,/;
+function isSafeImageSrc(value) {
+  return (
+    typeof value === 'string' &&
+    (MEDIA_URL.test(value) ||
+      value.startsWith(`blob:${location.origin}/`) || // lokalny podgląd wybranego pliku
+      (DATA_IMAGE_PREFIX.test(value) && !value.includes('"')))
+  );
+}
+
+// Animowane GIF-y wysyłamy w oryginale, więc mają osobne (większe) limity niż zwykłe obrazy.
+let gifAvatarBytes = 600 * 1024;
+let gifBannerBytes = 1536 * 1024;
+
+function readAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error('Nie udało się odczytać pliku.'));
+    reader.readAsDataURL(file);
+  });
+}
+
 function setAvatarVisual(node, nick, avatar) {
-  if (avatar && /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(avatar)) {
+  if (isSafeImageSrc(avatar)) {
     node.style.backgroundImage = `url("${avatar}")`;
     node.style.backgroundColor = '';
     node.textContent = '';
@@ -219,6 +250,13 @@ function refreshAvatars() {
 function fileToAvatar(file) {
   return new Promise((resolve, reject) => {
     if (!file || !file.type.startsWith('image/')) return reject(new Error('To nie jest obrazek.'));
+    if (file.type === 'image/gif') {
+      // GIF zostaje bez zmian, żeby nie stracić animacji
+      if (file.size > gifAvatarBytes) {
+        return reject(new Error(`Animowany avatar (GIF) może mieć maksymalnie ${formatSize(gifAvatarBytes)}.`));
+      }
+      return readAsDataUrl(file).then(resolve, reject);
+    }
     const url = URL.createObjectURL(file);
     const img = new Image();
     img.onload = () => {
@@ -252,14 +290,24 @@ function updateLoginAvatar() {
   setAvatarVisual(loginAvatarEl, nickInput.value.trim(), pendingAvatar);
 }
 
+// Kopię avatara w localStorage trzymamy tylko, gdy jest mała (duże GIF-y zostają wyłącznie na serwerze).
+const smallData = (dataUrl) => (dataUrl && dataUrl.length <= 60000 ? dataUrl : null);
+
 function setMyAvatar(avatar) {
-  profile.avatar = avatar;
+  profile.avatar = avatar; // pokazujemy od razu, zanim serwer odpowie
+  profile.avatarData = smallData(avatar);
   store.set('mychat.profile', profile);
   avatars.set(myNick, avatar);
   refreshAvatars();
   updateProfilePreview();
-  socket.timeout(10000).emit('avatar', avatar, (err, res) => {
-    if (err || !res || !res.ok) toast((res && res.error) || 'Nie udało się zapisać avatara.');
+  socket.timeout(20000).emit('avatar', avatar, (err, res) => {
+    if (err || !res || !res.ok) return toast((res && res.error) || 'Nie udało się zapisać avatara.');
+    // Od teraz używamy adresu z serwera (jak wszyscy inni) zamiast ciężkiego data-URL.
+    profile.avatar = res.avatar || null;
+    store.set('mychat.profile', profile);
+    avatars.set(myNick, profile.avatar);
+    refreshAvatars();
+    updateProfilePreview();
   });
 }
 
@@ -803,7 +851,6 @@ function renderMembers(list) {
 
 // ---------- Miniprofil ----------
 const STATUS_LABELS = { online: 'Online', idle: 'Zaraz wracam', dnd: 'Nie przeszkadzać', offline: 'Offline' };
-const SAFE_DATA_IMAGE = /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/;
 const popout = $('profile-popout');
 
 let myProfile = { bio: '', pronouns: '', statusText: '', status: 'online', bannerColor: null, banner: null };
@@ -814,7 +861,7 @@ function renderProfileCard(root, p, { isMe = false, onEdit = null } = {}) {
   const presence = p.online === false ? 'offline' : p.status || 'online';
 
   const banner = el('div', 'pcard__banner');
-  if (p.banner && SAFE_DATA_IMAGE.test(p.banner)) banner.style.backgroundImage = `url("${p.banner}")`;
+  if (isSafeImageSrc(p.banner)) banner.style.backgroundImage = `url("${p.banner}")`;
   else banner.style.background = p.bannerColor || colorFor(p.nick);
 
   const body = el('div', 'pcard__body');
@@ -908,11 +955,21 @@ function updateProfilePreview() {
     createdAt: myCreatedAt,
     online: true,
     ...draft,
+    banner: draft.bannerPreview || draft.banner,
   });
 }
 
+let bannerChanged = false; // baner wysyłamy na serwer tylko wtedy, gdy go zmieniono (to może być ciężki GIF)
+
+function setBannerPreview(url) {
+  if (draft.bannerPreview) URL.revokeObjectURL(draft.bannerPreview);
+  draft.bannerPreview = url;
+}
+
 function loadProfileForm() {
+  setBannerPreview(null);
   draft = { ...myProfile };
+  bannerChanged = false;
   $('profile-status').value = draft.status;
   $('profile-status-text').value = draft.statusText;
   $('profile-pronouns').value = draft.pronouns;
@@ -948,11 +1005,15 @@ $('profile-bio').addEventListener('input', (e) => {
 $('profile-banner-color').addEventListener('input', (e) => {
   draft.bannerColor = e.target.value;
   draft.banner = null; // wybór koloru zastępuje obraz
+  setBannerPreview(null);
+  bannerChanged = true;
   updateProfilePreview();
 });
 $('banner-remove').addEventListener('click', () => {
   draft.bannerColor = null;
   draft.banner = null;
+  setBannerPreview(null);
+  bannerChanged = true;
   $('profile-banner-color').value = colorFor(myNick || 'x');
   updateProfilePreview();
 });
@@ -963,16 +1024,25 @@ $('banner-file').addEventListener('change', async (e) => {
   if (!file) return;
   try {
     draft.banner = await fileToBanner(file);
+    setBannerPreview(URL.createObjectURL(file)); // lekki podgląd (bez wstawiania całego pliku do strony)
+    bannerChanged = true;
     updateProfilePreview();
   } catch (err) {
     toast(err.message);
   }
 });
 
-// Baner: kadrowanie do 600x200; jakość spada, aż obraz zmieści się w limicie serwera
+// Baner: zwykłe obrazy są kadrowane do 600x200 (jakość spada, aż zmieszczą się w limicie serwera);
+// animowany GIF zostaje w oryginale, żeby nie stracić animacji.
 function fileToBanner(file) {
   return new Promise((resolve, reject) => {
     if (!file.type.startsWith('image/')) return reject(new Error('To nie jest obrazek.'));
+    if (file.type === 'image/gif') {
+      if (file.size > gifBannerBytes) {
+        return reject(new Error(`Animowany baner (GIF) może mieć maksymalnie ${formatSize(gifBannerBytes)}.`));
+      }
+      return readAsDataUrl(file).then(resolve, reject);
+    }
     const url = URL.createObjectURL(file);
     const img = new Image();
     img.onload = () => {
@@ -1003,10 +1073,16 @@ function fileToBanner(file) {
 $('profile-save').addEventListener('click', () => {
   const btn = $('profile-save');
   btn.disabled = true;
-  socket.timeout(10000).emit('profile:update', draft, (err, res) => {
+  const { banner, bannerPreview, ...fields } = draft;
+  const payload = bannerChanged ? { ...fields, banner } : fields;
+  socket.timeout(30000).emit('profile:update', payload, (err, res) => {
     btn.disabled = false;
     if (err || !res || !res.ok) return toast((res && res.error) || 'Nie udało się zapisać profilu.');
     myProfile = res.profile;
+    bannerChanged = false;
+    setBannerPreview(null);
+    draft.banner = myProfile.banner; // od teraz adres z serwera
+    updateProfilePreview();
     updateMeStatus();
     toast('Profil zapisany.', true);
   });
@@ -1087,7 +1163,7 @@ function join(nick) {
   const payload = {
     token: getDeviceToken(),
     nick,
-    avatar: profile.avatar,
+    avatar: pendingAvatar || profile.avatarData || null, // liczy się tylko przy zakładaniu nowego konta
     channel: currentChannel,
     adult: adultConfirmed,
   };
@@ -1110,8 +1186,12 @@ function join(nick) {
     unreadChannels.delete(currentChannel);
     renderChannels();
     syncDeletions();
-    profile = { nick: res.nick, avatar: res.avatar || null };
-    pendingAvatar = profile.avatar;
+    profile = {
+      nick: res.nick,
+      avatar: res.avatar || null,
+      avatarData: smallData(pendingAvatar) || profile.avatarData || null,
+    };
+    pendingAvatar = profile.avatarData;
     store.set('mychat.profile', profile);
     avatars.set(myNick, profile.avatar);
     loginError.textContent = '';
@@ -1131,7 +1211,7 @@ loginForm.addEventListener('submit', (e) => {
   e.preventDefault();
   const nick = nickInput.value.trim();
   if (!nick) return;
-  profile = { nick, avatar: pendingAvatar };
+  profile = { ...profile, nick, avatarData: smallData(pendingAvatar) };
   join(nick);
 });
 
@@ -2090,6 +2170,8 @@ fetch('/api/config')
     if (cfg.maxFileBytes) maxFileBytes = cfg.maxFileBytes;
     if (Array.isArray(cfg.iceServers) && cfg.iceServers.length) iceServers = cfg.iceServers;
     if (cfg.maxVoiceUsers) maxVoiceUsers = cfg.maxVoiceUsers;
+    if (cfg.gifAvatarBytes) gifAvatarBytes = cfg.gifAvatarBytes;
+    if (cfg.gifBannerBytes) gifBannerBytes = cfg.gifBannerBytes;
     if (cfg.retentionMs) {
       retentionMs = cfg.retentionMs;
       retentionDays = cfg.retentionDays;
