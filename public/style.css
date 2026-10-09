@@ -338,6 +338,62 @@ button {
   box-shadow: 0 0 0 2px var(--accent);
 }
 
+.login__auto {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 16px 0 8px;
+  text-align: center;
+}
+.login__auto p {
+  margin: 0;
+  color: var(--text);
+}
+.login__auto .login__hint {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+.spinner {
+  width: 36px;
+  height: 36px;
+  margin-bottom: 12px;
+  border: 4px solid var(--bg-active);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.rename-row {
+  display: flex;
+  gap: 8px;
+}
+.rename-row input {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 12px;
+  font-size: 15px;
+  color: var(--text);
+  background: var(--bg-tertiary);
+  border: 0;
+  border-radius: 4px;
+  outline: none;
+}
+.rename-row input:focus {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+.settings-note {
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+
 .login .login__error {
   min-height: 20px;
   margin: 8px 0 0;
@@ -428,6 +484,166 @@ button {
   line-height: 1;
   color: var(--text-muted);
 }
+
+/* ---------- Kanał głosowy ---------- */
+.channels__category--spaced {
+  margin-top: 20px;
+}
+.channel--voice {
+  width: 100%;
+  font: inherit;
+  font-weight: 500;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.channel--voice .hash {
+  font-size: 16px;
+}
+.channel--voice:hover {
+  color: var(--text-strong);
+  background: var(--bg-hover);
+}
+.channel--voice.is-connected {
+  color: var(--green);
+}
+.channel__count {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.voice-members {
+  padding: 2px 0 0 28px;
+}
+.voice-member {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 6px;
+  font-size: 14px;
+  border-radius: 4px;
+  animation: msg-in 0.25s ease-out;
+}
+.voice-member .avatar {
+  width: 24px;
+  height: 24px;
+  font-size: 11px;
+  box-shadow: 0 0 0 2px transparent;
+  transition: box-shadow 0.12s;
+}
+.voice-member__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.voice-member__flags {
+  font-size: 12px;
+}
+/* Zielona obwódka wokół osoby, która akurat mówi */
+.voice-member.speaking .avatar,
+.voicebar__member.speaking .avatar {
+  box-shadow: 0 0 0 2px var(--green);
+}
+.voice-member.speaking .voice-member__name {
+  color: var(--text-strong);
+}
+
+.voicebar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 12px;
+  flex-shrink: 0;
+  background: color-mix(in srgb, var(--green) 14%, var(--bg-secondary));
+  border-bottom: 1px solid var(--bg-tertiary);
+  animation: bar-in 0.25s ease-out;
+}
+.voicebar__info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--green);
+  white-space: nowrap;
+}
+.voicebar__dot {
+  width: 8px;
+  height: 8px;
+  background: var(--green);
+  border-radius: 50%;
+  animation: pulse-dot 1.6s ease-in-out infinite;
+}
+.voicebar__members {
+  display: flex;
+  flex: 1;
+  gap: 6px;
+  min-width: 0;
+  overflow-x: auto;
+}
+.voicebar__member {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px 2px 2px;
+  font-size: 13px;
+  color: var(--text);
+  white-space: nowrap;
+  background: var(--bg-hover);
+  border-radius: 999px;
+}
+.voicebar__member .avatar {
+  width: 22px;
+  height: 22px;
+  font-size: 11px;
+  box-shadow: 0 0 0 2px transparent;
+  transition: box-shadow 0.12s;
+}
+.voicebar__actions {
+  display: flex;
+  gap: 2px;
+}
+.voicebar .icon-btn {
+  position: relative;
+  width: 36px;
+  height: 36px;
+}
+.voicebar .icon-btn .ico-off {
+  display: none;
+}
+.voicebar .icon-btn.is-off {
+  color: var(--red);
+}
+.voicebar #voice-mute.is-off .ico-on {
+  display: none;
+}
+.voicebar #voice-mute.is-off .ico-off {
+  display: block;
+}
+/* Przekreślenie ikony słuchawek, gdy dźwięk jest wyłączony */
+.voicebar #voice-deafen.is-off::after {
+  content: '';
+  position: absolute;
+  width: 24px;
+  height: 2px;
+  background: currentColor;
+  border-radius: 1px;
+  transform: rotate(-45deg);
+}
+.icon-btn--danger:hover {
+  color: var(--red);
+}
+.topbar #voice-btn.is-active {
+  color: var(--green);
+}
+.topbar #voice-btn:hover {
+  transform: scale(1.12);
+}
 .hash--lg {
   font-size: 24px;
 }
@@ -497,6 +713,9 @@ button {
 }
 .topbar .icon-btn {
   margin-left: auto;
+}
+.topbar .icon-btn + .icon-btn {
+  margin-left: 0;
 }
 .topbar .icon-btn:hover {
   transform: rotate(60deg);
@@ -1180,6 +1399,22 @@ audio.media {
   }
   to {
     left: 100%;
+  }
+}
+@keyframes bar-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes pulse-dot {
+  50% {
+    opacity: 0.35;
+    transform: scale(0.8);
   }
 }
 @keyframes pulse {

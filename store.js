@@ -15,7 +15,9 @@ class FileStore {
     this.metaPath = path.join(dir, 'messages.json');
     this.retentionMs = retentionMs;
     this.maxBytes = maxBytes;
+    this.accountsPath = path.join(dir, 'accounts.json');
     this.messages = [];
+    this.accounts = new Map(); // id -> konto
     this.saveTimer = null;
   }
 
@@ -30,6 +32,12 @@ class FileStore {
     } catch {
       this.messages = [];
     }
+    try {
+      const list = JSON.parse(await fs.readFile(this.accountsPath, 'utf8'));
+      this.accounts = new Map(list.map((a) => [a.id, a]));
+    } catch {
+      this.accounts = new Map();
+    }
     await this.prune();
 
     // Usuń osierocone pliki (np. po awarii w trakcie zapisu).
@@ -37,6 +45,15 @@ class FileStore {
     for (const name of await fs.readdir(this.filesDir)) {
       if (!known.has(name)) await fs.unlink(path.join(this.filesDir, name)).catch(() => {});
     }
+  }
+
+  async loadAccounts() {
+    return Array.from(this.accounts.values());
+  }
+
+  async saveAccount(account) {
+    this.accounts.set(account.id, { ...account });
+    this.scheduleSave();
   }
 
   async add(msg) {
@@ -95,9 +112,14 @@ class FileStore {
     clearTimeout(this.saveTimer);
     this.saveTimer = null;
     try {
-      const tmp = `${this.metaPath}.tmp`;
-      await fs.writeFile(tmp, JSON.stringify(this.messages));
-      await fs.rename(tmp, this.metaPath);
+      for (const [file, value] of [
+        [this.metaPath, this.messages],
+        [this.accountsPath, Array.from(this.accounts.values())],
+      ]) {
+        const tmp = `${file}.tmp`;
+        await fs.writeFile(tmp, JSON.stringify(value));
+        await fs.rename(tmp, file);
+      }
     } catch (err) {
       console.error('Nie udało się zapisać historii:', err.message);
     }
@@ -120,9 +142,23 @@ class MongoStore {
     this.client = new MongoClient(this.uri);
     await this.client.connect();
     this.col = this.client.db(this.dbName).collection('messages');
+    this.accountsCol = this.client.db(this.dbName).collection('accounts');
+    await this.accountsCol.createIndex({ tokenHash: 1 }, { unique: true });
+    await this.accountsCol.createIndex({ nickLower: 1 }, { unique: true });
     await this.col.createIndex({ time: 1 });
     // Indeks TTL: MongoDB sam usuwa dokumenty po upływie czasu od `createdAt`.
     await this.col.createIndex({ createdAt: 1 }, { expireAfterSeconds: Math.ceil(this.retentionMs / 1000) });
+  }
+
+  async loadAccounts() {
+    const docs = await this.accountsCol.find({}).toArray();
+    return docs.map(({ _id, nickLower, ...rest }) => rest);
+  }
+
+  async saveAccount(account) {
+    // nickLower służy tylko do indeksu unikalności nicków w bazie
+    const doc = { _id: account.id, ...account, nickLower: account.nick.toLowerCase() };
+    await this.accountsCol.replaceOne({ _id: account.id }, doc, { upsert: true });
   }
 
   async add(msg) {

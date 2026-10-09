@@ -99,8 +99,58 @@ const io = new Server(server, {
   maxHttpBufferSize: MAX_FILE_BYTES + 512 * 1024,
 });
 
-// socket.id -> { nick, avatar }
+// ---------- Konta ----------
+// Każde urządzenie (przeglądarka) ma własne, stałe konto. Klient generuje tajny token i trzyma go
+// w localStorage; serwer zapisuje tylko jego skrót SHA-256. Nick jest zarezerwowany dla konta.
+const MAX_ACCOUNTS = 5000;
+const ACCOUNTS_PER_IP_PER_HOUR = 5;
+const accountsById = new Map(); // id -> { id, nick, avatar, tokenHash, createdAt }
+const accountsByToken = new Map(); // tokenHash -> konto
+const accountsByNick = new Map(); // nick małymi literami -> konto
+const registrations = new Map(); // ip -> [znaczniki czasu]
+
+function indexAccount(account) {
+  accountsById.set(account.id, account);
+  accountsByToken.set(account.tokenHash, account);
+  accountsByNick.set(account.nick.toLowerCase(), account);
+}
+
+function hashToken(token) {
+  return crypto.createHash('sha256').update(token).digest('hex');
+}
+
+function clientIp(socket) {
+  const forwarded = socket.handshake.headers['x-forwarded-for'];
+  return (typeof forwarded === 'string' && forwarded.split(',')[0].trim()) || socket.handshake.address;
+}
+
+function registrationLimited(ip) {
+  const now = Date.now();
+  const recent = (registrations.get(ip) || []).filter((t) => now - t < 60 * 60 * 1000);
+  if (recent.length >= ACCOUNTS_PER_IP_PER_HOUR) {
+    registrations.set(ip, recent);
+    return true;
+  }
+  recent.push(now);
+  registrations.set(ip, recent);
+  return false;
+}
+
+async function persistAccount(account) {
+  try {
+    await store.saveAccount(account);
+  } catch (err) {
+    console.error('Nie udało się zapisać konta:', err.message);
+  }
+}
+
+// socket.id -> { accountId, nick } (aktywne połączenia; jedno konto może mieć kilka kart)
 const users = new Map();
+
+function isOnline(accountId) {
+  for (const u of users.values()) if (u.accountId === accountId) return true;
+  return false;
+}
 // socket.id -> { muted, deafened } (osoby na kanale głosowym)
 const voice = new Map();
 
@@ -168,10 +218,12 @@ function rateLimited(socket, key, max, windowMs) {
 
 // ---------- Wysyłanie do klientów ----------
 function broadcastUsers() {
-  io.emit(
-    'users',
-    Array.from(users.values()).map(({ nick, avatar }) => ({ nick, avatar }))
-  );
+  const online = new Map(); // jedna pozycja na konto, nawet gdy otwarto kilka kart
+  for (const { accountId } of users.values()) {
+    const account = accountsById.get(accountId);
+    if (account) online.set(accountId, { nick: account.nick, avatar: account.avatar });
+  }
+  io.emit('users', Array.from(online.values()));
 }
 
 function systemMessage(text) {
@@ -197,19 +249,44 @@ async function emitMessage(socket, nick, extra) {
 io.on('connection', (socket) => {
   socket.on('join', async (payload, ack) => {
     const reply = typeof ack === 'function' ? ack : () => {};
-    const nick = cleanText(payload && payload.nick, MAX_NICK_LENGTH);
-    if (!nick) return reply({ ok: false, error: 'Podaj nick.' });
+    if (!payload || typeof payload !== 'object') return reply({ ok: false, error: 'Nieprawidłowe dane.' });
 
-    const taken = Array.from(users.entries()).some(
-      ([id, u]) => id !== socket.id && u.nick.toLowerCase() === nick.toLowerCase()
-    );
-    if (taken) return reply({ ok: false, error: 'Ten nick jest już zajęty.' });
+    const token = payload.token;
+    if (typeof token !== 'string' || token.length < 32 || token.length > 128) {
+      return reply({ ok: false, error: 'Brak identyfikatora urządzenia.' });
+    }
 
-    const avatar = validAvatar(payload.avatar) ? payload.avatar : null;
+    let account = accountsByToken.get(hashToken(token));
+    if (!account) {
+      // Nowe urządzenie – tworzymy konto z wybranym nickiem (nick musi być unikalny).
+      const nick = cleanText(payload.nick, MAX_NICK_LENGTH);
+      if (!nick) return reply({ ok: false, needNick: true, error: 'Podaj nick.' });
+      if (accountsByNick.has(nick.toLowerCase())) {
+        return reply({ ok: false, needNick: true, error: 'Ten nick jest już zajęty.' });
+      }
+      if (accountsById.size >= MAX_ACCOUNTS) {
+        return reply({ ok: false, needNick: true, error: 'Serwer osiągnął limit kont.' });
+      }
+      if (registrationLimited(clientIp(socket))) {
+        return reply({ ok: false, needNick: true, error: 'Zbyt wiele nowych kont z tego adresu. Spróbuj później.' });
+      }
+      account = {
+        id: crypto.randomUUID(),
+        nick,
+        avatar: validAvatar(payload.avatar) ? payload.avatar : null,
+        tokenHash: hashToken(token),
+        createdAt: Date.now(),
+      };
+      indexAccount(account); // od razu, żeby nikt nie zajął nicka w trakcie zapisu
+      await persistAccount(account);
+    }
+
+    const nick = account.nick;
     const alreadyIn = users.has(socket.id);
-    users.set(socket.id, { nick, avatar });
+    const firstSession = !isOnline(account.id);
+    users.set(socket.id, { accountId: account.id, nick });
 
-    reply({ ok: true, nick, id: socket.id });
+    reply({ ok: true, nick, avatar: account.avatar, id: socket.id });
 
     if (!alreadyIn) {
       // Historia z ostatnich dni (pliki bez zawartości – pobierane na żądanie przez 'getFile').
@@ -220,9 +297,37 @@ io.on('connection', (socket) => {
         socket.emit('history', []);
       }
       socket.emit('voice:users', voiceList());
-      systemMessage(`${nick} dołączył(a) do czatu`);
+      if (firstSession) systemMessage(`${nick} dołączył(a) do czatu`);
     }
     broadcastUsers();
+  });
+
+  socket.on('rename', async (rawNick, ack) => {
+    const reply = typeof ack === 'function' ? ack : () => {};
+    const user = users.get(socket.id);
+    const account = user && accountsById.get(user.accountId);
+    if (!account) return reply({ ok: false, error: 'Najpierw dołącz do czatu.' });
+
+    const nick = cleanText(rawNick, MAX_NICK_LENGTH);
+    if (!nick) return reply({ ok: false, error: 'Podaj nick.' });
+    if (nick === account.nick) return reply({ ok: true, nick });
+    const owner = accountsByNick.get(nick.toLowerCase());
+    if (owner && owner.id !== account.id) return reply({ ok: false, error: 'Ten nick jest już zajęty.' });
+    if (rateLimited(socket, 'rename', 3, 60 * 60 * 1000)) {
+      return reply({ ok: false, error: 'Nick można zmieniać maksymalnie 3 razy na godzinę.' });
+    }
+
+    const oldNick = account.nick;
+    accountsByNick.delete(oldNick.toLowerCase());
+    account.nick = nick;
+    accountsByNick.set(nick.toLowerCase(), account);
+    for (const u of users.values()) if (u.accountId === account.id) u.nick = nick;
+    await persistAccount(account);
+
+    reply({ ok: true, nick });
+    systemMessage(`${oldNick} zmienił(a) nick na ${nick}`);
+    broadcastUsers();
+    if (voice.size) broadcastVoice();
   });
 
   // ---------- Czat głosowy: serwer tylko pośredniczy w wymianie sygnałów WebRTC ----------
@@ -278,11 +383,13 @@ io.on('connection', (socket) => {
   socket.on('avatar', (value, ack) => {
     const reply = typeof ack === 'function' ? ack : () => {};
     const user = users.get(socket.id);
-    if (!user) return reply({ ok: false });
+    const account = user && accountsById.get(user.accountId);
+    if (!account) return reply({ ok: false });
     if (value !== null && !validAvatar(value)) {
       return reply({ ok: false, error: 'Nieprawidłowy avatar.' });
     }
-    user.avatar = value;
+    account.avatar = value;
+    persistAccount(account);
     reply({ ok: true });
     broadcastUsers();
   });
@@ -347,8 +454,11 @@ io.on('connection', (socket) => {
     const user = users.get(socket.id);
     if (!user) return;
     users.delete(socket.id);
-    socket.broadcast.emit('typing', { nick: user.nick, isTyping: false });
-    systemMessage(`${user.nick} opuścił(a) czat`);
+    // Komunikat o wyjściu tylko gdy to była ostatnia otwarta karta tego konta.
+    if (!isOnline(user.accountId)) {
+      socket.broadcast.emit('typing', { nick: user.nick, isTyping: false });
+      systemMessage(`${user.nick} opuścił(a) czat`);
+    }
     broadcastUsers();
     if (wasInVoice) broadcastVoice();
   });
@@ -357,6 +467,9 @@ io.on('connection', (socket) => {
 async function start() {
   await store.init();
   console.log(`Historia: ${store.label}, wiadomości i pliki usuwane po ${RETENTION_DAYS} dn.`);
+
+  for (const account of await store.loadAccounts()) indexAccount(account);
+  console.log(`Wczytano kont: ${accountsById.size}`);
 
   // Co 10 minut usuwamy przeterminowane wiadomości i pliki.
   setInterval(() => {

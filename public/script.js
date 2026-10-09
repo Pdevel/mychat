@@ -411,7 +411,7 @@ function sweepExpired() {
 }
 
 function addMessage(m, { historic = false } = {}) {
-  const mine = m.senderId === socket.id;
+  const mine = m.nick === myNick; // nicki są unikalne, więc to jednoznacznie wskazuje moje wiadomości
   const stick = historic || mine || isNearBottom();
   const first = m.nick !== lastNick || m.time - lastMessageTime > GROUP_WINDOW_MS;
   const wrap = el('div', 'msg' + (first ? ' msg--first' : '') + (historic ? ' msg--static' : ''));
@@ -485,12 +485,18 @@ function renderMembers(list) {
 
 // ---------- Dźwięk ----------
 let audioCtx;
-function beep() {
+function getAudioCtx() {
+  audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  return audioCtx;
+}
+
+function beep(freqs = [660, 880]) {
   if (!settings.sound) return;
   try {
-    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    getAudioCtx();
     const t = audioCtx.currentTime;
-    [660, 880].forEach((freq, i) => {
+    freqs.forEach((freq, i) => {
       const start = t + i * 0.09;
       const osc = audioCtx.createOscillator();
       const gain = audioCtx.createGain();
@@ -509,16 +515,58 @@ function beep() {
 }
 
 // ---------- Logowanie ----------
+// Konto jest przypisane do urządzenia: losowy, tajny token w localStorage (serwer zna tylko jego skrót).
+let memoryToken = null; // zapas, gdy przeglądarka blokuje localStorage (konto trwa wtedy do zamknięcia karty)
+
+function randomToken() {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+function getDeviceToken() {
+  try {
+    let token = localStorage.getItem('mychat.device');
+    if (!token || token.length < 32) {
+      token = randomToken();
+      localStorage.setItem('mychat.device', token);
+    }
+    return token;
+  } catch {
+    memoryToken = memoryToken || randomToken();
+    return memoryToken;
+  }
+}
+
+const loginFields = $('login-fields');
+const loginAuto = $('login-auto');
+
+function showLoginFields() {
+  loginAuto.classList.add('hidden');
+  loginFields.classList.remove('hidden');
+  loginScreen.classList.remove('hidden');
+  chatScreen.classList.add('hidden');
+}
+
+function showAutoLogin(nick) {
+  $('login-auto-name').textContent = nick;
+  loginFields.classList.add('hidden');
+  loginAuto.classList.remove('hidden');
+}
+
 function join(nick) {
-  socket.emit('join', { nick, avatar: profile.avatar }, (res) => {
+  socket.emit('join', { token: getDeviceToken(), nick, avatar: profile.avatar }, (res) => {
     if (!res || !res.ok) {
-      loginError.textContent = (res && res.error) || 'Nie udało się dołączyć.';
       myNick = null;
-      loginScreen.classList.remove('hidden');
-      chatScreen.classList.add('hidden');
+      loginError.textContent = (res && res.error) || 'Nie udało się dołączyć.';
+      nickInput.value = profile.nick || '';
+      showLoginFields();
       return;
     }
     myNick = res.nick;
+    profile = { nick: res.nick, avatar: res.avatar || null };
+    pendingAvatar = profile.avatar;
+    store.set('mychat.profile', profile);
     avatars.set(myNick, profile.avatar);
     loginError.textContent = '';
     loginScreen.classList.add('hidden');
@@ -537,8 +585,33 @@ loginForm.addEventListener('submit', (e) => {
   const nick = nickInput.value.trim();
   if (!nick) return;
   profile = { nick, avatar: pendingAvatar };
-  store.set('mychat.profile', profile);
   join(nick);
+});
+
+// Zmiana nicku (konto zostaje to samo, zmienia się tylko nazwa)
+function renameMe() {
+  const input = $('rename-input');
+  const nick = input.value.trim();
+  if (!nick || nick === myNick) return;
+  socket.timeout(10000).emit('rename', nick, (err, res) => {
+    if (err || !res || !res.ok) return toast((res && res.error) || 'Nie udało się zmienić nicku.');
+    myNick = res.nick;
+    profile.nick = res.nick;
+    store.set('mychat.profile', profile);
+    avatars.set(myNick, profile.avatar);
+    meNameEl.textContent = myNick;
+    meAvatarEl.dataset.nick = myNick;
+    $('settings-avatar').dataset.nick = myNick;
+    refreshAvatars();
+    toast(`Twój nick to teraz ${myNick}`, true);
+  });
+}
+$('rename-btn').addEventListener('click', renameMe);
+$('rename-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    renameMe();
+  }
 });
 
 // ---------- Wysyłanie wiadomości ----------
@@ -757,6 +830,7 @@ gifUrlInput.addEventListener('keydown', (e) => {
 // ---------- Ustawienia, lightbox, klawisze ----------
 function openSettings() {
   renderSettingsOptions();
+  $('rename-input').value = myNick || '';
   settingsModal.classList.remove('hidden');
 }
 function closeSettings() {
@@ -790,6 +864,300 @@ document.addEventListener('visibilitychange', () => {
   }
 });
 
+// ---------- Czat głosowy (WebRTC, połączenia peer-to-peer) ----------
+let iceServers = [{ urls: 'stun:stun.l.google.com:19302' }];
+let maxVoiceUsers = 8;
+
+const voice = {
+  active: false,
+  joining: false,
+  stream: null,
+  muted: false,
+  deafened: false,
+  users: [], // [{ id, nick, muted, deafened }] – z serwera
+  peers: new Map(), // socket.id -> { pc, pending, audio }
+};
+
+const analysers = new Map(); // 'me' lub socket.id -> { source, analyser, buf, speaking }
+let speakingTimer = null;
+
+function setSpeaking(key, speaking) {
+  const id = key === 'me' ? socket.id : key;
+  document.querySelectorAll('[data-voice-id]').forEach((node) => {
+    if (node.dataset.voiceId === id) node.classList.toggle('speaking', speaking);
+  });
+}
+
+function watchSpeaking(key, stream) {
+  try {
+    const ctx = getAudioCtx();
+    const source = ctx.createMediaStreamSource(stream);
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 512;
+    source.connect(analyser);
+    analysers.set(key, { source, analyser, buf: new Uint8Array(analyser.fftSize), speaking: false });
+  } catch {
+    return; // bez podświetlania mówiących czat głosowy nadal działa
+  }
+  if (speakingTimer) return;
+  speakingTimer = setInterval(() => {
+    analysers.forEach((a, key) => {
+      a.analyser.getByteTimeDomainData(a.buf);
+      let sum = 0;
+      for (const v of a.buf) sum += ((v - 128) / 128) ** 2;
+      const speaking = Math.sqrt(sum / a.buf.length) > 0.035 && !(key === 'me' && voice.muted);
+      if (speaking !== a.speaking) {
+        a.speaking = speaking;
+        setSpeaking(key, speaking);
+      }
+    });
+  }, 100);
+}
+
+function unwatchSpeaking(key) {
+  const a = analysers.get(key);
+  if (!a) return;
+  try {
+    a.source.disconnect();
+  } catch {
+    /* już odłączone */
+  }
+  analysers.delete(key);
+  if (analysers.size === 0 && speakingTimer) {
+    clearInterval(speakingTimer);
+    speakingTimer = null;
+  }
+}
+
+function renderVoiceUsers() {
+  const list = voice.users;
+  $('voice-count').textContent = list.length ? `${list.length}/${maxVoiceUsers}` : '';
+
+  const flag = (u) => (u.deafened ? el('span', 'voice-member__flags', '🙉') : u.muted ? el('span', 'voice-member__flags', '🔇') : null);
+
+  $('voice-members').replaceChildren(
+    ...list.map((u) => {
+      const row = el('div', 'voice-member');
+      row.dataset.voiceId = u.id;
+      row.appendChild(makeAvatar(u.nick));
+      row.appendChild(el('span', 'voice-member__name', u.nick));
+      const f = flag(u);
+      if (f) row.appendChild(f);
+      return row;
+    })
+  );
+
+  $('voicebar-members').replaceChildren(
+    ...list.map((u) => {
+      const chip = el('div', 'voicebar__member');
+      chip.dataset.voiceId = u.id;
+      chip.appendChild(makeAvatar(u.nick));
+      chip.appendChild(el('span', '', u.nick));
+      const f = flag(u);
+      if (f) chip.appendChild(f);
+      return chip;
+    })
+  );
+
+  // Odtwórz podświetlenie osób, które mówią w tej chwili.
+  analysers.forEach((a, key) => a.speaking && setSpeaking(key, true));
+}
+
+function updateVoiceUI() {
+  $('voice-bar').classList.toggle('hidden', !voice.active);
+  $('voice-btn').classList.toggle('is-active', voice.active);
+  $('voice-btn').title = voice.active ? 'Rozłącz z kanałem głosowym' : 'Dołącz do kanału głosowego';
+  $('voice-channel').classList.toggle('is-connected', voice.active);
+  $('voice-mute').classList.toggle('is-off', voice.muted);
+  $('voice-mute').title = voice.muted ? 'Włącz mikrofon' : 'Wycisz mikrofon';
+  $('voice-deafen').classList.toggle('is-off', voice.deafened);
+  $('voice-deafen').title = voice.deafened ? 'Włącz dźwięk' : 'Wyłącz dźwięk';
+  renderVoiceUsers();
+}
+
+function applyVoiceState() {
+  voice.stream?.getAudioTracks().forEach((t) => (t.enabled = !voice.muted));
+  voice.peers.forEach((p) => {
+    if (p.audio) p.audio.muted = voice.deafened;
+  });
+  if (voice.active) socket.emit('voice:state', { muted: voice.muted, deafened: voice.deafened });
+  updateVoiceUI();
+}
+
+function closePeer(id) {
+  const peer = voice.peers.get(id);
+  if (!peer) return;
+  peer.pc.onicecandidate = peer.pc.ontrack = peer.pc.onconnectionstatechange = null;
+  peer.pc.close();
+  peer.audio?.remove();
+  unwatchSpeaking(id);
+  voice.peers.delete(id);
+}
+
+function createPeer(id) {
+  const pc = new RTCPeerConnection({ iceServers });
+  const peer = { pc, pending: [], audio: null };
+
+  voice.stream.getTracks().forEach((track) => pc.addTrack(track, voice.stream));
+
+  pc.onicecandidate = (e) => {
+    if (e.candidate) socket.emit('voice:signal', { to: id, data: { candidate: e.candidate.toJSON() } });
+  };
+  pc.ontrack = (e) => {
+    const stream = e.streams[0] || new MediaStream([e.track]);
+    if (!peer.audio) {
+      const audio = document.createElement('audio');
+      audio.autoplay = true;
+      audio.playsInline = true;
+      audio.muted = voice.deafened;
+      $('voice-audio').appendChild(audio);
+      peer.audio = audio;
+    }
+    peer.audio.srcObject = stream;
+    peer.audio.play().catch(() => {});
+    if (!analysers.has(id)) watchSpeaking(id, stream);
+  };
+  pc.onconnectionstatechange = () => {
+    if (pc.connectionState === 'failed') {
+      toast('Nie udało się połączyć głosowo z jedną z osób (sieć może wymagać serwera TURN).');
+    }
+  };
+
+  voice.peers.set(id, peer);
+  return peer;
+}
+
+async function callPeer(id) {
+  const { pc } = createPeer(id);
+  await pc.setLocalDescription(await pc.createOffer());
+  socket.emit('voice:signal', {
+    to: id,
+    data: { sdp: { type: pc.localDescription.type, sdp: pc.localDescription.sdp } },
+  });
+}
+
+async function flushCandidates(peer) {
+  for (const c of peer.pending.splice(0)) {
+    await peer.pc.addIceCandidate(c).catch(() => {});
+  }
+}
+
+socket.on('voice:signal', async ({ from, data }) => {
+  if (!voice.active || !data) return;
+  try {
+    let peer = voice.peers.get(from);
+
+    if (data.sdp) {
+      if (data.sdp.type === 'offer') {
+        peer = peer || createPeer(from);
+        await peer.pc.setRemoteDescription(data.sdp);
+        await flushCandidates(peer);
+        await peer.pc.setLocalDescription(await peer.pc.createAnswer());
+        socket.emit('voice:signal', {
+          to: from,
+          data: { sdp: { type: peer.pc.localDescription.type, sdp: peer.pc.localDescription.sdp } },
+        });
+      } else if (data.sdp.type === 'answer' && peer) {
+        await peer.pc.setRemoteDescription(data.sdp);
+        await flushCandidates(peer);
+      }
+    } else if (data.candidate && peer) {
+      if (peer.pc.remoteDescription) await peer.pc.addIceCandidate(data.candidate).catch(() => {});
+      else peer.pending.push(data.candidate); // kandydat przyszedł przed ofertą/odpowiedzią
+    }
+  } catch (err) {
+    console.warn('Błąd sygnalizacji głosowej:', err);
+  }
+});
+
+function stopLocalStream() {
+  voice.stream?.getTracks().forEach((t) => t.stop());
+  voice.stream = null;
+}
+
+async function joinVoice() {
+  if (voice.active || voice.joining || !myNick) return;
+  if (!navigator.mediaDevices?.getUserMedia) {
+    return toast('Czat głosowy wymaga połączenia HTTPS i nowszej przeglądarki.');
+  }
+
+  voice.joining = true;
+  try {
+    voice.stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      video: false,
+    });
+  } catch (err) {
+    voice.joining = false;
+    return toast(
+      err.name === 'NotAllowedError'
+        ? 'Brak zgody na mikrofon – zezwól na jego użycie w ustawieniach przeglądarki.'
+        : err.name === 'NotFoundError'
+          ? 'Nie znaleziono mikrofonu.'
+          : 'Nie udało się uruchomić mikrofonu.'
+    );
+  }
+
+  socket.timeout(10000).emit('voice:join', (err, res) => {
+    voice.joining = false;
+    if (err || !res || !res.ok) {
+      stopLocalStream();
+      return toast((res && res.error) || 'Nie udało się dołączyć do kanału głosowego.');
+    }
+    voice.active = true;
+    voice.muted = false;
+    voice.deafened = false;
+    watchSpeaking('me', voice.stream);
+    res.peers.forEach((id) => callPeer(id).catch((e) => console.warn('Błąd połączenia głosowego:', e)));
+    updateVoiceUI();
+  });
+}
+
+function leaveVoice(notify = true) {
+  if (!voice.active && !voice.stream) return;
+  if (notify && voice.active && socket.connected) socket.emit('voice:leave');
+  Array.from(voice.peers.keys()).forEach(closePeer);
+  unwatchSpeaking('me');
+  stopLocalStream();
+  voice.active = false;
+  voice.muted = false;
+  voice.deafened = false;
+  document.querySelectorAll('.speaking').forEach((n) => n.classList.remove('speaking'));
+  updateVoiceUI();
+}
+
+socket.on('voice:users', (list) => {
+  const previous = voice.users.length;
+  voice.users = list;
+  if (voice.active) {
+    const ids = new Set(list.map((u) => u.id));
+    Array.from(voice.peers.keys()).forEach((id) => {
+      if (!ids.has(id)) closePeer(id);
+    });
+    if (list.length > previous) beep([660, 880]);
+    else if (list.length < previous) beep([520, 380]);
+  }
+  renderVoiceUsers();
+});
+
+$('voice-channel').addEventListener('click', joinVoice);
+$('voice-btn').addEventListener('click', () => (voice.active ? leaveVoice() : joinVoice()));
+$('voice-leave').addEventListener('click', () => leaveVoice());
+$('voice-mute').addEventListener('click', () => {
+  if (voice.deafened) {
+    voice.deafened = false;
+    voice.muted = false;
+  } else {
+    voice.muted = !voice.muted;
+  }
+  applyVoiceState();
+});
+$('voice-deafen').addEventListener('click', () => {
+  voice.deafened = !voice.deafened;
+  voice.muted = voice.deafened; // jak na Discordzie: wyłączenie dźwięku wycisza też mikrofon
+  applyVoiceState();
+});
+
 // ---------- Zdarzenia z serwera ----------
 socket.on('message', (m) => addMessage(m));
 socket.on('system', addSystem);
@@ -815,11 +1183,18 @@ socket.on('typing', ({ nick, isTyping }) => {
 
 socket.on('connect', () => {
   statusEl.textContent = 'połączono';
-  // Po utracie połączenia (np. uśpienie serwera na Renderze) dołącz ponownie automatycznie.
-  if (myNick) join(myNick);
+  // Zapamiętane konto loguje się samo – także po utracie połączenia (np. uśpieniu serwera na Renderze).
+  const nick = myNick || profile.nick;
+  if (nick) join(nick);
 });
 
 socket.on('disconnect', () => {
+  if (voice.active) {
+    leaveVoice(false);
+    toast('Utracono połączenie – rozłączono z kanałem głosowym.');
+  }
+  voice.users = [];
+  renderVoiceUsers();
   statusEl.textContent = 'rozłączono – próba ponownego połączenia…';
   typingUsers.clear();
   renderTyping();
@@ -829,12 +1204,15 @@ socket.on('disconnect', () => {
 applySettings();
 nickInput.value = profile.nick || '';
 updateLoginAvatar();
+if (profile.nick) showAutoLogin(profile.nick); // zapamiętane konto – logujemy się automatycznie
 
 fetch('/api/config')
   .then((r) => r.json())
   .then((cfg) => {
     gifSearchEnabled = Boolean(cfg.gifSearch);
     if (cfg.maxFileBytes) maxFileBytes = cfg.maxFileBytes;
+    if (Array.isArray(cfg.iceServers) && cfg.iceServers.length) iceServers = cfg.iceServers;
+    if (cfg.maxVoiceUsers) maxVoiceUsers = cfg.maxVoiceUsers;
     if (cfg.retentionMs) {
       retentionMs = cfg.retentionMs;
       retentionDays = cfg.retentionDays;
