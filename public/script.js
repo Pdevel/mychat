@@ -64,13 +64,21 @@ const THEMES = [
 ];
 const ACCENTS = ['#5865f2', '#3ba55d', '#eb459e', '#ed4245', '#faa61a', '#1abc9c', '#9b59b6'];
 
-let settings = store.get('mychat.settings', { theme: 'dark', accent: '#5865f2', sound: true });
+let settings = store.get('mychat.settings', {
+  theme: 'dark',
+  accent: '#5865f2',
+  sound: true,
+  archive: true, // zapisuj wiadomości na tym urządzeniu (nie znikają po okresie przechowywania na serwerze)
+  archiveFiles: false, // zapisuj też zawartość plików (zajmuje więcej miejsca)
+});
 let profile = store.get('mychat.profile', { nick: '', avatar: null });
 
 let myNick = null;
+let myAccountId = null;
 let pendingAvatar = profile.avatar; // avatar wybrany na ekranie logowania
 let avatarTarget = 'login';
 let lastNick = null;
+let lastDay = null;
 let lastMessageTime = 0;
 let typingTimeout = null;
 let unread = 0;
@@ -170,6 +178,9 @@ function renderSettingsOptions() {
   $('accent-row').replaceChildren(...swatches, custom);
 
   $('sound-toggle').checked = settings.sound;
+  $('archive-toggle').checked = settings.archive;
+  $('archive-files-toggle').checked = settings.archiveFiles;
+  $('archive-files-toggle').disabled = !settings.archive;
 }
 
 // ---------- Avatary ----------
@@ -321,29 +332,188 @@ const INLINE_IMAGE = /^image\/(png|jpe?g|gif|webp|avif|bmp)$/;
 const INLINE_VIDEO = /^video\/(mp4|webm|ogg|quicktime)$/;
 const INLINE_AUDIO = /^audio\/(mpeg|mp3|ogg|wav|webm|mp4|aac|x-m4a|flac)$/;
 
-// Karta pliku z historii: zawartość jest pobierana z serwera dopiero po kliknięciu.
+// ---------- Archiwum lokalne (IndexedDB) ----------
+// Wiadomości (i opcjonalnie pliki) zapisane na tym urządzeniu nie znikają, gdy serwer usunie je po 7 dniach.
+const reqP = (r) =>
+  new Promise((resolve, reject) => {
+    r.onsuccess = () => resolve(r.result);
+    r.onerror = () => reject(r.error);
+  });
+const txDone = (tx) =>
+  new Promise((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onerror = tx.onabort = () => reject(tx.error);
+  });
+
+const archive = {
+  db: null,
+  ready: false,
+
+  open() {
+    return new Promise((resolve) => {
+      if (!window.indexedDB) return resolve(false);
+      try {
+        const req = indexedDB.open('mychat-archive', 1);
+        req.onupgradeneeded = () => {
+          const db = req.result;
+          db.createObjectStore('messages', { keyPath: 'id' }).createIndex('time', 'time');
+          db.createObjectStore('files');
+        };
+        req.onsuccess = () => {
+          this.db = req.result;
+          this.ready = true;
+          resolve(true);
+        };
+        req.onerror = () => resolve(false);
+      } catch {
+        resolve(false); // np. tryb prywatny – czat działa dalej bez archiwum
+      }
+    });
+  },
+
+  async put(messages) {
+    if (!this.ready || !messages.length) return;
+    const tx = this.db.transaction('messages', 'readwrite');
+    messages.forEach((m) => tx.objectStore('messages').put(m));
+    await txDone(tx);
+  },
+
+  async putFile(id, blob) {
+    const tx = this.db.transaction('files', 'readwrite');
+    tx.objectStore('files').put(blob, id);
+    await txDone(tx);
+  },
+
+  getFile: (id) => reqP(archive.db.transaction('files').objectStore('files').get(id)),
+  fileIds: () => reqP(archive.db.transaction('files').objectStore('files').getAllKeys()),
+  count: () => reqP(archive.db.transaction('messages').objectStore('messages').count()),
+
+  async all() {
+    const list = await reqP(this.db.transaction('messages').objectStore('messages').getAll());
+    return list.sort((a, b) => a.time - b.time);
+  },
+
+  // `limit` najnowszych wiadomości, od najstarszej do najnowszej
+  recent(limit) {
+    return new Promise((resolve, reject) => {
+      const out = [];
+      const cursor = this.db.transaction('messages').objectStore('messages').index('time').openCursor(null, 'prev');
+      cursor.onsuccess = () => {
+        const cur = cursor.result;
+        if (cur && out.length < limit) {
+          out.push(cur.value);
+          cur.continue();
+        } else {
+          resolve(out.reverse());
+        }
+      };
+      cursor.onerror = () => reject(cursor.error);
+    });
+  },
+
+  async remove(id) {
+    if (!this.ready) return;
+    const tx = this.db.transaction(['messages', 'files'], 'readwrite');
+    tx.objectStore('messages').delete(id);
+    tx.objectStore('files').delete(id);
+    await txDone(tx);
+  },
+
+  async clear() {
+    if (!this.ready) return;
+    const tx = this.db.transaction(['messages', 'files'], 'readwrite');
+    tx.objectStore('messages').clear();
+    tx.objectStore('files').clear();
+    await txDone(tx);
+  },
+};
+archive.opening = archive.open();
+
+const sessionLog = new Map(); // id -> wiadomość (bez zawartości plików) widziana w tej sesji
+const localFileIds = new Set(); // id plików zapisanych lokalnie
+let quotaWarned = false;
+
+function slimMessage(m) {
+  const { data, senderId, ...rest } = m; // bez bajtów pliku i tymczasowego id połączenia
+  return rest;
+}
+
+function logMessage(m) {
+  if (!m.id) return;
+  sessionLog.set(m.id, slimMessage(m));
+  if (sessionLog.size > 5000) sessionLog.delete(sessionLog.keys().next().value);
+}
+
+function handleArchiveError(err) {
+  console.warn('Archiwum lokalne:', err);
+  if (!quotaWarned && err && err.name === 'QuotaExceededError') {
+    quotaWarned = true;
+    toast('Brak miejsca w archiwum lokalnym. Wyczyść je w ustawieniach.');
+  }
+}
+
+async function saveFileLocally(m, data) {
+  if (!settings.archive || !settings.archiveFiles || !archive.ready) return;
+  try {
+    await archive.put([slimMessage(m)]);
+    await archive.putFile(m.id, new Blob([data], { type: m.mime }));
+    localFileIds.add(m.id);
+  } catch (err) {
+    handleArchiveError(err);
+  }
+}
+
+async function archiveSave(m) {
+  if (!settings.archive || !archive.ready || !m.id) return;
+  try {
+    await archive.put([slimMessage(m)]);
+    if (m.kind === 'file' && m.data) await saveFileLocally(m, m.data);
+  } catch (err) {
+    handleArchiveError(err);
+  }
+}
+
+// Zawartość pliku: najpierw z archiwum lokalnego, a jeśli jej tam nie ma – z serwera.
+async function loadFileBytes(m) {
+  if (archive.ready && localFileIds.has(m.id)) {
+    try {
+      const blob = await archive.getFile(m.id);
+      if (blob) return { data: await blob.arrayBuffer() };
+    } catch {
+      /* spróbujemy z serwera */
+    }
+  }
+  return new Promise((resolve) => {
+    socket.timeout(60000).emit('getFile', m.id, (err, res) => {
+      if (err || !res || !res.ok) return resolve({ error: (res && res.error) || 'Nie udało się pobrać pliku.' });
+      saveFileLocally(m, res.data);
+      resolve({ data: res.data });
+    });
+  });
+}
+
+// Karta pliku z historii: zawartość jest pobierana dopiero po kliknięciu.
 function makeRemoteFileCard(m, onLoad) {
   const card = el('div', 'filecard');
   card.appendChild(el('div', 'filecard__icon', fileIcon(m.mime, m.name)));
   const info = el('div', 'filecard__info');
   info.appendChild(el('div', 'filecard__name', m.name));
-  info.appendChild(el('div', 'filecard__size', formatSize(m.size)));
+  info.appendChild(el('div', 'filecard__size', formatSize(m.size) + (localFileIds.has(m.id) ? ' · 💾 zapisano lokalnie' : '')));
   card.appendChild(info);
 
   const inline = INLINE_IMAGE.test(m.mime) || INLINE_VIDEO.test(m.mime) || INLINE_AUDIO.test(m.mime);
   const btn = el('button', 'icon-btn', inline ? '👁' : '⬇');
   btn.type = 'button';
   btn.title = inline ? 'Pokaż' : 'Pobierz';
-  btn.addEventListener('click', () => {
+  btn.addEventListener('click', async () => {
     btn.disabled = true;
-    socket.timeout(60000).emit('getFile', m.id, (err, res) => {
-      btn.disabled = false;
-      if (err || !res || !res.ok) return toast((res && res.error) || 'Nie udało się pobrać pliku.');
-      const content = makeFileContent({ ...m, data: res.data }, onLoad);
-      card.replaceWith(content);
-      if (!inline) content.querySelector('a[download]')?.click(); // od razu pobierz
-      onLoad();
-    });
+    const res = await loadFileBytes(m);
+    btn.disabled = false;
+    if (res.error) return toast(res.error);
+    const content = makeFileContent({ ...m, data: res.data }, onLoad);
+    card.replaceWith(content);
+    if (!inline) content.querySelector('a[download]')?.click(); // od razu pobierz
+    onLoad();
   });
   card.appendChild(btn);
   return card;
@@ -399,7 +569,9 @@ function addSystem(m) {
 }
 
 // Usuwa z ekranu wiadomości starsze niż okres przechowywania (to samo robi serwer w historii).
+// Przy włączonym archiwum lokalnym wiadomości zostają na ekranie – o to w nim chodzi.
 function sweepExpired() {
+  if (settings.archive && archive.ready) return;
   const cutoff = Date.now() - retentionMs;
   messagesEl.querySelectorAll('[data-time]').forEach((node) => {
     if (Number(node.dataset.time) >= cutoff) return;
@@ -410,23 +582,97 @@ function sweepExpired() {
   });
 }
 
+// Moja wiadomość? Po koncie (przeżywa zmianę nicku); stare wiadomości bez konta – po nicku.
+function isMine(m) {
+  return m.accountId ? m.accountId === myAccountId : m.nick === myNick;
+}
+
+function dayLabel(ts) {
+  return new Date(ts).toLocaleDateString('pl-PL', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+}
+
+function makeMessageHeader(nick, time) {
+  const head = el('div', 'msg__head');
+  const author = el('span', 'msg__author', nick);
+  author.style.color = colorFor(nick);
+  head.appendChild(author);
+  head.appendChild(el('span', 'msg__time', formatTime(time)));
+  return head;
+}
+
+// Gdy usunięto pierwszą wiadomość z grupy, następna musi dostać nagłówek (avatar i nick).
+function promoteToFirst(node) {
+  node.classList.add('msg--first');
+  node.querySelector('.msg__hovertime')?.remove();
+  node.prepend(makeMessageHeader(node.dataset.nick, Number(node.dataset.time)));
+  node.prepend(makeAvatar(node.dataset.nick, 'msg__avatar'));
+}
+
+function removeMessageNode(id) {
+  const node = messagesEl.querySelector(`.msg[data-id="${CSS.escape(id)}"]`);
+  if (!node) return;
+  node.querySelectorAll('[src^="blob:"], [href^="blob:"]').forEach((n) => {
+    URL.revokeObjectURL(n.getAttribute('src') || n.getAttribute('href'));
+  });
+  const prev = node.previousElementSibling;
+  const next = node.nextElementSibling;
+  const wasFirst = node.classList.contains('msg--first');
+  node.remove();
+
+  if (wasFirst && next && next.classList.contains('msg') && !next.classList.contains('msg--first') && next.dataset.nick === node.dataset.nick) {
+    promoteToFirst(next);
+  }
+  // Pusty separator dnia (nic już po nim nie ma) usuwamy.
+  if (prev && prev.classList.contains('daysep') && (!next || next.classList.contains('daysep'))) prev.remove();
+}
+
+function requestDelete(id) {
+  if (!confirm('Usunąć tę wiadomość dla wszystkich? Tej operacji nie można cofnąć.')) return;
+  socket.timeout(10000).emit('deleteMessage', id, (err, res) => {
+    if (err || !res || !res.ok) toast((res && res.error) || 'Nie udało się usunąć wiadomości.');
+  });
+}
+
 function addMessage(m, { historic = false } = {}) {
-  const mine = m.nick === myNick; // nicki są unikalne, więc to jednoznacznie wskazuje moje wiadomości
+  const mine = isMine(m);
   const stick = historic || mine || isNearBottom();
-  const first = m.nick !== lastNick || m.time - lastMessageTime > GROUP_WINDOW_MS;
+
+  // Separator z datą przy zmianie dnia (i na początku listy)
+  const day = new Date(m.time).toDateString();
+  const newDay = day !== lastDay;
+  if (newDay) {
+    const sep = el('div', 'daysep');
+    sep.appendChild(el('span', '', dayLabel(m.time)));
+    sep.dataset.time = m.time;
+    messagesEl.appendChild(sep);
+    lastDay = day;
+  }
+
+  const first = newDay || m.nick !== lastNick || m.time - lastMessageTime > GROUP_WINDOW_MS;
   const wrap = el('div', 'msg' + (first ? ' msg--first' : '') + (historic ? ' msg--static' : ''));
   wrap.dataset.time = m.time;
+  wrap.dataset.nick = m.nick;
+  if (m.id) wrap.dataset.id = m.id;
 
   if (first) {
     wrap.appendChild(makeAvatar(m.nick, 'msg__avatar'));
-    const head = el('div', 'msg__head');
-    const author = el('span', 'msg__author', m.nick);
-    author.style.color = colorFor(m.nick);
-    head.appendChild(author);
-    head.appendChild(el('span', 'msg__time', formatTime(m.time)));
-    wrap.appendChild(head);
+    wrap.appendChild(makeMessageHeader(m.nick, m.time));
   } else {
     wrap.appendChild(el('span', 'msg__hovertime', formatTime(m.time)));
+  }
+
+  if (mine && m.id) {
+    const actions = el('div', 'msg__actions');
+    const del = el('button', 'msg__action msg__action--danger', '🗑');
+    del.type = 'button';
+    del.title = 'Usuń wiadomość';
+    del.setAttribute('aria-label', 'Usuń wiadomość');
+    del.addEventListener('click', (e) => {
+      e.stopPropagation();
+      requestDelete(m.id);
+    });
+    actions.appendChild(del);
+    wrap.appendChild(actions);
   }
 
   const afterMediaLoad = () => {
@@ -564,6 +810,7 @@ function join(nick) {
       return;
     }
     myNick = res.nick;
+    myAccountId = res.accountId || null;
     profile = { nick: res.nick, avatar: res.avatar || null };
     pendingAvatar = profile.avatar;
     store.set('mychat.profile', profile);
@@ -833,6 +1080,7 @@ gifUrlInput.addEventListener('keydown', (e) => {
 // ---------- Ustawienia, lightbox, klawisze ----------
 function openSettings() {
   renderSettingsOptions();
+  updateArchiveStats();
   $('rename-input').value = myNick || '';
   settingsModal.classList.remove('hidden');
 }
@@ -851,6 +1099,113 @@ $('sound-toggle').addEventListener('change', (e) => {
   store.set('mychat.settings', settings);
   if (settings.sound) beep();
 });
+// ----- Archiwum lokalne: ustawienia, eksport, czyszczenie -----
+async function updateArchiveStats() {
+  const stats = $('archive-stats');
+  if (!archive.ready) {
+    stats.textContent = 'Archiwum lokalne jest niedostępne w tej przeglądarce (np. tryb prywatny).';
+    return;
+  }
+  try {
+    const [messages, files, estimate] = await Promise.all([
+      archive.count(),
+      archive.fileIds(),
+      navigator.storage?.estimate ? navigator.storage.estimate() : null,
+    ]);
+    const used = estimate && estimate.usage ? ` · zajęte miejsce ok. ${formatSize(estimate.usage)}` : '';
+    stats.textContent = `Zapisano: ${messages} wiadomości, ${files.length} plików${used}.`;
+  } catch {
+    stats.textContent = '';
+  }
+}
+
+$('archive-toggle').addEventListener('change', async (e) => {
+  settings.archive = e.target.checked;
+  store.set('mychat.settings', settings);
+  $('archive-files-toggle').disabled = !settings.archive;
+  if (settings.archive && archive.ready) {
+    // Od razu zapisz wszystko, co mamy na ekranie, żeby nic nie przepadło.
+    try {
+      await archive.put(Array.from(sessionLog.values()));
+    } catch (err) {
+      handleArchiveError(err);
+    }
+    toast('Archiwum lokalne włączone.', true);
+  }
+  updateArchiveStats();
+});
+
+$('archive-files-toggle').addEventListener('change', (e) => {
+  settings.archiveFiles = e.target.checked;
+  store.set('mychat.settings', settings);
+});
+
+$('archive-clear').addEventListener('click', async () => {
+  if (!confirm('Usunąć wszystkie wiadomości i pliki zapisane na tym urządzeniu? Kopii na serwerze to nie dotyczy.')) return;
+  try {
+    await archive.clear();
+    localFileIds.clear();
+    toast('Archiwum lokalne wyczyszczone.', true);
+  } catch (err) {
+    handleArchiveError(err);
+  }
+  updateArchiveStats();
+});
+
+function describeMessage(m) {
+  if (m.kind === 'gif') return `[GIF] ${m.url}`;
+  if (m.kind === 'file') return `[plik] ${m.name} (${formatSize(m.size)})`;
+  return m.text;
+}
+
+function downloadText(filename, text, mime) {
+  const url = URL.createObjectURL(new Blob([text], { type: `${mime};charset=utf-8` }));
+  const a = el('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
+async function exportChat(format) {
+  const map = new Map();
+  if (archive.ready) {
+    try {
+      (await archive.all()).forEach((m) => map.set(m.id, m));
+    } catch (err) {
+      handleArchiveError(err);
+    }
+  }
+  sessionLog.forEach((m, id) => map.set(id, m));
+  const list = Array.from(map.values()).sort((a, b) => a.time - b.time);
+  if (!list.length) return toast('Brak wiadomości do zapisania.');
+
+  const stamp = new Date().toISOString().slice(0, 10);
+  if (format === 'json') {
+    downloadText(`mychat-${stamp}.json`, JSON.stringify(list, null, 2), 'application/json');
+  } else {
+    const lines = list.map((m) => {
+      const d = new Date(m.time);
+      const when = `${d.toLocaleDateString('pl-PL')} ${d.toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' })}`;
+      return `[${when}] ${m.nick}: ${describeMessage(m)}`;
+    });
+    downloadText(`mychat-${stamp}.txt`, `MyChat – #ogólny\n${'='.repeat(30)}\n${lines.join('\n')}\n`, 'text/plain');
+  }
+  toast(`Zapisano ${list.length} wiadomości do pliku.`, true);
+}
+$('export-txt').addEventListener('click', () => exportChat('txt'));
+$('export-json').addEventListener('click', () => exportChat('json'));
+
+// Na ekranach dotykowych nie ma najechania myszą – dotknięcie wiadomości pokazuje jej akcje.
+messagesEl.addEventListener('click', (e) => {
+  if (!window.matchMedia('(hover: none)').matches) return;
+  const msg = e.target.closest('.msg');
+  messagesEl.querySelectorAll('.msg.show-actions').forEach((n) => n !== msg && n.classList.remove('show-actions'));
+  if (msg) msg.classList.toggle('show-actions');
+});
+
 lightbox.addEventListener('click', () => lightbox.classList.add('hidden'));
 
 document.addEventListener('keydown', (e) => {
@@ -1162,19 +1517,103 @@ $('voice-deafen').addEventListener('click', () => {
 });
 
 // ---------- Zdarzenia z serwera ----------
-socket.on('message', (m) => addMessage(m));
+let historyLoading = false; // w trakcie wczytywania historii nowe wiadomości czekają w kolejce
+const pendingLive = [];
+let serverHistory = [];
+let archiveLimit = 300; // ile najnowszych wiadomości z archiwum pokazujemy
+
+function handleLive(m) {
+  logMessage(m);
+  archiveSave(m);
+  addMessage(m);
+}
+
+socket.on('message', (m) => (historyLoading ? pendingLive.push(m) : handleLive(m)));
 socket.on('system', addSystem);
 
-// Historia z ostatnich dni – przychodzi po (ponownym) dołączeniu do czatu.
-socket.on('history', (list) => {
+socket.on('messageDeleted', (id) => {
+  removeMessageNode(id);
+  sessionLog.delete(id);
+  localFileIds.delete(id);
+  archive.remove(id).catch(handleArchiveError);
+});
+
+function mergeById(...lists) {
+  const map = new Map();
+  lists.forEach((list) => list.forEach((m) => map.set(m.id, m)));
+  return Array.from(map.values()).sort((a, b) => a.time - b.time);
+}
+
+// Rysuje czat: wiadomości z serwera (ostatnie dni) połączone z archiwum lokalnym (wszystko, co zapisano).
+async function renderChat() {
+  let list = serverHistory;
+  let hasOlder = false;
+
+  if (settings.archive && archive.ready) {
+    try {
+      const local = await archive.recent(archiveLimit);
+      hasOlder = (await archive.count()) > local.length;
+      list = mergeById(local, serverHistory);
+    } catch (err) {
+      handleArchiveError(err);
+    }
+  }
+
   messagesEl.replaceChildren();
   lastNick = null;
+  lastDay = null;
   lastMessageTime = 0;
+
   const days = retentionDays === 1 ? '1 dniu' : `${retentionDays} dniach`;
-  messagesEl.appendChild(el('div', 'system system--info', `Wiadomości i pliki są usuwane po ${days}.`));
+  const archived = settings.archive && archive.ready;
+  messagesEl.appendChild(
+    el(
+      'div',
+      'system system--info',
+      `Na serwerze wiadomości i pliki są usuwane po ${days}.` +
+        (archived ? ' Archiwum lokalne zachowuje je na tym urządzeniu.' : ' Włącz archiwum lokalne w ustawieniach, aby je zachować.')
+    )
+  );
+
+  if (hasOlder) {
+    const btn = el('button', 'loadolder', 'Pokaż starsze wiadomości z archiwum');
+    btn.type = 'button';
+    btn.addEventListener('click', () => {
+      const before = { height: messagesEl.scrollHeight, top: messagesEl.scrollTop };
+      archiveLimit += 300;
+      renderChat().then(() => {
+        messagesEl.scrollTop = messagesEl.scrollHeight - before.height + before.top;
+      });
+    });
+    messagesEl.appendChild(btn);
+  }
+
   list.forEach((m) => addMessage(m, { historic: true }));
   sweepExpired();
   scrollToBottom();
+}
+
+// Historia z ostatnich dni – przychodzi po (ponownym) dołączeniu do czatu.
+socket.on('history', async (list) => {
+  historyLoading = true;
+  try {
+    await archive.opening;
+    if (archive.ready && !localFileIds.size) {
+      (await archive.fileIds()).forEach((id) => localFileIds.add(id));
+    }
+    serverHistory = list;
+    list.forEach(logMessage);
+    if (settings.archive && archive.ready) await archive.put(list.map(slimMessage));
+  } catch (err) {
+    handleArchiveError(err);
+  }
+  try {
+    await renderChat();
+  } catch (err) {
+    console.warn('Nie udało się narysować historii:', err);
+  }
+  historyLoading = false;
+  pendingLive.splice(0).forEach(handleLive);
 });
 socket.on('users', renderMembers);
 

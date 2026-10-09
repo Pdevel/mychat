@@ -211,6 +211,27 @@
           <span>Dźwięk nowej wiadomości</span>
         </label>
       </section>
+
+      <section>
+        <div class="section-title">ARCHIWUM LOKALNE</div>
+        <label class="switch">
+          <input type="checkbox" id="archive-toggle" />
+          <span class="switch__track"></span>
+          <span>Zapisuj wiadomości na tym urządzeniu</span>
+        </label>
+        <label class="switch switch--sub">
+          <input type="checkbox" id="archive-files-toggle" />
+          <span class="switch__track"></span>
+          <span>Zapisuj też pliki (zajmuje więcej miejsca)</span>
+        </label>
+        <p class="settings-note">Serwer usuwa wiadomości po 7 dniach, ale kopia zapisana tutaj zostaje. Usunięcie wiadomości przez autora kasuje ją też z archiwum osób, które były wtedy online.</p>
+        <p id="archive-stats" class="settings-note"></p>
+        <div class="archive-actions">
+          <button type="button" id="export-txt" class="btn-secondary btn-sm">Pobierz (.txt)</button>
+          <button type="button" id="export-json" class="btn-secondary btn-sm">Pobierz (.json)</button>
+          <button type="button" id="archive-clear" class="btn-secondary btn-sm btn-danger">Wyczyść archiwum</button>
+        </div>
+      </section>
     </div>
   </div>
 

@@ -774,6 +774,94 @@ button {
   font-size: 12px;
   color: var(--text-muted);
 }
+/* Pasek akcji przy wiadomości (np. usuwanie) – widoczny po najechaniu lub dotknięciu */
+.msg__actions {
+  position: absolute;
+  top: -14px;
+  right: 16px;
+  z-index: 2;
+  display: none;
+  background: var(--bg-primary);
+  border: 1px solid var(--bg-tertiary);
+  border-radius: 6px;
+  box-shadow: 0 2px 8px var(--shadow);
+}
+.msg:hover .msg__actions,
+.msg.show-actions .msg__actions {
+  display: flex;
+  animation: fade 0.12s ease-out;
+}
+.msg__action {
+  padding: 4px 8px;
+  font-size: 16px;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s, transform 0.12s;
+}
+.msg__action:hover {
+  background: var(--bg-hover);
+  transform: scale(1.15);
+}
+.msg__action--danger:hover {
+  background: color-mix(in srgb, var(--red) 25%, transparent);
+}
+
+.daysep {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 20px 16px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.daysep::before,
+.daysep::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--bg-active);
+}
+.daysep span {
+  text-transform: capitalize;
+}
+
+.loadolder {
+  display: block;
+  margin: 8px auto;
+  padding: 6px 16px;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--bg-secondary);
+  border: 1px solid var(--bg-tertiary);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.loadolder:hover {
+  background: var(--bg-hover);
+}
+
+.archive-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+.btn-danger:hover {
+  background: color-mix(in srgb, var(--red) 70%, #000);
+}
+.switch--sub {
+  margin-top: 10px;
+  margin-left: 20px;
+}
+.switch--sub:has(input:disabled) {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .msg__hovertime {
   position: absolute;
   left: 0;
