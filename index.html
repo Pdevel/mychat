@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="pl" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#313338" />
+  <title>MyChat</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- Ekran logowania -->
+  <section id="login-screen" class="login">
+    <form id="login-form" class="login__card" autocomplete="off">
+      <h1>Witaj w MyChat!</h1>
+      <p class="login__sub">Wybierz nick i avatar, aby dołączyć do rozmowy.</p>
+
+      <button type="button" id="login-avatar" class="avatar avatar--xl avatar--picker" title="Wybierz avatar"></button>
+      <input type="file" id="avatar-file" accept="image/*" hidden />
+
+      <label for="nick-input">NICK <span class="login__req">*</span></label>
+      <input id="nick-input" type="text" maxlength="20" required autofocus />
+      <p id="login-error" class="login__error" role="alert"></p>
+      <button type="submit" class="btn-primary">Dołącz</button>
+    </form>
+  </section>
+
+  <!-- Aplikacja -->
+  <div id="chat-screen" class="app hidden">
+    <!-- Pasek serwerów -->
+    <nav class="rail" aria-hidden="true">
+      <div class="rail__icon">M</div>
+    </nav>
+
+    <!-- Lista kanałów -->
+    <aside class="channels">
+      <div class="channels__header">MyChat</div>
+      <div class="channels__list">
+        <div class="channels__category">KANAŁY TEKSTOWE</div>
+        <div class="channel channel--active"><span class="hash">#</span> ogólny</div>
+
+        <div class="channels__category channels__category--spaced">KANAŁY GŁOSOWE</div>
+        <button type="button" id="voice-channel" class="channel channel--voice" title="Dołącz do kanału głosowego">
+          <span class="hash">🔊</span> głosowy
+          <span id="voice-count" class="channel__count"></span>
+        </button>
+        <div id="voice-members" class="voice-members"></div>
+      </div>
+      <div class="userpanel" id="userpanel" title="Ustawienia profilu">
+        <div id="me-avatar" class="avatar avatar--sm"></div>
+        <div class="userpanel__info">
+          <div id="me-name" class="userpanel__name"></div>
+          <div class="userpanel__status">Online</div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Główny czat -->
+    <main class="main">
+      <header class="topbar">
+        <span class="hash hash--lg">#</span>
+        <h2>ogólny</h2>
+        <span id="status" class="topbar__status">łączenie…</span>
+        <span id="online-count" class="topbar__online">0 online</span>
+        <button type="button" id="voice-btn" class="icon-btn" aria-label="Kanał głosowy" title="Dołącz do kanału głosowego">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true">
+            <path d="M12 1a9 9 0 0 0-9 9v7a3 3 0 0 0 3 3h3v-8H5v-2a7 7 0 0 1 14 0v2h-4v8h3a3 3 0 0 0 3-3v-7a9 9 0 0 0-9-9z" />
+          </svg>
+        </button>
+        <button type="button" id="settings-btn" class="icon-btn" aria-label="Ustawienia" title="Ustawienia">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true">
+            <path d="M19.14 12.94a7.07 7.07 0 0 0 .05-.94 7.07 7.07 0 0 0-.05-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.61-.22l-2.39.96a7.03 7.03 0 0 0-1.63-.94l-.36-2.54A.49.49 0 0 0 13.9 2h-3.84a.49.49 0 0 0-.49.42l-.36 2.54c-.59.24-1.13.56-1.63.94l-2.39-.96a.5.5 0 0 0-.61.22L2.66 8.48a.5.5 0 0 0 .12.64l2.03 1.58a7.07 7.07 0 0 0-.05.94c0 .32.02.63.05.94l-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32c.13.22.39.31.61.22l2.39-.96c.5.38 1.04.7 1.63.94l.36 2.54c.04.24.25.42.49.42h3.84c.24 0 .45-.18.49-.42l.36-2.54c.59-.24 1.13-.56 1.63-.94l2.39.96c.23.09.48 0 .61-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58ZM11.98 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7Z" />
+          </svg>
+        </button>
+      </header>
+
+      <!-- Pasek aktywnego połączenia głosowego -->
+      <div id="voice-bar" class="voicebar hidden">
+        <div class="voicebar__info">
+          <span class="voicebar__dot"></span>
+          <span id="voice-status">Połączono z kanałem głosowym</span>
+        </div>
+        <div id="voicebar-members" class="voicebar__members"></div>
+        <div class="voicebar__actions">
+          <button type="button" id="voice-mute" class="icon-btn" aria-label="Wycisz mikrofon" title="Wycisz mikrofon">
+            <svg class="ico-on" viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true">
+              <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.3-3c0 3-2.54 5.1-5.3 5.1S6.7 14 6.7 11H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c3.28-.48 6-3.3 6-6.72h-1.7z" />
+            </svg>
+            <svg class="ico-off" viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true">
+              <path d="M19 11h-1.7c0 .74-.16 1.43-.43 2.05l1.23 1.23c.56-.98.9-2.09.9-3.28zm-4.02.17c0-.06.02-.11.02-.17V5c0-1.66-1.34-3-3-3S9 3.34 9 5v.18l5.98 5.99zM4.27 3L3 4.27l6.01 6.01V11c0 1.66 1.33 3 2.99 3 .22 0 .44-.03.65-.08l1.66 1.66c-.71.33-1.5.52-2.31.52-2.76 0-5.3-2.1-5.3-5.1H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c.91-.13 1.77-.45 2.54-.9L19.73 21 21 19.73 4.27 3z" />
+            </svg>
+          </button>
+          <button type="button" id="voice-deafen" class="icon-btn" aria-label="Wyłącz dźwięk" title="Wyłącz dźwięk">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true">
+              <path d="M12 1a9 9 0 0 0-9 9v7a3 3 0 0 0 3 3h3v-8H5v-2a7 7 0 0 1 14 0v2h-4v8h3a3 3 0 0 0 3-3v-7a9 9 0 0 0-9-9z" />
+            </svg>
+          </button>
+          <button type="button" id="voice-leave" class="icon-btn icon-btn--danger" aria-label="Rozłącz" title="Rozłącz">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true">
+              <path d="M12 9c-1.6 0-3.15.25-4.6.72v3.1c0 .39-.23.74-.56.9-.98.49-1.87 1.12-2.66 1.85-.18.18-.43.28-.7.28-.28 0-.53-.11-.71-.29L.29 13.08a.956.956 0 0 1-.29-.7c0-.28.11-.53.29-.71C3.34 8.78 7.46 7 12 7s8.66 1.78 11.71 4.67c.18.18.29.43.29.71 0 .28-.11.53-.29.71l-2.48 2.48c-.18.18-.43.29-.71.29-.27 0-.52-.11-.7-.28-.79-.73-1.68-1.36-2.66-1.85-.33-.16-.56-.51-.56-.9v-3.1C15.15 9.25 13.6 9 12 9z" />
+            </svg>
+          </button>
+        </div>
+      </div>
+      <div id="voice-audio" hidden></div>
+
+      <div class="main__body">
+        <div class="main__chat">
+          <div id="messages" class="messages" aria-live="polite"></div>
+
+          <form id="message-form" class="composer" autocomplete="off">
+            <!-- Wyskakujące panele -->
+            <div id="emoji-panel" class="popup popup--emoji hidden"></div>
+            <div id="gif-panel" class="popup popup--gif hidden">
+              <input id="gif-search" type="text" placeholder="Szukaj GIFów…" maxlength="50" />
+              <div id="gif-grid" class="gif-grid"></div>
+              <div id="gif-hint" class="gif-hint"></div>
+              <div class="gif-url">
+                <input id="gif-url" type="url" placeholder="…lub wklej link https do GIFa / obrazka" />
+                <button type="button" id="gif-url-send" class="btn-primary btn-sm">Wyślij</button>
+              </div>
+            </div>
+
+            <div class="composer__box">
+              <button type="button" id="attach-btn" class="icon-btn" aria-label="Dodaj plik (do 5 MB)" title="Dodaj plik (do 5 MB)">
+                <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor" aria-hidden="true">
+                  <path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm5 11h-4v4h-2v-4H7v-2h4V7h2v4h4v2Z" />
+                </svg>
+              </button>
+              <input type="file" id="file-input" hidden />
+              <input
+                id="message-input"
+                type="text"
+                placeholder="Napisz wiadomość na #ogólny"
+                maxlength="500"
+              />
+              <button type="button" id="gif-btn" class="icon-btn icon-btn--text" aria-label="GIF" title="GIF">GIF</button>
+              <button type="button" id="emoji-btn" class="icon-btn" aria-label="Emoji" title="Emoji">
+                <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor" aria-hidden="true">
+                  <path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm-3.5 7a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3Zm7 0a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3ZM12 18c-2.3 0-4.3-1.3-5.3-3.2l1.7-.9c.7 1.3 2 2.1 3.6 2.1s2.9-.8 3.6-2.1l1.7.9C16.3 16.7 14.3 18 12 18Z" />
+                </svg>
+              </button>
+              <button type="submit" class="icon-btn icon-btn--send" aria-label="Wyślij">
+                <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true">
+                  <path d="M2.01 21 23 12 2.01 3 2 10l15 2-15 2z" />
+                </svg>
+              </button>
+            </div>
+            <div id="typing" class="typing"></div>
+          </form>
+        </div>
+
+        <aside class="members">
+          <div id="members-title" class="members__title">ONLINE — 0</div>
+          <div id="members-list"></div>
+        </aside>
+      </div>
+    </main>
+  </div>
+
+  <!-- Ustawienia -->
+  <div id="settings" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+    <div class="modal__card">
+      <button type="button" id="settings-close" class="modal__close" aria-label="Zamknij">✕</button>
+      <h3 id="settings-title">Ustawienia</h3>
+
+      <section>
+        <div class="section-title">AVATAR</div>
+        <div class="avatar-edit">
+          <div id="settings-avatar" class="avatar avatar--lg"></div>
+          <div class="avatar-edit__buttons">
+            <button type="button" id="avatar-change" class="btn-primary btn-sm">Zmień</button>
+            <button type="button" id="avatar-remove" class="btn-secondary btn-sm">Usuń</button>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <div class="section-title">MOTYW</div>
+        <div id="theme-grid" class="theme-grid"></div>
+      </section>
+
+      <section>
+        <div class="section-title">KOLOR AKCENTU</div>
+        <div id="accent-row" class="accent-row"></div>
+      </section>
+
+      <section>
+        <label class="switch">
+          <input type="checkbox" id="sound-toggle" />
+          <span class="switch__track"></span>
+          <span>Dźwięk nowej wiadomości</span>
+        </label>
+      </section>
+    </div>
+  </div>
+
+  <!-- Podgląd obrazka -->
+  <div id="lightbox" class="lightbox hidden"><img alt="" /></div>
+
+  <!-- Upuszczanie plików -->
+  <div id="drop-overlay" class="drop-overlay hidden">
+    <div class="drop-overlay__box">📎 Upuść plik, aby wysłać (do 5 MB)</div>
+  </div>
+
+  <div id="toasts" class="toasts" aria-live="assertive"></div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="script.js"></script>
+</body>
+</html>

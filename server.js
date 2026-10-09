@@ -15,6 +15,19 @@ const RETENTION_DAYS = Number(process.env.RETENTION_DAYS) > 0 ? Number(process.e
 const RETENTION_MS = RETENTION_DAYS * 24 * 60 * 60 * 1000;
 const HISTORY_LIMIT = 100; // ile ostatnich wiadomości dostaje nowo dołączona osoba
 
+// Czat głosowy (WebRTC peer-to-peer). Każdy łączy się z każdym, więc liczba osób jest ograniczona.
+const MAX_VOICE_USERS = 8;
+// Serwer STUN jest darmowy. Za zaporami sieciowymi bywa potrzebny też serwer TURN (zmienne TURN_URL,
+// TURN_USERNAME, TURN_CREDENTIAL) – patrz instrukcja.
+const ICE_SERVERS = [{ urls: process.env.STUN_URL || 'stun:stun.l.google.com:19302' }];
+if (process.env.TURN_URL) {
+  ICE_SERVERS.push({
+    urls: process.env.TURN_URL.split(',').map((u) => u.trim()),
+    username: process.env.TURN_USERNAME || '',
+    credential: process.env.TURN_CREDENTIAL || '',
+  });
+}
+
 const store = createStore({
   retentionMs: RETENTION_MS,
   dataDir: process.env.DATA_DIR || path.join(__dirname, 'data'),
@@ -41,6 +54,8 @@ app.get('/api/config', (req, res) => {
     maxFileBytes: MAX_FILE_BYTES,
     retentionMs: RETENTION_MS,
     retentionDays: RETENTION_DAYS,
+    iceServers: ICE_SERVERS,
+    maxVoiceUsers: MAX_VOICE_USERS,
   });
 });
 
@@ -86,6 +101,22 @@ const io = new Server(server, {
 
 // socket.id -> { nick, avatar }
 const users = new Map();
+// socket.id -> { muted, deafened } (osoby na kanale głosowym)
+const voice = new Map();
+
+function voiceList() {
+  return Array.from(voice.entries())
+    .filter(([id]) => users.has(id))
+    .map(([id, s]) => ({ id, nick: users.get(id).nick, muted: s.muted, deafened: s.deafened }));
+}
+
+function broadcastVoice() {
+  io.emit('voice:users', voiceList());
+}
+
+function leaveVoice(socket) {
+  if (voice.delete(socket.id)) broadcastVoice();
+}
 
 // ---------- Walidacja ----------
 function cleanText(value, maxLength) {
@@ -188,9 +219,43 @@ io.on('connection', (socket) => {
         console.error('Nie udało się wczytać historii:', err.message);
         socket.emit('history', []);
       }
+      socket.emit('voice:users', voiceList());
       systemMessage(`${nick} dołączył(a) do czatu`);
     }
     broadcastUsers();
+  });
+
+  // ---------- Czat głosowy: serwer tylko pośredniczy w wymianie sygnałów WebRTC ----------
+  socket.on('voice:join', (ack) => {
+    const reply = typeof ack === 'function' ? ack : () => {};
+    if (!users.has(socket.id)) return reply({ ok: false, error: 'Najpierw dołącz do czatu.' });
+    if (!voice.has(socket.id) && voice.size >= MAX_VOICE_USERS) {
+      return reply({ ok: false, error: `Kanał głosowy jest pełny (maksymalnie ${MAX_VOICE_USERS} osób).` });
+    }
+    // Osoba dołączająca sama zainicjuje połączenia z tymi, którzy już są na kanale.
+    const peers = Array.from(voice.keys()).filter((id) => id !== socket.id && users.has(id));
+    voice.set(socket.id, { muted: false, deafened: false });
+    reply({ ok: true, peers });
+    broadcastVoice();
+  });
+
+  socket.on('voice:leave', () => leaveVoice(socket));
+
+  socket.on('voice:state', (state) => {
+    const entry = voice.get(socket.id);
+    if (!entry || !state) return;
+    entry.muted = Boolean(state.muted);
+    entry.deafened = Boolean(state.deafened);
+    broadcastVoice();
+  });
+
+  socket.on('voice:signal', (payload) => {
+    if (!voice.has(socket.id) || !payload) return;
+    const { to, data } = payload;
+    if (typeof to !== 'string' || !voice.has(to) || to === socket.id) return;
+    if (!data || typeof data !== 'object' || JSON.stringify(data).length > 20000) return;
+    if (rateLimited(socket, 'signal', 300, 10000)) return;
+    io.to(to).emit('voice:signal', { from: socket.id, data });
   });
 
   socket.on('getFile', async (id, ack) => {
@@ -278,12 +343,14 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', () => {
+    const wasInVoice = voice.delete(socket.id);
     const user = users.get(socket.id);
     if (!user) return;
     users.delete(socket.id);
     socket.broadcast.emit('typing', { nick: user.nick, isTyping: false });
     systemMessage(`${user.nick} opuścił(a) czat`);
     broadcastUsers();
+    if (wasInVoice) broadcastVoice();
   });
 });
 
