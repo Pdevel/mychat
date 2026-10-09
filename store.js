@@ -21,6 +21,8 @@ class FileStore {
     this.deletedPath = path.join(dir, 'deleted.json');
     this.emojiPath = path.join(dir, 'emoji.json');
     this.emoji = new Map(); // id -> własne emoji serwera (z obrazem jako data-URL)
+    this.groupsPath = path.join(dir, 'groups.json');
+    this.groups = new Map(); // id -> grupa prywatna (członkowie, kod dostępu)
     this.tombstones = []; // [{ id, at }] – ślady usuniętych wiadomości, żeby urządzenia mogły wyczyścić archiwum
     this.messages = [];
     this.accounts = new Map(); // id -> konto
@@ -55,6 +57,12 @@ class FileStore {
     } catch {
       this.emoji = new Map();
     }
+    try {
+      const list = JSON.parse(await fs.readFile(this.groupsPath, 'utf8'));
+      this.groups = new Map(list.map((g) => [g.id, g]));
+    } catch {
+      this.groups = new Map();
+    }
     await this.prune();
 
     // Usuń osierocone pliki (np. po awarii w trakcie zapisu).
@@ -88,6 +96,35 @@ class FileStore {
 
   async get(id) {
     return this.messages.find((m) => m.id === id) || null;
+  }
+
+  // ---------- Grupy prywatne ----------
+  async loadGroups() {
+    return Array.from(this.groups.values());
+  }
+
+  async saveGroup(group) {
+    this.groups.set(group.id, JSON.parse(JSON.stringify(group)));
+    this.scheduleSave();
+  }
+
+  async deleteGroup(id) {
+    this.groups.delete(id);
+    this.scheduleSave();
+  }
+
+  // Usuwa wszystkie wiadomości (i pliki) z kanału – przy usuwaniu grupy. Zwraca liczbę usuniętych wiadomości.
+  async removeChannelMessages(channel) {
+    const dropped = this.messages.filter((m) => m.channel === channel);
+    if (!dropped.length) return 0;
+    this.messages = this.messages.filter((m) => m.channel !== channel);
+    await Promise.all(
+      dropped
+        .filter((m) => m.kind === 'file')
+        .map((m) => fs.unlink(path.join(this.filesDir, m.id)).catch(() => {}))
+    );
+    this.scheduleSave();
+    return dropped.length;
   }
 
   // ---------- Własne emoji serwera ----------
@@ -195,6 +232,7 @@ class FileStore {
         [this.accountsPath, Array.from(this.accounts.values())],
         [this.deletedPath, this.tombstones],
         [this.emojiPath, Array.from(this.emoji.values())],
+        [this.groupsPath, Array.from(this.groups.values())],
       ]) {
         const tmp = `${file}.tmp`;
         await fs.writeFile(tmp, JSON.stringify(value));
@@ -226,6 +264,7 @@ class MongoStore {
     await this.accountsCol.createIndex({ tokenHash: 1 }, { unique: true });
     await this.accountsCol.createIndex({ nickLower: 1 }, { unique: true });
     this.emojiCol = this.client.db(this.dbName).collection('emoji');
+    this.groupsCol = this.client.db(this.dbName).collection('groups');
     this.deletedCol = this.client.db(this.dbName).collection('deleted');
     await this.deletedCol.createIndex({ at: 1 });
     await this.deletedCol.createIndex({ atDate: 1 }, { expireAfterSeconds: Math.ceil(TOMBSTONE_MS / 1000) });
@@ -266,6 +305,24 @@ class MongoStore {
 
   async get(id) {
     return this.col.findOne({ _id: id }, { projection: { data: 0, _id: 0, createdAt: 0 } });
+  }
+
+  async loadGroups() {
+    const docs = await this.groupsCol.find({}).toArray();
+    return docs.map(({ _id, ...rest }) => rest);
+  }
+
+  async saveGroup(group) {
+    await this.groupsCol.replaceOne({ _id: group.id }, { _id: group.id, ...group }, { upsert: true });
+  }
+
+  async deleteGroup(id) {
+    await this.groupsCol.deleteOne({ _id: id });
+  }
+
+  async removeChannelMessages(channel) {
+    const res = await this.col.deleteMany({ channel });
+    return res.deletedCount;
   }
 
   async loadEmoji() {

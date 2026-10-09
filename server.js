@@ -562,6 +562,123 @@ function enterChannel(socket, channelId) {
   socket.join(`ch:${channelId}`);
 }
 
+// ---------- Grupy prywatne ----------
+// Grupa to prywatna przestrzeń z własnym czatem (kanał `g_<id>`), do której mają dostęp tylko jej członkowie.
+// Wchodzi się do niej JEDNORAZOWYM kodem: gdy ktoś go użyje, kod natychmiast wygasa i powstaje następny.
+// Kod widzi i generuje wyłącznie twórca grupy. Członkowie dostają wiadomości z pokoju `ch:g_<id>`,
+// a lekkie powiadomienia o aktywności z pokoju `grp:<id>`.
+const MAX_GROUP_NAME = 30;
+const MAX_GROUP_MEMBERS = 50;
+const MAX_GROUPS_OWNED = 10; // ile grup może założyć jedno konto
+const MAX_GROUPS_JOINED = 25; // do ilu grup w sumie może należeć jedno konto
+const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // bez 0/O i 1/I, żeby kod dało się przepisać bez pomyłek
+const CODE_LENGTH = 8; // 32^8 ≈ 10^12 możliwości (40 bitów) + limit prób, więc zgadnięcie kodu jest nierealne
+
+const groupsById = new Map(); // id -> { id, name, ownerId, members: [accountId], code, createdAt }
+const groupsByCode = new Map(); // kod (bez myślnika) -> id grupy
+const joinAttempts = new Map(); // accountId -> znaczniki czasu prób wpisania kodu
+
+const groupChannel = (id) => `g_${id}`;
+const isGroupMember = (group, accountId) => group.members.includes(accountId);
+const formatCode = (code) => `${code.slice(0, 4)}-${code.slice(4)}`;
+const normalizeCode = (value) => String(value || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+
+function groupOfChannel(channelId) {
+  return typeof channelId === 'string' && channelId.startsWith('g_') ? groupsById.get(channelId.slice(2)) || null : null;
+}
+
+function indexGroup(group) {
+  groupsById.set(group.id, group);
+  if (group.code) groupsByCode.set(group.code, group.id);
+}
+
+// Nowy, jeszcze nieużyty kod; stary (jeśli był) przestaje działać.
+function rotateGroupCode(group) {
+  if (group.code) groupsByCode.delete(group.code);
+  let code;
+  do {
+    code = Array.from({ length: CODE_LENGTH }, () => CODE_ALPHABET[crypto.randomInt(CODE_ALPHABET.length)]).join('');
+  } while (groupsByCode.has(code));
+  group.code = code;
+  groupsByCode.set(code, group.id);
+}
+
+async function persistGroup(group) {
+  try {
+    await store.saveGroup(group);
+  } catch (err) {
+    console.error('Nie udało się zapisać grupy:', err.message);
+  }
+}
+
+const groupsOf = (accountId) => Array.from(groupsById.values()).filter((g) => isGroupMember(g, accountId));
+
+// Co klient wie o grupie. Kod dostaje wyłącznie twórca.
+function groupInfo(group, accountId) {
+  const isOwner = group.ownerId === accountId;
+  return {
+    id: group.id,
+    name: group.name,
+    channel: groupChannel(group.id),
+    isOwner,
+    ownerId: group.ownerId,
+    memberCount: group.members.length,
+    maxMembers: MAX_GROUP_MEMBERS,
+    ...(isOwner ? { code: formatCode(group.code) } : {}),
+  };
+}
+
+function accountSockets(accountId) {
+  const sockets = [];
+  for (const [socketId, u] of users) {
+    const s = u.accountId === accountId && io.sockets.sockets.get(socketId);
+    if (s) sockets.push(s);
+  }
+  return sockets;
+}
+
+function pushGroups(accountId) {
+  const list = groupsOf(accountId).map((g) => groupInfo(g, accountId));
+  accountSockets(accountId).forEach((s) => s.emit('groups', list));
+}
+
+function joinGroupRooms(accountId) {
+  const groups = groupsOf(accountId);
+  accountSockets(accountId).forEach((s) => groups.forEach((g) => s.join(`grp:${g.id}`)));
+}
+
+// Odbiera dostęp do grupy (wyjście, usunięcie): połączenia opuszczają jej pokoje, a te, które oglądały jej czat,
+// wracają na kanał domyślny. Klient dostaje `group:removed`, żeby usunąć grupę z listy i swoje lokalne kopie.
+async function revokeGroupAccess(accountId, group) {
+  const channel = groupChannel(group.id);
+  for (const s of accountSockets(accountId)) {
+    s.leave(`grp:${group.id}`);
+    s.emit('group:removed', { groupId: group.id, channel });
+    if (s.data.channel === channel) {
+      enterChannel(s, DEFAULT_CHANNEL);
+      await sendHistory(s, DEFAULT_CHANNEL);
+    }
+  }
+}
+
+function groupSystemMessage(group, text) {
+  const channel = groupChannel(group.id);
+  io.to(`ch:${channel}`).emit('system', { text, time: Date.now(), channel });
+}
+
+// Ochrona kodów przed zgadywaniem: najwyżej 10 prób na 10 minut na konto (oprócz limitu na połączenie).
+function joinAttemptLimited(accountId) {
+  const now = Date.now();
+  const recent = (joinAttempts.get(accountId) || []).filter((t) => now - t < 10 * 60 * 1000);
+  if (recent.length >= 10) {
+    joinAttempts.set(accountId, recent);
+    return true;
+  }
+  recent.push(now);
+  joinAttempts.set(accountId, recent);
+  return false;
+}
+
 // ---------- Wzmianki (@nick) i odpowiedzi ----------
 // Wzmianki rozpoznajemy po stronie serwera: po „@” szukamy najdłuższego pasującego nicku (nick może mieć spacje).
 // Dzięki temu serwer wie, kogo powiadomić, a klient dostaje listę osób do podświetlenia.
@@ -639,10 +756,12 @@ async function emitMessage(socket, nick, extra) {
     ...extra,
   };
   const nsfw = Boolean(CHANNELS_BY_ID.get(channel)?.nsfw);
+  const group = groupOfChannel(channel);
   // Klienci dostają opis oryginału (`replyTo`), a w magazynie zostaje samo `replyToId`.
   const [wire] = await attachReplies([msg]);
   io.to(`ch:${channel}`).emit('message', wire);
-  io.to(nsfw ? 'adult' : 'lobby').except(`ch:${channel}`).emit('activity', { channel });
+  // Powiadomienie o aktywności widzą tylko uprawnieni: członkowie grupy, osoby pełnoletnie (nsfw) albo wszyscy.
+  io.to(group ? `grp:${group.id}` : nsfw ? 'adult' : 'lobby').except(`ch:${channel}`).emit('activity', { channel });
 
   // Oznaczone osoby, które oglądają inny kanał, dostają osobne powiadomienie (czerwony licznik przy kanale).
   for (const mention of msg.mentions || []) {
@@ -707,10 +826,14 @@ io.on('connection', (socket) => {
 
     // Kanał, w którym klient był ostatnio (kanał nsfw tylko po potwierdzeniu pełnoletności).
     socket.data.adult = payload.adult === true;
-    let channel = CHANNELS_BY_ID.has(payload.channel) ? payload.channel : DEFAULT_CHANNEL;
-    if (CHANNELS_BY_ID.get(channel).nsfw && !socket.data.adult) channel = DEFAULT_CHANNEL;
+    let channel = payload.channel;
+    const wantedGroup = groupOfChannel(channel);
+    // ostatnio oglądany kanał: istniejący kanał główny albo grupa, do której należysz – inaczej kanał domyślny
+    if (wantedGroup ? !isGroupMember(wantedGroup, account.id) : !CHANNELS_BY_ID.has(channel)) channel = DEFAULT_CHANNEL;
+    if (CHANNELS_BY_ID.get(channel)?.nsfw && !socket.data.adult) channel = DEFAULT_CHANNEL;
     socket.join('lobby');
     if (socket.data.adult) socket.join('adult');
+    groupsOf(account.id).forEach((g) => socket.join(`grp:${g.id}`));
     enterChannel(socket, channel);
 
     reply({
@@ -726,6 +849,7 @@ io.on('connection', (socket) => {
       maxEmoji: MAX_EMOJI,
       channel,
       channels: CHANNELS,
+      groups: groupsOf(account.id).map((g) => groupInfo(g, account.id)),
     });
 
     if (!alreadyIn) {
@@ -903,8 +1027,12 @@ io.on('connection', (socket) => {
     const reply = typeof ack === 'function' ? ack : () => {};
     const user = users.get(socket.id);
     if (!user) return reply({ ok: false, error: 'Najpierw dołącz do czatu.' });
-    const channel = payload && CHANNELS_BY_ID.get(payload.channel);
+    const group = groupOfChannel(payload && payload.channel);
+    const channel = group ? { id: payload.channel } : payload && CHANNELS_BY_ID.get(payload.channel);
     if (!channel) return reply({ ok: false, error: 'Nie ma takiego kanału.' });
+    if (group && !isGroupMember(group, user.accountId)) {
+      return reply({ ok: false, error: 'Nie należysz do tej grupy.' });
+    }
     if (rateLimited(socket, 'switch', 20, 10000)) {
       return reply({ ok: false, error: 'Zwolnij trochę – za szybko zmieniasz kanały.' });
     }
@@ -921,6 +1049,147 @@ io.on('connection', (socket) => {
     enterChannel(socket, channel.id);
     reply({ ok: true, channel: channel.id });
     await sendHistory(socket, channel.id);
+  });
+
+  // ---------- Grupy: tworzenie, dołączanie jednorazowym kodem, wychodzenie, usuwanie ----------
+  const accountOf = () => {
+    const user = users.get(socket.id);
+    return user && accountsById.get(user.accountId);
+  };
+
+  socket.on('group:create', async (payload, ack) => {
+    const reply = typeof ack === 'function' ? ack : () => {};
+    const account = accountOf();
+    if (!account) return reply({ ok: false, error: 'Najpierw dołącz do czatu.' });
+    if (rateLimited(socket, 'groupCreate', 5, 60000)) return reply({ ok: false, error: 'Zbyt wiele prób. Spróbuj za chwilę.' });
+
+    const name = cleanText(payload && payload.name, MAX_GROUP_NAME);
+    if (name.length < 2) return reply({ ok: false, error: 'Nazwa grupy musi mieć co najmniej 2 znaki.' });
+    const mine = groupsOf(account.id);
+    if (mine.filter((g) => g.ownerId === account.id).length >= MAX_GROUPS_OWNED) {
+      return reply({ ok: false, error: `Możesz założyć najwyżej ${MAX_GROUPS_OWNED} grup.` });
+    }
+    if (mine.length >= MAX_GROUPS_JOINED) {
+      return reply({ ok: false, error: `Możesz należeć najwyżej do ${MAX_GROUPS_JOINED} grup.` });
+    }
+
+    const group = { id: crypto.randomBytes(6).toString('hex'), name, ownerId: account.id, members: [account.id], code: null, createdAt: Date.now() };
+    rotateGroupCode(group);
+    indexGroup(group);
+    await persistGroup(group);
+    joinGroupRooms(account.id);
+    pushGroups(account.id);
+    reply({ ok: true, group: groupInfo(group, account.id) });
+  });
+
+  // Dołączenie kodem. Kod jest jednorazowy: po użyciu natychmiast wygasa, a twórca dostaje nowy.
+  socket.on('group:join', async (payload, ack) => {
+    const reply = typeof ack === 'function' ? ack : () => {};
+    const account = accountOf();
+    if (!account) return reply({ ok: false, error: 'Najpierw dołącz do czatu.' });
+    if (rateLimited(socket, 'groupJoin', 6, 60000) || joinAttemptLimited(account.id)) {
+      return reply({ ok: false, error: 'Zbyt wiele prób wpisania kodu. Spróbuj ponownie za kilka minut.' });
+    }
+
+    const code = normalizeCode(payload && payload.code);
+    const group = groupsById.get(groupsByCode.get(code));
+    if (!group) return reply({ ok: false, error: 'Nieprawidłowy lub już zużyty kod.' });
+    // Te sprawdzenia robimy PRZED zużyciem kodu – nieudana próba nie może go spalić.
+    if (isGroupMember(group, account.id)) return reply({ ok: false, error: 'Już należysz do tej grupy.' });
+    if (group.members.length >= MAX_GROUP_MEMBERS) return reply({ ok: false, error: 'Ta grupa jest już pełna.' });
+    if (groupsOf(account.id).length >= MAX_GROUPS_JOINED) {
+      return reply({ ok: false, error: `Możesz należeć najwyżej do ${MAX_GROUPS_JOINED} grup.` });
+    }
+
+    group.members.push(account.id);
+    rotateGroupCode(group); // stary kod przestaje działać w tej samej chwili
+    await persistGroup(group);
+
+    joinGroupRooms(account.id);
+    group.members.forEach(pushGroups); // wszyscy widzą nową liczbę osób, a twórca – nowy kod
+    io.to(`grp:${group.id}`).emit('group:members-changed', { groupId: group.id });
+    groupSystemMessage(group, `${account.nick} dołączył(a) do grupy`);
+    reply({ ok: true, group: groupInfo(group, account.id) });
+  });
+
+  // Nowy kod na życzenie – tylko twórca (stary przestaje działać).
+  socket.on('group:code', async (groupId, ack) => {
+    const reply = typeof ack === 'function' ? ack : () => {};
+    const account = accountOf();
+    const group = account && groupsById.get(groupId);
+    if (!group) return reply({ ok: false, error: 'Nie ma takiej grupy.' });
+    if (group.ownerId !== account.id) return reply({ ok: false, error: 'Kod może generować tylko twórca grupy.' });
+    if (rateLimited(socket, 'groupCode', 10, 60000)) return reply({ ok: false, error: 'Zwolnij trochę.' });
+    rotateGroupCode(group);
+    await persistGroup(group);
+    pushGroups(account.id);
+    reply({ ok: true, code: formatCode(group.code) });
+  });
+
+  // Wyjście z grupy (twórca nie może wyjść – może ją usunąć).
+  socket.on('group:leave', async (groupId, ack) => {
+    const reply = typeof ack === 'function' ? ack : () => {};
+    const account = accountOf();
+    const group = account && groupsById.get(groupId);
+    if (!group || !isGroupMember(group, account.id)) return reply({ ok: false, error: 'Nie należysz do tej grupy.' });
+    if (group.ownerId === account.id) {
+      return reply({ ok: false, error: 'Jesteś twórcą grupy – nie możesz z niej wyjść. Możesz ją usunąć.' });
+    }
+    group.members = group.members.filter((id) => id !== account.id);
+    await persistGroup(group);
+    await revokeGroupAccess(account.id, group);
+    pushGroups(account.id);
+    group.members.forEach(pushGroups);
+    io.to(`grp:${group.id}`).emit('group:members-changed', { groupId: group.id });
+    groupSystemMessage(group, `${account.nick} opuścił(a) grupę`);
+    reply({ ok: true });
+  });
+
+  // Usunięcie grupy wraz z całą jej historią – tylko twórca.
+  socket.on('group:delete', async (groupId, ack) => {
+    const reply = typeof ack === 'function' ? ack : () => {};
+    const account = accountOf();
+    const group = account && groupsById.get(groupId);
+    if (!group) return reply({ ok: false, error: 'Nie ma takiej grupy.' });
+    if (group.ownerId !== account.id) return reply({ ok: false, error: 'Grupę może usunąć tylko jej twórca.' });
+
+    const members = group.members.slice();
+    groupsById.delete(group.id);
+    if (group.code) groupsByCode.delete(group.code);
+    try {
+      await store.deleteGroup(group.id);
+      await store.removeChannelMessages(groupChannel(group.id));
+    } catch (err) {
+      console.error('Błąd usuwania grupy:', err.message);
+    }
+    for (const accountId of members) {
+      await revokeGroupAccess(accountId, group);
+      pushGroups(accountId);
+    }
+    reply({ ok: true });
+  });
+
+  socket.on('group:members', (groupId, ack) => {
+    const reply = typeof ack === 'function' ? ack : () => {};
+    const account = accountOf();
+    const group = account && groupsById.get(groupId);
+    if (!group || !isGroupMember(group, account.id)) return reply({ ok: false, error: 'Nie należysz do tej grupy.' });
+    reply({
+      ok: true,
+      members: group.members
+        .map((id) => accountsById.get(id))
+        .filter(Boolean)
+        .map((a) => ({
+          id: a.id,
+          nick: a.nick,
+          avatar: mediaUrl(a, 'avatar'),
+          status: a.status || 'online',
+          statusText: a.statusText || '',
+          nickColor: a.nickColor || null,
+          nickFont: a.nickFont || null,
+          isOwner: a.id === group.ownerId,
+        })),
+    });
   });
 
   socket.on('rename', async (rawNick, ack) => {
@@ -1047,6 +1316,11 @@ io.on('connection', (socket) => {
       if (meta && CHANNELS_BY_ID.get(meta.channel)?.nsfw && !socket.data.adult) {
         return reply({ ok: false, error: 'Ten plik jest tylko dla osób pełnoletnich.' });
       }
+      // Pliki z grupy prywatnej tylko dla jej członków.
+      const fileGroup = meta && groupOfChannel(meta.channel);
+      if (meta && meta.channel && meta.channel.startsWith('g_') && (!fileGroup || !isGroupMember(fileGroup, users.get(socket.id).accountId))) {
+        return reply({ ok: false, error: 'Ten plik jest dostępny tylko dla członków grupy.' });
+      }
       const data = await store.fileData(id);
       if (!data) return reply({ ok: false, error: 'Ten plik wygasł lub został usunięty.' });
       reply({ ok: true, data });
@@ -1083,7 +1357,9 @@ io.on('connection', (socket) => {
     if (rateLimited(socket, 'msg', 10, 10000)) return;
 
     const extra = { kind: 'text', text };
-    const mentions = parseMentions(text);
+    const group = groupOfChannel(socket.data.channel);
+    // W grupie można oznaczać (i powiadamiać) tylko jej członków.
+    const mentions = parseMentions(text).filter((m) => !group || isGroupMember(group, m.id));
 
     if (typeof body.replyTo === 'string' && body.replyTo.length <= 64) {
       const original = await store.get(body.replyTo).catch(() => null);
@@ -1092,7 +1368,13 @@ io.on('connection', (socket) => {
         extra.replyToId = original.id;
         const author = original.accountId && accountsById.get(original.accountId);
         // Odpowiedź domyślnie powiadamia autora oryginału (jak „@WŁ.” na Discordzie), chyba że to my.
-        if (body.ping !== false && author && author.id !== user.accountId && !mentions.some((m) => m.id === author.id)) {
+        if (
+          body.ping !== false &&
+          author &&
+          author.id !== user.accountId &&
+          (!group || isGroupMember(group, author.id)) &&
+          !mentions.some((m) => m.id === author.id)
+        ) {
           mentions.push({ id: author.id, nick: author.nick, reply: true });
         }
       }
@@ -1108,7 +1390,12 @@ io.on('connection', (socket) => {
     if (rateLimited(socket, 'mentionSearch', 30, 10000)) return reply({ ok: false });
     const q = cleanText(typeof query === 'string' ? query : '', MAX_NICK_LENGTH).toLowerCase();
     const matches = [];
-    for (const account of accountsById.values()) {
+    // W grupie podpowiadamy tylko jej członków (reszta kont nie powinna się w ogóle ujawniać).
+    const searchGroup = groupOfChannel(socket.data.channel);
+    const pool = searchGroup
+      ? searchGroup.members.map((id) => accountsById.get(id)).filter(Boolean)
+      : accountsById.values();
+    for (const account of pool) {
       const lower = account.nick.toLowerCase();
       if (q && !lower.includes(q)) continue;
       matches.push({ account, online: isOnline(account.id), starts: lower.startsWith(q) });
@@ -1206,6 +1493,9 @@ async function start() {
 
   for (const emoji of await store.loadEmoji()) emojiById.set(emoji.id, emoji);
   console.log(`Wczytano emoji: ${emojiById.size}`);
+
+  for (const group of await store.loadGroups()) indexGroup(group);
+  console.log(`Wczytano grup: ${groupsById.size}`);
 
   for (const account of await store.loadAccounts()) indexAccount(account);
   console.log(`Wczytano kont: ${accountsById.size}`);

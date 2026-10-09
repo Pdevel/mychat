@@ -45,23 +45,28 @@
   <!-- Aplikacja -->
   <div id="chat-screen" class="app hidden">
     <!-- Pasek serwerów -->
-    <nav class="rail" aria-hidden="true">
-      <div class="rail__icon">M</div>
+    <nav class="rail" aria-label="Serwer i grupy">
+      <button type="button" id="rail-home" class="rail__icon rail__icon--home is-active" title="MyChat – kanały ogólne" aria-label="MyChat">M</button>
+      <div class="rail__sep"></div>
+      <div id="rail-groups" class="rail__groups"></div>
+      <button type="button" id="rail-add" class="rail__icon rail__icon--add" title="Dołącz do grupy lub utwórz własną" aria-label="Grupy">+</button>
     </nav>
 
     <!-- Lista kanałów -->
     <aside class="channels">
-      <div class="channels__header">MyChat</div>
+      <div id="channels-header" class="channels__header">MyChat</div>
       <div class="channels__list">
-        <div class="channels__category">KANAŁY TEKSTOWE</div>
+        <div id="channels-category" class="channels__category">KANAŁY TEKSTOWE</div>
         <div id="channel-list"></div>
 
-        <div class="channels__category channels__category--spaced">KANAŁY GŁOSOWE</div>
-        <button type="button" id="voice-channel" class="channel channel--voice" title="Dołącz do kanału głosowego">
-          <span class="hash">🔊</span> głosowy
-          <span id="voice-count" class="channel__count"></span>
-        </button>
-        <div id="voice-members" class="voice-members"></div>
+        <div id="voice-block">
+          <div class="channels__category channels__category--spaced">KANAŁY GŁOSOWE</div>
+          <button type="button" id="voice-channel" class="channel channel--voice" title="Dołącz do kanału głosowego">
+            <span class="hash">🔊</span> głosowy
+            <span id="voice-count" class="channel__count"></span>
+          </button>
+          <div id="voice-members" class="voice-members"></div>
+        </div>
       </div>
       <div class="userpanel" id="userpanel" title="Ustawienia profilu">
         <div id="me-avatar" class="avatar avatar--sm"></div>
@@ -80,6 +85,7 @@
         <select id="channel-select" class="channel-select" aria-label="Kanał"></select>
         <span id="status" class="topbar__status">łączenie…</span>
         <span id="online-count" class="topbar__online">0 online</span>
+        <button type="button" id="groups-btn" class="icon-btn icon-btn--text" aria-label="Grupy" title="Grupy – dołącz, utwórz, opuść">👥</button>
         <button type="button" id="voice-btn" class="icon-btn" aria-label="Kanał głosowy" title="Dołącz do kanału głosowego">
           <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true">
             <path d="M12 1a9 9 0 0 0-9 9v7a3 3 0 0 0 3 3h3v-8H5v-2a7 7 0 0 1 14 0v2h-4v8h3a3 3 0 0 0 3-3v-7a9 9 0 0 0-9-9z" />
@@ -382,6 +388,37 @@
           <button type="button" id="profile-save" class="btn-primary">Zapisz profil</button>
         </div>
       </div>
+    </div>
+  </div>
+
+  <!-- Grupy prywatne: dołączanie kodem, tworzenie, zarządzanie -->
+  <div id="groups-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="groups-title">
+    <div class="modal__card groups">
+      <button type="button" id="groups-close" class="modal__close" aria-label="Zamknij">✕</button>
+      <h3 id="groups-title">👥 Grupy</h3>
+
+      <section>
+        <div class="section-title">DOŁĄCZ DO GRUPY</div>
+        <form id="group-join-form" class="groups__row" autocomplete="off">
+          <input id="group-code" class="field" type="text" placeholder="Kod dostępu, np. ABCD-EFGH" maxlength="12" spellcheck="false" autocapitalize="characters" />
+          <button type="submit" class="btn-primary btn-sm">Dołącz</button>
+        </form>
+        <div class="groups__hint">Kod dostaniesz od twórcy grupy. Jest jednorazowy – po użyciu wygasa.</div>
+      </section>
+
+      <section>
+        <div class="section-title">UTWÓRZ GRUPĘ</div>
+        <form id="group-create-form" class="groups__row" autocomplete="off">
+          <input id="group-name" class="field" type="text" placeholder="Nazwa grupy" maxlength="30" />
+          <button type="submit" class="btn-primary btn-sm">Utwórz</button>
+        </form>
+        <div class="groups__hint">Tylko Ty, jako twórca, będziesz widzieć kod dostępu i generować nowe.</div>
+      </section>
+
+      <section>
+        <div class="section-title">TWOJE GRUPY</div>
+        <div id="group-list" class="groups__list"></div>
+      </section>
     </div>
   </div>
 

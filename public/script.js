@@ -91,6 +91,9 @@ let myAccountId = null;
 const DEFAULT_CHANNEL = 'ogolny';
 let channels = [{ id: DEFAULT_CHANNEL, name: 'ogólny' }]; // pełna lista przychodzi z serwera po zalogowaniu
 let currentChannel = store.get('mychat.channel', { id: DEFAULT_CHANNEL }).id;
+const isGroupChannel = (id) => typeof id === 'string' && id.startsWith('g_');
+let lastMainChannel = isGroupChannel(currentChannel) ? DEFAULT_CHANNEL : currentChannel; // dokąd wraca ikona „M”
+let groups = []; // prywatne grupy, do których należysz (lista przychodzi z serwera)
 let adultConfirmed = store.get('mychat.adult', { ok: false }).ok === true; // potwierdzenie pełnoletności (nsfw)
 const unreadChannels = new Set(); // kanały z nowymi wiadomościami, których nie oglądasz
 const mentionCounts = new Map(); // kanał -> ile razy oznaczono Cię tam, gdy go nie oglądałeś
@@ -670,6 +673,23 @@ const archive = {
       tx.objectStore('messages').delete(id);
       tx.objectStore('files').delete(id);
     });
+    await txDone(tx);
+  },
+
+  // Wyjście z grupy lub jej usunięcie: wiadomości i pliki tej grupy znikają też z archiwum na tym urządzeniu.
+  async removeChannel(channel) {
+    if (!this.ready) return;
+    const tx = this.db.transaction(['messages', 'files'], 'readwrite');
+    const files = tx.objectStore('files');
+    const range = IDBKeyRange.bound([channel, 0], [channel, Number.MAX_SAFE_INTEGER]);
+    const cursor = tx.objectStore('messages').index('channel_time').openCursor(range);
+    cursor.onsuccess = () => {
+      const cur = cursor.result;
+      if (!cur) return;
+      files.delete(cur.value.id);
+      cur.delete();
+      cur.continue();
+    };
     await txDone(tx);
   },
 
@@ -1388,16 +1408,43 @@ function renderTyping() {
   typingEl.replaceChildren(dots, document.createTextNode(label));
 }
 
-function renderMembers(list) {
+// Panel po prawej: na kanałach ogólnych – kto jest online; w grupie – wszyscy jej członkowie (offline wyszarzeni).
+let onlineUsers = []; // ostatnia lista „online” z serwera
+let groupMembers = []; // członkowie oglądanej grupy
+let groupMembersFor = null; // dla której grupy je pobrano
+
+function renderMembersPanel() {
+  const group = groupByChannel(currentChannel);
+  if (!group) return renderMembers(onlineUsers);
+  const online = new Map(onlineUsers.map((u) => [u.id, u]));
+  const list = groupMembers
+    .map((m) => ({ ...m, ...(online.get(m.id) || { status: 'offline' }), isOwner: m.isOwner, offline: !online.has(m.id) }))
+    .sort((a, b) => Number(a.offline) - Number(b.offline) || a.nick.localeCompare(b.nick, 'pl'));
+  renderMembers(list, { group });
+}
+
+function loadGroupMembers() {
+  const group = groupByChannel(currentChannel);
+  if (!group) return;
+  socket.timeout(10000).emit('group:members', group.id, (err, res) => {
+    if (err || !res || !res.ok || currentChannel !== group.channel) return;
+    groupMembers = res.members;
+    groupMembersFor = group.id;
+    renderMembersPanel();
+  });
+}
+
+function renderMembers(list, { group = null } = {}) {
   list.forEach((u) => {
     avatars.set(u.nick, u.avatar);
     setNickStyle(u.id, u.nick, u);
   });
-  onlineEl.textContent = `${list.length} online`;
-  membersTitleEl.textContent = `ONLINE — ${list.length}`;
+  const onlineCount = group ? list.filter((u) => !u.offline).length : list.length;
+  onlineEl.textContent = `${onlineCount} online`;
+  membersTitleEl.textContent = group ? `CZŁONKOWIE — ${list.length} (${onlineCount} online)` : `ONLINE — ${list.length}`;
   membersListEl.replaceChildren(
     ...list.map((u) => {
-      const row = el('div', 'member');
+      const row = el('div', 'member' + (u.offline ? ' member--offline' : ''));
       markProfileTrigger(row, u.nick, u.id);
       const avatar = makeAvatar(u.nick, 'avatar--sm avatar--dot');
       avatar.dataset.status = u.status || 'online';
@@ -1406,8 +1453,16 @@ function renderMembers(list) {
       const text = el('div', 'member__text');
       const name = el('span', 'member__name', u.nick);
       applyNickStyle(name, u.nick, u.id);
-      text.appendChild(name);
-      if (u.statusText) text.appendChild(el('span', 'member__status', u.statusText));
+      if (u.isOwner) {
+        const crown = el('span', 'member__crown', '👑');
+        crown.title = 'Twórca grupy';
+        const nameRow = el('div', 'member__row');
+        nameRow.append(name, crown);
+        text.appendChild(nameRow);
+      } else {
+        text.appendChild(name);
+      }
+      if (u.statusText && !u.offline) text.appendChild(el('span', 'member__status', u.statusText));
       row.appendChild(text);
       return row;
     })
@@ -1830,12 +1885,16 @@ function join(nick) {
       if (res.maxEmoji) maxEmoji = res.maxEmoji;
     }
     if (Array.isArray(res.channels) && res.channels.length) channels = res.channels;
-    currentChannel = res.channel || DEFAULT_CHANNEL; // serwer mógł zmienić kanał (np. brak zgody na nsfw)
+    groups = Array.isArray(res.groups) ? res.groups : [];
+    currentChannel = res.channel || DEFAULT_CHANNEL; // serwer mógł zmienić kanał (np. brak zgody na nsfw, wyjście z grupy)
+    if (!isGroupChannel(currentChannel)) lastMainChannel = currentChannel;
+    groupMembersFor = null;
     historyLoading = true; // zaraz po zalogowaniu serwer wyśle historię kanału
     pendingLive.length = 0;
     unreadChannels.delete(currentChannel);
     mentionCounts.delete(currentChannel);
     renderChannels();
+    if (groupByChannel(currentChannel)) loadGroupMembers();
     syncDeletions();
     profile = {
       nick: res.nick,
@@ -3848,7 +3907,11 @@ socket.on('message', (m) => {
   if (historyLoading) pendingLive.push(m);
   else handleLive(m);
 });
-socket.on('system', addSystem);
+// Komunikaty grupy pokazujemy tylko w jej czacie, ogólne (wejścia/wyjścia z czatu) – poza grupami.
+socket.on('system', (m) => {
+  if (m.channel ? m.channel !== currentChannel : isGroupChannel(currentChannel)) return;
+  addSystem(m);
+});
 
 // Nowa wiadomość na kanale, którego akurat nie oglądasz – zapalamy kropkę przy jego nazwie.
 socket.on('activity', ({ channel, mention }) => {
@@ -3862,15 +3925,27 @@ socket.on('activity', ({ channel, mention }) => {
 });
 
 // ---------- Kanały tekstowe: lista, przełączanie, bramka wiekowa ----------
+function groupByChannel(id) {
+  return isGroupChannel(id) ? groups.find((g) => g.channel === id) || null : null;
+}
+
 function channelById(id) {
+  const group = groupByChannel(id);
+  if (group) return { id: group.channel, name: group.name, group: true };
   return channels.find((c) => c.id === id) || channels[0];
 }
 
 function renderChannels() {
+  const group = groupByChannel(currentChannel);
   const current = channelById(currentChannel);
 
+  // W grupie lewy panel pokazuje tylko jej jeden czat (kanały ogólne i głosowy są poza grupą).
+  $('channels-header').textContent = group ? `👥 ${group.name}` : 'MyChat';
+  $('channels-category').textContent = group ? 'CZAT GRUPY' : 'KANAŁY TEKSTOWE';
+  $('voice-block').classList.toggle('hidden', Boolean(group));
+
   $('channel-list').replaceChildren(
-    ...channels.map((c) => {
+    ...(group ? [{ id: group.channel, name: 'czat' }] : channels).map((c) => {
       const active = c.id === currentChannel;
       const unread = unreadChannels.has(c.id) && !active;
       const item = el('button', 'channel' + (active ? ' channel--active' : '') + (unread ? ' channel--unread' : ''));
@@ -3888,19 +3963,62 @@ function renderChannels() {
   );
 
   const select = $('channel-select');
-  select.replaceChildren(
-    ...channels.map((c) => {
-      const opt = el('option', '', `# ${c.name}${c.nsfw ? ' (18+)' : ''}${unreadChannels.has(c.id) && c.id !== currentChannel ? ' •' : ''}`);
-      opt.value = c.id;
-      return opt;
-    })
-  );
+  const mark = (id) => (unreadChannels.has(id) && id !== currentChannel ? ' •' : '');
+  const options = channels.map((c) => {
+    const opt = el('option', '', `# ${c.name}${c.nsfw ? ' (18+)' : ''}${mark(c.id)}`);
+    opt.value = c.id;
+    return opt;
+  });
+  if (groups.length) {
+    const optgroup = el('optgroup');
+    optgroup.label = 'Grupy';
+    groups.forEach((g) => {
+      const opt = el('option', '', `👥 ${g.name}${mark(g.channel)}`);
+      opt.value = g.channel;
+      optgroup.appendChild(opt);
+    });
+    options.push(optgroup);
+  }
+  select.replaceChildren(...options);
   select.value = currentChannel;
 
-  $('channel-title').textContent = current.name;
-  messageInput.placeholder = `Napisz wiadomość na #${current.name}`;
+  $('channel-title').textContent = group ? group.name : current.name;
+  messageInput.placeholder = group ? `Napisz wiadomość w grupie ${group.name}` : `Napisz wiadomość na #${current.name}`;
   messagesEl.dataset.nsfw = current.nsfw ? '1' : '';
+  renderRail();
 }
+
+// ---------- Grupy prywatne: pasek po lewej ----------
+function renderRail() {
+  const inGroup = Boolean(groupByChannel(currentChannel));
+  const home = $('rail-home');
+  home.classList.toggle('is-active', !inGroup);
+  home.replaceChildren(document.createTextNode('M'));
+  const mainUnread = channels.some((c) => unreadChannels.has(c.id) && c.id !== currentChannel);
+  const mainMentions = channels.reduce((n, c) => n + (c.id === currentChannel ? 0 : mentionCounts.get(c.id) || 0), 0);
+  if (inGroup && mainMentions) home.appendChild(el('span', 'rail__badge', String(mainMentions)));
+  else if (inGroup && mainUnread) home.appendChild(el('span', 'rail__dot'));
+
+  $('rail-groups').replaceChildren(
+    ...groups.map((g) => {
+      const active = g.channel === currentChannel;
+      const btn = el('button', 'rail__icon' + (active ? ' is-active' : ''), (g.name.trim()[0] || '?').toUpperCase());
+      btn.type = 'button';
+      btn.title = g.name;
+      btn.setAttribute('aria-label', `Grupa ${g.name}`);
+      btn.style.background = colorFor(g.name);
+      const mentions = active ? 0 : mentionCounts.get(g.channel) || 0;
+      if (mentions) btn.appendChild(el('span', 'rail__badge', String(mentions)));
+      else if (!active && unreadChannels.has(g.channel)) btn.appendChild(el('span', 'rail__dot'));
+      btn.addEventListener('click', () => switchChannel(g.channel));
+      return btn;
+    })
+  );
+}
+
+$('rail-home').addEventListener('click', () => switchChannel(lastMainChannel));
+$('rail-add').addEventListener('click', () => openGroups());
+$('groups-btn').addEventListener('click', () => openGroups());
 
 $('channel-select').addEventListener('change', (e) => switchChannel(e.target.value));
 
@@ -3916,20 +4034,10 @@ function showAgeGate(onConfirm) {
   };
 }
 
-function switchChannel(id) {
-  if (id === currentChannel || !channels.some((c) => c.id === id)) return renderChannels();
-  const target = channelById(id);
-  if (target.nsfw && !adultConfirmed) {
-    renderChannels(); // przywraca poprzedni wybór na liście (telefon)
-    return showAgeGate(() => switchChannel(id));
-  }
-  if (!socket.connected) {
-    renderChannels();
-    return toast('Brak połączenia z serwerem.');
-  }
-
-  const previous = currentChannel;
+// Przestawia widok na inny kanał (bez pytania serwera – on sam albo już to zrobił, albo zaraz zrobi).
+function showChannelView(id) {
   currentChannel = id;
+  if (!isGroupChannel(id)) lastMainChannel = id;
   historyLoading = true; // nowe wiadomości czekają, aż przyjdzie historia tego kanału
   pendingLive.length = 0;
   unreadChannels.delete(id);
@@ -3944,6 +4052,29 @@ function switchChannel(id) {
   store.set('mychat.channel', { id });
   renderChannels();
   closePopups();
+  if (groupByChannel(id)) {
+    if (groupMembersFor !== groupByChannel(id).id) groupMembers = []; // nie pokazuj członków poprzedniej grupy
+    renderMembersPanel();
+    loadGroupMembers();
+  } else {
+    renderMembersPanel();
+  }
+}
+
+function switchChannel(id) {
+  if (id === currentChannel || !(channels.some((c) => c.id === id) || groupByChannel(id))) return renderChannels();
+  const target = channelById(id);
+  if (target.nsfw && !adultConfirmed) {
+    renderChannels(); // przywraca poprzedni wybór na liście (telefon)
+    return showAgeGate(() => switchChannel(id));
+  }
+  if (!socket.connected) {
+    renderChannels();
+    return toast('Brak połączenia z serwerem.');
+  }
+
+  const previous = currentChannel;
+  showChannelView(id);
 
   socket.timeout(10000).emit('switchChannel', { channel: id, adult: adultConfirmed }, (err, res) => {
     if (!err && res && res.ok) return;
@@ -4072,7 +4203,203 @@ socket.on('history', async ({ channel, messages, styles = {} }) => {
   historyLoading = false;
   pendingLive.splice(0).forEach(handleLive);
 });
-socket.on('users', renderMembers);
+socket.on('users', (list) => {
+  onlineUsers = list;
+  renderMembersPanel();
+});
+
+// ---------- Grupy prywatne: okno zarządzania i zdarzenia z serwera ----------
+const groupsModal = $('groups-modal');
+const removedByMe = new Set(); // grupy, które właśnie opuszczam/usuwam – bez dodatkowego powiadomienia
+
+function openGroups() {
+  groupsModal.classList.remove('hidden');
+  renderGroupList();
+  $('group-code').focus();
+}
+
+function closeGroups() {
+  groupsModal.classList.add('hidden');
+}
+
+function setGroups(list) {
+  groups = Array.isArray(list) ? list : [];
+  // Gdyby grupa, którą oglądasz, zniknęła z listy bez zdarzenia usunięcia – wróć do kanałów ogólnych.
+  if (isGroupChannel(currentChannel) && !groupByChannel(currentChannel)) showChannelView(lastMainChannel);
+  renderChannels();
+  renderGroupList();
+  const group = groupByChannel(currentChannel);
+  if (group) renderMembersPanel();
+}
+
+function upsertGroup(info) {
+  setGroups(groups.some((g) => g.id === info.id) ? groups.map((g) => (g.id === info.id ? info : g)) : [...groups, info]);
+}
+
+function copyText(text) {
+  const fallback = () => {
+    const area = document.createElement('textarea');
+    area.value = text;
+    area.style.position = 'fixed';
+    area.style.opacity = '0';
+    document.body.appendChild(area);
+    area.select();
+    try {
+      document.execCommand('copy');
+    } catch {
+      /* ignorujemy */
+    }
+    area.remove();
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).catch(fallback);
+  else fallback();
+}
+
+function groupAction(event, arg, done) {
+  socket.timeout(10000).emit(event, arg, (err, res) => {
+    if (err || !res || !res.ok) return toast((res && res.error) || 'Nie udało się. Spróbuj ponownie.');
+    done(res);
+  });
+}
+
+function renderGroupList() {
+  const list = $('group-list');
+  if (!list) return;
+  if (!groups.length) {
+    list.replaceChildren(el('div', 'groups__empty', 'Nie należysz jeszcze do żadnej grupy.'));
+    return;
+  }
+  list.replaceChildren(
+    ...groups.map((g) => {
+      const card = el('div', 'group-card');
+      const head = el('div', 'group-card__head');
+      const icon = el('div', 'group-card__icon', (g.name.trim()[0] || '?').toUpperCase());
+      icon.style.background = colorFor(g.name);
+      const info = el('div', 'group-card__info');
+      const name = el('div', 'group-card__name', g.name);
+      if (g.isOwner) name.appendChild(el('span', 'group-card__crown', 'TWÓRCA'));
+      info.append(name, el('div', 'group-card__meta', `${g.memberCount} / ${g.maxMembers} członków`));
+      head.append(icon, info);
+      card.appendChild(head);
+
+      // Kod widzi i generuje tylko twórca (serwer w ogóle nie wysyła go pozostałym).
+      if (g.isOwner && g.code) {
+        const box = el('div', 'group-card__code');
+        box.appendChild(el('div', 'group-card__code-label', 'JEDNORAZOWY KOD DOSTĘPU'));
+        box.appendChild(el('span', 'group-card__code-value', g.code));
+        const copy = el('button', 'btn-secondary btn-sm', 'Kopiuj');
+        copy.type = 'button';
+        copy.addEventListener('click', () => {
+          copyText(g.code);
+          toast('Kod skopiowany', true);
+        });
+        const renew = el('button', 'btn-secondary btn-sm', 'Nowy kod');
+        renew.type = 'button';
+        renew.title = 'Wygeneruj nowy kod – poprzedni przestanie działać';
+        renew.addEventListener('click', () => groupAction('group:code', g.id, () => toast('Wygenerowano nowy kod', true)));
+        box.append(copy, renew);
+        card.appendChild(box);
+      }
+
+      const actions = el('div', 'group-card__actions');
+      const open = el('button', 'btn-primary btn-sm', g.channel === currentChannel ? 'Otwarta' : 'Otwórz');
+      open.type = 'button';
+      open.disabled = g.channel === currentChannel;
+      open.addEventListener('click', () => {
+        closeGroups();
+        switchChannel(g.channel);
+      });
+      actions.appendChild(open);
+
+      if (g.isOwner) {
+        const del = el('button', 'btn-secondary btn-sm btn-danger', 'Usuń grupę');
+        del.type = 'button';
+        del.addEventListener('click', () => {
+          if (!confirm(`Usunąć grupę „${g.name}”? Wszyscy członkowie zostaną z niej usunięci, a cała historia czatu przepadnie.`)) return;
+          removedByMe.add(g.id);
+          groupAction('group:delete', g.id, () => toast(`Usunięto grupę ${g.name}`, true));
+        });
+        actions.appendChild(del);
+      } else {
+        const leave = el('button', 'btn-secondary btn-sm', 'Opuść');
+        leave.type = 'button';
+        leave.addEventListener('click', () => {
+          if (!confirm(`Opuścić grupę „${g.name}”? Aby wrócić, będziesz potrzebować nowego kodu od twórcy.`)) return;
+          removedByMe.add(g.id);
+          groupAction('group:leave', g.id, () => toast(`Opuszczono grupę ${g.name}`, true));
+        });
+        actions.appendChild(leave);
+      }
+      card.appendChild(actions);
+      return card;
+    })
+  );
+}
+
+$('group-join-form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const input = $('group-code');
+  const code = input.value.trim();
+  if (!code) return;
+  groupAction('group:join', { code }, (res) => {
+    input.value = '';
+    upsertGroup(res.group);
+    toast(`Dołączono do grupy ${res.group.name}`, true);
+    closeGroups();
+    switchChannel(res.group.channel);
+  });
+});
+
+$('group-create-form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const input = $('group-name');
+  const name = input.value.trim();
+  if (!name) return;
+  groupAction('group:create', { name }, (res) => {
+    input.value = '';
+    upsertGroup(res.group);
+    toast(`Utworzono grupę ${res.group.name}`, true);
+    renderGroupList(); // zostajemy w oknie, żeby od razu skopiować kod dla znajomych
+  });
+});
+
+$('groups-close').addEventListener('click', closeGroups);
+groupsModal.addEventListener('mousedown', (e) => {
+  if (e.target === groupsModal) closeGroups();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !groupsModal.classList.contains('hidden')) closeGroups();
+});
+
+socket.on('groups', setGroups);
+
+// Ktoś dołączył lub wyszedł – odśwież listę członków oglądanej grupy.
+socket.on('group:members-changed', ({ groupId }) => {
+  const group = groupByChannel(currentChannel);
+  if (group && group.id === groupId) loadGroupMembers();
+});
+
+// Wyjście z grupy, jej usunięcie przez twórcę: znika z listy, a lokalna kopia czatu z archiwum.
+socket.on('group:removed', async ({ groupId, channel }) => {
+  const group = groups.find((g) => g.id === groupId);
+  const mine = removedByMe.delete(groupId);
+  groups = groups.filter((g) => g.id !== groupId);
+  unreadChannels.delete(channel);
+  mentionCounts.delete(channel);
+  if (currentChannel === channel) {
+    showChannelView(DEFAULT_CHANNEL); // serwer przeniósł już to połączenie na kanał domyślny i zaraz wyśle jego historię
+  } else {
+    renderChannels();
+  }
+  renderGroupList();
+  if (group && !mine) toast(`Grupa „${group.name}” została usunięta lub nie masz już do niej dostępu.`);
+  try {
+    await archive.opening;
+    await archive.removeChannel(channel);
+  } catch (err) {
+    handleArchiveError(err);
+  }
+});
 
 socket.on('typing', ({ nick, isTyping, channel }) => {
   if (channel && channel !== currentChannel) return;
