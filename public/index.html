@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="theme-color" content="#0084ff" />
+  <meta name="theme-color" content="#313338" />
   <title>MyChat</title>
   <link rel="stylesheet" href="style.css" />
 </head>
@@ -11,49 +11,76 @@
   <!-- Ekran logowania -->
   <section id="login-screen" class="login">
     <form id="login-form" class="login__card" autocomplete="off">
-      <div class="login__logo">💬</div>
-      <h1>MyChat</h1>
-      <p>Wpisz swój nick, aby dołączyć do rozmowy.</p>
-      <input
-        id="nick-input"
-        type="text"
-        placeholder="Twój nick"
-        maxlength="20"
-        required
-        autofocus
-      />
+      <h1>Witaj w MyChat!</h1>
+      <p class="login__sub">Wybierz nick, aby dołączyć do rozmowy.</p>
+      <label for="nick-input">NICK <span class="login__req">*</span></label>
+      <input id="nick-input" type="text" maxlength="20" required autofocus />
       <p id="login-error" class="login__error" role="alert"></p>
-      <button type="submit">Dołącz do czatu</button>
+      <button type="submit">Dołącz</button>
     </form>
   </section>
 
-  <!-- Okno czatu -->
-  <main id="chat-screen" class="chat hidden">
-    <header class="chat__header">
-      <div class="chat__title">
-        <h2>Czat ogólny</h2>
-        <span id="status" class="chat__status">łączenie…</span>
+  <!-- Aplikacja -->
+  <div id="chat-screen" class="app hidden">
+    <!-- Pasek serwerów -->
+    <nav class="rail" aria-hidden="true">
+      <div class="rail__icon rail__icon--active">M</div>
+    </nav>
+
+    <!-- Lista kanałów -->
+    <aside class="channels">
+      <div class="channels__header">MyChat</div>
+      <div class="channels__list">
+        <div class="channels__category">KANAŁY TEKSTOWE</div>
+        <div class="channel channel--active"><span class="hash">#</span> ogólny</div>
       </div>
-      <span id="online-count" class="chat__online">0 online</span>
-    </header>
+      <div class="userpanel">
+        <div id="me-avatar" class="avatar avatar--sm"></div>
+        <div class="userpanel__info">
+          <div id="me-name" class="userpanel__name"></div>
+          <div class="userpanel__status">Online</div>
+        </div>
+      </div>
+    </aside>
 
-    <div id="messages" class="messages" aria-live="polite"></div>
-    <div id="typing" class="typing"></div>
+    <!-- Główny czat -->
+    <main class="main">
+      <header class="topbar">
+        <span class="hash hash--lg">#</span>
+        <h2>ogólny</h2>
+        <span id="status" class="topbar__status">łączenie…</span>
+        <span id="online-count" class="topbar__online">0 online</span>
+      </header>
 
-    <form id="message-form" class="composer" autocomplete="off">
-      <input
-        id="message-input"
-        type="text"
-        placeholder="Napisz wiadomość…"
-        maxlength="500"
-      />
-      <button type="submit" aria-label="Wyślij">
-        <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true">
-          <path d="M2.01 21 23 12 2.01 3 2 10l15 2-15 2z" />
-        </svg>
-      </button>
-    </form>
-  </main>
+      <div class="main__body">
+        <div class="main__chat">
+          <div id="messages" class="messages" aria-live="polite"></div>
+
+          <form id="message-form" class="composer" autocomplete="off">
+            <div class="composer__box">
+              <input
+                id="message-input"
+                type="text"
+                placeholder="Napisz wiadomość na #ogólny"
+                maxlength="500"
+              />
+              <button type="submit" aria-label="Wyślij">
+                <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true">
+                  <path d="M2.01 21 23 12 2.01 3 2 10l15 2-15 2z" />
+                </svg>
+              </button>
+            </div>
+            <div id="typing" class="typing"></div>
+          </form>
+        </div>
+
+        <aside class="members">
+          <div id="members-title" class="members__title">ONLINE — 0</div>
+          <div id="members-list"></div>
+        </aside>
+      </div>
+    </main>
+  </div>
 
   <script src="/socket.io/socket.io.js"></script>
   <script src="script.js"></script>
