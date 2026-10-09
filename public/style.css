@@ -1672,6 +1672,44 @@ textarea.field {
   align-items: center;
   gap: 8px;
 }
+.font-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 8px;
+}
+.font-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-height: 58px;
+  padding: 6px;
+  color: var(--text-strong);
+  background: var(--bg-secondary);
+  border: 2px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+  overflow: hidden;
+  transition: border-color 0.15s, transform 0.12s;
+}
+.font-btn:hover {
+  transform: translateY(-2px);
+}
+.font-btn.is-selected {
+  border-color: var(--accent);
+}
+.font-btn__sample {
+  max-width: 100%;
+  overflow: hidden;
+  font-size: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.font-btn__name {
+  font-size: 11px;
+  color: var(--text-muted);
+}
 .profile-save {
   margin-top: 16px;
 }

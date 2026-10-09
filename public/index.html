@@ -5,6 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#313338" />
   <title>MyChat</title>
+  <!-- Czcionki do wyboru dla nicku (pobierane tylko wtedy, gdy ktoś z nich korzysta) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Caveat:wght@600&family=Creepster&family=Fredoka:wght@600&family=Lobster&family=Orbitron:wght@700&family=Pacifico&family=Playfair+Display:wght@700&family=Press+Start+2P&family=Roboto+Mono:wght@600&family=Special+Elite&display=swap"
+    rel="stylesheet"
+  />
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
@@ -200,6 +207,16 @@
 
         <label class="field-label" for="profile-pronouns">Zaimki</label>
         <input id="profile-pronouns" class="field" type="text" maxlength="30" placeholder="np. on/jego, ona/jej, oni/ich" autocomplete="off" />
+
+        <div class="field-label">Kolor nicku</div>
+        <div class="banner-row">
+          <input id="nick-color" type="color" class="swatch-custom" title="Własny kolor nicku" />
+          <div id="nick-swatches" class="accent-row"></div>
+          <button type="button" id="nick-color-reset" class="btn-secondary btn-sm">Automatyczny</button>
+        </div>
+
+        <div class="field-label">Czcionka nicku</div>
+        <div id="font-grid" class="font-grid"></div>
 
         <label class="field-label" for="profile-bio">O mnie <span id="bio-counter" class="field-counter"></span></label>
         <textarea id="profile-bio" class="field" maxlength="190" rows="3" placeholder="Napisz coś o sobie…"></textarea>

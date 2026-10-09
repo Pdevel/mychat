@@ -107,6 +107,76 @@ function colorFor(name) {
   return COLORS[hash % COLORS.length];
 }
 
+// ---------- Styl nicku (kolor i czcionka) ----------
+// Krój i rozmiar dobrane tak, żeby różne czcionki wyglądały w tym samym wierszu równo.
+const NICK_FONTS = [
+  { id: 'default', name: 'Domyślna', family: '' },
+  { id: 'pacifico', name: 'Pacifico', family: "'Pacifico', cursive", scale: 0.95 },
+  { id: 'lobster', name: 'Lobster', family: "'Lobster', cursive", scale: 1.05 },
+  { id: 'caveat', name: 'Caveat', family: "'Caveat', cursive", scale: 1.25, weight: 600 },
+  { id: 'orbitron', name: 'Orbitron', family: "'Orbitron', sans-serif", scale: 0.9, weight: 700 },
+  { id: 'pixel', name: 'Pixel', family: "'Press Start 2P', monospace", scale: 0.7 },
+  { id: 'bebas', name: 'Bebas Neue', family: "'Bebas Neue', sans-serif", scale: 1.15 },
+  { id: 'playfair', name: 'Playfair', family: "'Playfair Display', serif", scale: 1, weight: 700 },
+  { id: 'fredoka', name: 'Fredoka', family: "'Fredoka', sans-serif", scale: 1.05, weight: 600 },
+  { id: 'typewriter', name: 'Maszyna', family: "'Special Elite', monospace", scale: 1 },
+  { id: 'creepster', name: 'Creepster', family: "'Creepster', cursive", scale: 1.15 },
+  { id: 'mono', name: 'Mono', family: "'Roboto Mono', monospace", scale: 0.95, weight: 600 },
+];
+const NICK_COLORS = ['#ff6b6b', '#ff9f43', '#feca57', '#1dd1a1', '#48dbfb', '#54a0ff', '#a29bfe', '#ff6bcb', '#ffffff', '#b2bec3'];
+
+// Style osób znanych z listy online, historii i profili: accountId -> { color, font }.
+// Zapamiętujemy je lokalnie, żeby stare wiadomości z archiwum miały właściwy wygląd, nawet gdy autora nie ma online.
+const nickStyles = new Map(Object.entries(store.get('mychat.nickstyles', {}).map || {}));
+const nickStylesByNick = new Map(); // zapas dla wiadomości bez konta (sprzed wprowadzenia kont)
+let nickStylesSaveTimer = null;
+
+function setNickStyle(accountId, nick, raw) {
+  const style = { color: raw.nickColor || null, font: raw.nickFont || null };
+  const same = (s) => s && s.color === style.color && s.font === style.font;
+  let changed = false;
+  if (accountId) {
+    if (style.color || style.font) {
+      if (!same(nickStyles.get(accountId))) {
+        nickStyles.set(accountId, style);
+        changed = true;
+      }
+    } else if (nickStyles.delete(accountId)) {
+      changed = true;
+    }
+  }
+  if (nick) nickStylesByNick.set(nick, style);
+  if (changed && !nickStylesSaveTimer) {
+    nickStylesSaveTimer = setTimeout(() => {
+      nickStylesSaveTimer = null;
+      store.set('mychat.nickstyles', { map: Object.fromEntries(Array.from(nickStyles).slice(-300)) });
+    }, 1000);
+  }
+  return changed;
+}
+
+// Nakłada styl na element z nickiem. `fallbackColor` – kolor, gdy osoba nie ustawiła własnego.
+function styleNick(node, nick, style, fallbackColor) {
+  const font = NICK_FONTS.find((f) => f.id === (style && style.font));
+  node.style.color = (style && style.color) || fallbackColor || '';
+  node.style.fontFamily = font && font.family ? font.family : '';
+  node.style.fontSize = font && font.scale ? `${font.scale}em` : '';
+  node.style.fontWeight = font && font.weight ? String(font.weight) : '';
+}
+
+function applyNickStyle(node, nick, accountId) {
+  const style = (accountId && nickStyles.get(accountId)) || nickStylesByNick.get(nick) || null;
+  styleNick(node, nick, style, colorFor(nick));
+  node.classList.add('nick-styled');
+  node.dataset.nick = nick;
+  if (accountId) node.dataset.account = accountId;
+}
+
+// Po zmianie czyjegoś stylu odświeżamy wszystkie jego nicki widoczne na ekranie.
+function refreshNickStyles() {
+  document.querySelectorAll('.nick-styled').forEach((n) => applyNickStyle(n, n.dataset.nick, n.dataset.account));
+}
+
 function formatTime(ts) {
   return new Date(ts).toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' });
 }
@@ -588,6 +658,8 @@ async function refreshBackup(res) {
     statusText: p.statusText,
     status: p.status,
     bannerColor: p.bannerColor,
+    nickColor: p.nickColor,
+    nickFont: p.nickFont,
     createdAt: res.createdAt,
   };
   for (const [field, url] of [['avatar', res.avatar || null], ['banner', p.banner || null]]) {
@@ -615,6 +687,8 @@ function restoreProfile() {
     statusText: b.statusText || '',
     status: b.status || 'online',
     bannerColor: b.bannerColor ?? null,
+    nickColor: b.nickColor ?? null,
+    nickFont: b.nickFont ?? null,
   };
   if (b.banner) payload.banner = b.banner;
   socket.timeout(30000).emit('profile:restore', payload, (err, r) => {
@@ -837,8 +911,8 @@ function markProfileTrigger(node, nick, accountId) {
 function makeMessageHeader(nick, time, accountId) {
   const head = el('div', 'msg__head');
   const author = el('span', 'msg__author', nick);
-  author.style.color = colorFor(nick);
   markProfileTrigger(author, nick, accountId);
+  applyNickStyle(author, nick, accountId);
   head.appendChild(author);
   head.appendChild(el('span', 'msg__time', formatTime(time)));
   return head;
@@ -970,7 +1044,10 @@ function renderTyping() {
 }
 
 function renderMembers(list) {
-  list.forEach((u) => avatars.set(u.nick, u.avatar));
+  list.forEach((u) => {
+    avatars.set(u.nick, u.avatar);
+    setNickStyle(u.id, u.nick, u);
+  });
   onlineEl.textContent = `${list.length} online`;
   membersTitleEl.textContent = `ONLINE — ${list.length}`;
   membersListEl.replaceChildren(
@@ -983,7 +1060,7 @@ function renderMembers(list) {
 
       const text = el('div', 'member__text');
       const name = el('span', 'member__name', u.nick);
-      name.style.color = colorFor(u.nick);
+      applyNickStyle(name, u.nick, u.id);
       text.appendChild(name);
       if (u.statusText) text.appendChild(el('span', 'member__status', u.statusText));
       row.appendChild(text);
@@ -991,6 +1068,7 @@ function renderMembers(list) {
     })
   );
   refreshAvatars();
+  refreshNickStyles(); // ktoś mógł zmienić styl nicku – odśwież też wiadomości na ekranie
 }
 
 // ---------- Miniprofil ----------
@@ -1014,7 +1092,9 @@ function renderProfileCard(root, p, { isMe = false, onEdit = null } = {}) {
   setAvatarVisual(avatar, p.nick, p.avatar);
   body.appendChild(avatar);
 
-  body.appendChild(el('div', 'pcard__name', p.nick));
+  const nameEl = el('div', 'pcard__name', p.nick);
+  styleNick(nameEl, p.nick, { color: p.nickColor, font: p.nickFont }, '');
+  body.appendChild(nameEl);
   if (p.pronouns) body.appendChild(el('div', 'pcard__pronouns', p.pronouns));
   body.appendChild(
     el('div', 'pcard__status' + (p.statusText ? '' : ' pcard__muted'), p.statusText || STATUS_LABELS[presence])
@@ -1064,6 +1144,7 @@ function openProfile(query, anchor) {
   socket.timeout(8000).emit('profile:get', query, (err, res) => {
     if (err || !res || !res.ok) return toast((res && res.error) || 'Nie udało się wczytać profilu.');
     const p = res.profile;
+    if (setNickStyle(p.id, p.nick, p)) refreshNickStyles();
     renderProfileCard(popout, p, {
       isMe: p.id === myAccountId,
       onEdit: () => {
@@ -1120,8 +1201,56 @@ function loadProfileForm() {
   $('profile-bio').value = draft.bio;
   $('profile-banner-color').value = draft.bannerColor || colorFor(myNick || 'x');
   $('bio-counter').textContent = `${draft.bio.length}/190`;
+  renderNickStyleEditor();
   updateProfilePreview();
 }
+
+// Wybór koloru i czcionki nicku: próbki pokazują Twój nick w danym kroju i kolorze.
+function renderNickStyleEditor() {
+  const nick = myNick || 'Nick';
+  $('nick-color').value = draft.nickColor || colorFor(nick);
+
+  $('nick-swatches').replaceChildren(
+    ...NICK_COLORS.map((c) => {
+      const s = el('button', 'swatch' + (c === draft.nickColor ? ' is-selected' : ''));
+      s.type = 'button';
+      s.style.background = c;
+      s.setAttribute('aria-label', `Kolor nicku ${c}`);
+      s.addEventListener('click', () => setDraftNickStyle({ nickColor: c }));
+      return s;
+    })
+  );
+
+  $('font-grid').replaceChildren(
+    ...NICK_FONTS.map((f) => {
+      const selected = (draft.nickFont || 'default') === f.id;
+      const btn = el('button', 'font-btn' + (selected ? ' is-selected' : ''));
+      btn.type = 'button';
+      const sample = el('span', 'font-btn__sample', nick);
+      styleNick(sample, nick, { color: draft.nickColor, font: f.id }, colorFor(nick));
+      btn.append(sample, el('span', 'font-btn__name', f.name));
+      btn.addEventListener('click', () => setDraftNickStyle({ nickFont: f.id === 'default' ? null : f.id }));
+      return btn;
+    })
+  );
+}
+
+function setDraftNickStyle(patch) {
+  Object.assign(draft, patch);
+  renderNickStyleEditor();
+  updateProfilePreview();
+}
+
+$('nick-color').addEventListener('input', (e) => {
+  draft.nickColor = e.target.value;
+  updateProfilePreview();
+  // bez przebudowy całej siatki podczas przeciągania suwaka koloru – odświeżamy tylko próbki
+  document.querySelectorAll('.font-btn__sample').forEach((n, i) => {
+    styleNick(n, myNick, { color: draft.nickColor, font: NICK_FONTS[i].id }, colorFor(myNick));
+  });
+  document.querySelectorAll('#nick-swatches .swatch').forEach((s) => s.classList.remove('is-selected'));
+});
+$('nick-color-reset').addEventListener('click', () => setDraftNickStyle({ nickColor: null }));
 
 function updateMeStatus() {
   meAvatarEl.classList.add('avatar--dot');
@@ -1224,13 +1353,17 @@ $('profile-save').addEventListener('click', () => {
     btn.disabled = false;
     if (err || !res || !res.ok) return toast((res && res.error) || 'Nie udało się zapisać profilu.');
     myProfile = res.profile;
-    const { bio, pronouns, statusText, status, bannerColor } = res.profile;
+    const { bio, pronouns, statusText, status, bannerColor, nickColor, nickFont } = res.profile;
+    setNickStyle(myAccountId, myNick, res.profile);
+    refreshNickStyles(); // nick ma od razu nowy wygląd w całym czacie
     backup.save({
       bio,
       pronouns,
       statusText,
       status,
       bannerColor,
+      nickColor,
+      nickFont,
       ...(changedBanner ? { banner, bannerUrl: res.profile.banner || null } : {}),
     });
     bannerChanged = false;
@@ -1334,7 +1467,10 @@ function join(nick) {
     rememberIdentity(myAccountId, res.nick);
     identityBackfill = backfillIdentity();
     myCreatedAt = res.createdAt || null;
-    if (res.profile) myProfile = res.profile;
+    if (res.profile) {
+      myProfile = res.profile;
+      setNickStyle(myAccountId, myNick, res.profile);
+    }
     if (Array.isArray(res.channels) && res.channels.length) channels = res.channels;
     currentChannel = res.channel || DEFAULT_CHANNEL; // serwer mógł zmienić kanał (np. brak zgody na nsfw)
     historyLoading = true; // zaraz po zalogowaniu serwer wyśle historię kanału
@@ -1355,6 +1491,7 @@ function join(nick) {
     chatScreen.classList.remove('hidden');
 
     meNameEl.textContent = myNick;
+    applyNickStyle(meNameEl, myNick, myAccountId);
     meAvatarEl.dataset.nick = myNick;
     $('settings-avatar').dataset.nick = myNick;
     refreshAvatars();
@@ -1394,6 +1531,8 @@ function renameMe() {
     store.set('mychat.profile', profile);
     avatars.set(myNick, profile.avatar);
     meNameEl.textContent = myNick;
+    setNickStyle(myAccountId, myNick, myProfile);
+    applyNickStyle(meNameEl, myNick, myAccountId);
     meAvatarEl.dataset.nick = myNick;
     $('settings-avatar').dataset.nick = myNick;
     refreshAvatars();
@@ -1434,7 +1573,7 @@ function showUpload(name) {
   wrap.appendChild(makeAvatar(myNick, 'msg__avatar'));
   const head = el('div', 'msg__head');
   const author = el('span', 'msg__author', myNick);
-  author.style.color = colorFor(myNick);
+  applyNickStyle(author, myNick, myAccountId);
   head.appendChild(author);
   wrap.appendChild(head);
   const box = el('div', 'upload');
@@ -2273,9 +2412,10 @@ async function renderChat() {
 }
 
 // Historia z ostatnich dni – przychodzi po (ponownym) dołączeniu do czatu.
-socket.on('history', async ({ channel, messages }) => {
+socket.on('history', async ({ channel, messages, styles = {} }) => {
   if (channel !== currentChannel) return; // spóźniona historia kanału, który już opuściłeś
   historyLoading = true;
+  for (const [accountId, style] of Object.entries(styles)) setNickStyle(accountId, null, style);
   const list = messages.map((m) => ({ ...m, channel: m.channel || channel }));
   try {
     await archive.opening;

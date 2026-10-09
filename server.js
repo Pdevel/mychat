@@ -329,6 +329,11 @@ const STATUSES = new Set(['online', 'idle', 'dnd']);
 const MAX_BIO = 190;
 const MAX_PRONOUNS = 30;
 const MAX_STATUS_TEXT = 60;
+// Czcionki nicku do wyboru (identyfikatory – krój definiuje klient; zamiast „default” nie zapisujemy nic)
+const NICK_FONTS = new Set([
+  'default', 'pacifico', 'lobster', 'caveat', 'orbitron', 'pixel',
+  'bebas', 'playfair', 'fredoka', 'typewriter', 'creepster', 'mono',
+]);
 const MAX_BANNER_CHARS = 60000; // baner jako data-URL (klient zmniejsza go do 600x200)
 
 // Tekst wielowierszowy (opis „O mnie”): zachowuje maksymalnie jedną pustą linię między akapitami.
@@ -361,6 +366,8 @@ function profileOf(account) {
     status: account.status || 'online',
     bannerColor: account.bannerColor || null,
     banner: mediaUrl(account, 'banner'),
+    nickColor: account.nickColor || null,
+    nickFont: account.nickFont || null,
   };
 }
 
@@ -379,6 +386,19 @@ function sanitizeProfile(account, payload) {
   if ('bannerColor' in payload) {
     if (payload.bannerColor === null || validColor(payload.bannerColor)) next.bannerColor = payload.bannerColor;
     else errors.push('Nieprawidłowy kolor banera.');
+  }
+  if ('nickColor' in payload) {
+    if (payload.nickColor === null || validColor(payload.nickColor)) next.nickColor = payload.nickColor;
+    else errors.push('Nieprawidłowy kolor nicku.');
+  }
+  if ('nickFont' in payload) {
+    if (payload.nickFont === null || payload.nickFont === 'default') {
+      next.nickFont = null; // czcionka domyślna
+    } else if (typeof payload.nickFont === 'string' && NICK_FONTS.has(payload.nickFont)) {
+      next.nickFont = payload.nickFont;
+    } else {
+      errors.push('Nieprawidłowa czcionka nicku.');
+    }
   }
   if ('banner' in payload) {
     if (payload.banner !== null && !validBanner(payload.banner)) {
@@ -416,6 +436,8 @@ function broadcastUsers() {
         avatar: mediaUrl(account, 'avatar'),
         status: account.status || 'online',
         statusText: account.statusText || '',
+        nickColor: account.nickColor || null,
+        nickFont: account.nickFont || null,
       });
     }
   }
@@ -455,7 +477,13 @@ async function sendHistory(socket, channelId) {
   } catch (err) {
     console.error('Nie udało się wczytać historii:', err.message);
   }
-  socket.emit('history', { channel: channelId, messages });
+  // Style nicków autorów (także tych, którzy są offline), żeby stare wiadomości wyglądały jak należy.
+  const styles = {};
+  for (const m of messages) {
+    const a = m.accountId && accountsById.get(m.accountId);
+    if (a && (a.nickColor || a.nickFont)) styles[a.id] = { nickColor: a.nickColor || null, nickFont: a.nickFont || null };
+  }
+  socket.emit('history', { channel: channelId, messages, styles });
 }
 
 async function emitMessage(socket, nick, extra) {
@@ -596,8 +624,11 @@ io.on('connection', (socket) => {
       account.createdAt = payload.createdAt;
     }
     // Pozostałe pola profilu: błędne pomijamy, poprawne zapisujemy
-    const { bio, pronouns, statusText, status, bannerColor, banner } = payload;
-    Object.assign(account, sanitizeProfile(account, { bio, pronouns, statusText, status, bannerColor, banner }).next);
+    const { bio, pronouns, statusText, status, bannerColor, banner, nickColor, nickFont } = payload;
+    Object.assign(
+      account,
+      sanitizeProfile(account, { bio, pronouns, statusText, status, bannerColor, banner, nickColor, nickFont }).next
+    );
 
     await persistAccount(account);
     reply({ ok: true, avatar: mediaUrl(account, 'avatar'), createdAt: account.createdAt, profile: profileOf(account) });
