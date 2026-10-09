@@ -93,7 +93,8 @@ let currentChannel = (() => {
   const saved = store.get('mychat.channel', { id: null }).id;
   return isGroupChannel(saved) ? saved : null; // null = nie oglądasz żadnego kanału (np. jeszcze nie masz grupy)
 })();
-let groups = []; // prywatne grupy, do których należysz (lista przychodzi z serwera)
+let groups = []; // grupy, do których należysz – tylko w pamięci, zawsze z serwera (nigdy zapisywane lokalnie)
+let serverSynced = false; // true dopiero po zalogowaniu, gdy lista grup jest świeża; po zerwaniu połączenia znów false
 const lastGroupChannel = new Map(); // grupa -> ostatnio oglądany w niej kanał
 const unreadChannels = new Set(); // kanały z nowymi wiadomościami, których nie oglądasz
 const mentionCounts = new Map(); // kanał -> ile razy oznaczono Cię tam, gdy go nie oglądałeś
@@ -1897,6 +1898,8 @@ function join(nick) {
   socket.emit('join', payload, (res) => {
     if (!res || !res.ok) {
       myNick = null;
+      serverSynced = false;
+      groups = []; // bez zalogowania nie znamy grup – nie pokazujemy starej listy
       loginError.textContent = (res && res.error) || 'Nie udało się dołączyć.';
       nickInput.value = profile.nick || '';
       showLoginFields();
@@ -1915,8 +1918,11 @@ function join(nick) {
       setCustomEmoji(res.emoji); // własne emoji serwera – potrzebne, zanim dojdzie historia z wiadomościami
       if (res.maxEmoji) maxEmoji = res.maxEmoji;
     }
-    groups = Array.isArray(res.groups) ? res.groups : [];
+    groups = Array.isArray(res.groups) ? res.groups : []; // lista z serwera zastępuje wszystko, co znaliśmy wcześniej
+    serverSynced = true;
     currentChannel = res.channel || null; // serwer mógł zmienić kanał (np. wyjście z grupy); null = brak grup
+    store.set('mychat.channel', { id: currentChannel });
+    voiceLists.clear();
     groupMembersFor = null;
     historyLoading = Boolean(currentChannel); // zaraz po zalogowaniu serwer wyśle historię kanału
     pendingLive.length = 0;
@@ -4011,11 +4017,13 @@ function applyGroupIcon(node, g) {
 function renderChannels() {
   const group = groupByChannel(currentChannel);
   const current = channelById(currentChannel);
-  const empty = groups.length === 0;
+  const connecting = !serverSynced; // lista grup pochodzi wyłącznie z serwera – bez niego nic nie pokazujemy
+  const empty = groups.length === 0 || connecting;
 
   // Bez żadnej grupy nie ma czatu – pokazujemy ekran powitalny z prośbą o dołączenie do grupy lub założenie własnej.
   chatScreen.classList.toggle('app--empty', empty);
-  $('empty-state').classList.toggle('hidden', !empty);
+  $('empty-state').classList.toggle('hidden', !empty || connecting);
+  $('connecting-state').classList.toggle('hidden', !connecting);
   document.querySelector('.main__body').classList.toggle('hidden', empty);
   $('channel-select').classList.toggle('hidden', empty);
   $('voice-btn').classList.toggle('hidden', empty);
@@ -5013,7 +5021,16 @@ socket.on('disconnect', () => {
   }
   voice.users = [];
   voiceLists.clear();
-  renderVoiceUsers();
+  // Bez serwera nie wiemy, czy grupy jeszcze istnieją (mogły zostać usunięte, a serwer – zrestartowany),
+  // więc ich nazw i ikon nie pokazujemy, dopóki nie dostaniemy świeżej listy po ponownym zalogowaniu.
+  serverSynced = false;
+  groups = [];
+  groupMembers = [];
+  groupMembersFor = null;
+  closeGroups();
+  closeGroupSettings();
+  renderChannels();
+  renderGroupList();
   statusEl.textContent = 'rozłączono – próba ponownego połączenia…';
   typingUsers.clear();
   renderTyping();

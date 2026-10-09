@@ -155,6 +155,15 @@
         </div>
       </div>
 
+      <!-- Bez połączenia z serwerem nie pokazujemy żadnych grup – lista istnieje tylko na serwerze -->
+      <div id="connecting-state" class="emptystate hidden">
+        <div class="emptystate__card">
+          <div class="emptystate__emoji">⏳</div>
+          <h2>Łączenie z serwerem…</h2>
+          <p>Twoje grupy pojawią się, gdy tylko połączenie zostanie nawiązane. Darmowy serwer po uśpieniu może się budzić nawet minutę.</p>
+        </div>
+      </div>
+
       <div class="main__body">
         <div class="main__chat">
           <div id="messages" class="messages" aria-live="polite"></div>
