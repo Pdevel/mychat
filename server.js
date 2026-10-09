@@ -37,6 +37,10 @@ const store = createStore({
   mongoDb: process.env.MONGODB_DB || 'mychat',
 });
 
+// Dane są trwałe tylko z bazą MongoDB (MONGODB_URI) albo z dyskiem, który przeżywa wdrożenia (DATA_DIR na
+// dysku trwałym). Bez tego darmowy Render kasuje wszystko przy każdym wdrożeniu i uśpieniu.
+const DATA_IS_PERSISTENT = Boolean(process.env.MONGODB_URI || process.env.DATA_DIR);
+
 const MAX_NICK_LENGTH = 20;
 const MAX_MESSAGE_LENGTH = 500;
 const MAX_FILE_BYTES = 5 * 1024 * 1024; // 5 MB
@@ -90,6 +94,7 @@ app.get('/api/config', (req, res) => {
     maxVoiceUsers: MAX_VOICE_USERS,
     gifAvatarBytes: GIF_AVATAR_BYTES,
     gifBannerBytes: GIF_BANNER_BYTES,
+    persistent: DATA_IS_PERSISTENT, // czy konta, historia i emoji przeżyją restart serwera
   });
 });
 
@@ -279,13 +284,38 @@ function safeMime(value) {
 
 const dataUrlChars = (bytes) => Math.ceil(bytes / 3) * 4 + 40; // rozmiar obrazu po zakodowaniu w base64
 
+// Czy plik PNG/WebP jest animowany (APNG / animowany WebP)? GIF traktujemy zawsze jak animację.
+function isAnimatedBuffer(type, buf) {
+  if (type === 'gif') return true;
+  if (type === 'webp') return buf.toString('latin1', 12, 16) === 'VP8X' && (buf[20] & 0x02) !== 0;
+  if (type === 'png') {
+    for (let pos = 8; pos + 8 <= buf.length; ) {
+      const name = buf.toString('latin1', pos + 4, pos + 8);
+      if (name === 'acTL') return true; // fragment APNG stoi przed danymi obrazu
+      if (name === 'IDAT' || name === 'IEND') return false;
+      pos += 12 + buf.readUInt32BE(pos);
+    }
+  }
+  return false;
+}
+
+function isAnimatedDataUrl(value) {
+  const m = /^data:image\/(png|webp|gif);base64,([A-Za-z0-9+/=]+)$/.exec(value || '');
+  return Boolean(m) && isAnimatedBuffer(m[1], Buffer.from(m[2], 'base64'));
+}
+
 // Sprawdza data-URL obrazu: dozwolony typ, limit rozmiaru (GIF ma własny) i zgodność nagłówka pliku z typem.
-function isValidImageDataUrl(value, maxStaticChars, maxGifBytes) {
+// `maxAnimatedBytes` (opcjonalnie): większy limit także dla animowanych PNG/WebP (np. emoji).
+function isValidImageDataUrl(value, maxStaticChars, maxGifBytes, maxAnimatedBytes = 0) {
   if (typeof value !== 'string') return false;
   const m = /^data:image\/(jpeg|png|webp|gif);base64,([A-Za-z0-9+/=]+)$/.exec(value);
   if (!m) return false;
   const [, type, b64] = m;
-  if (value.length > (type === 'gif' ? dataUrlChars(maxGifBytes) : maxStaticChars)) return false;
+  let tooBig = value.length > (type === 'gif' ? dataUrlChars(maxGifBytes) : maxStaticChars);
+  if (tooBig && type !== 'gif' && type !== 'jpeg' && maxAnimatedBytes && value.length <= dataUrlChars(maxAnimatedBytes)) {
+    tooBig = !isAnimatedBuffer(type, Buffer.from(b64, 'base64')); // za duży jako zwykły obraz, ale może być animacją
+  }
+  if (tooBig) return false;
   const head = Buffer.from(b64.slice(0, 24), 'base64');
   const tag = (from, to) => head.subarray(from, to).toString('latin1');
   if (type === 'jpeg') return head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff;
@@ -721,8 +751,9 @@ io.on('connection', (socket) => {
     }
     if (emojiNameTaken(name)) return reply({ ok: false, error: `Emoji :${name}: już istnieje.` });
     if (emojiById.size >= MAX_EMOJI) return reply({ ok: false, error: `Serwer ma już maksymalną liczbę emoji (${MAX_EMOJI}).` });
-    if (!isValidImageDataUrl(payload.image, EMOJI_STATIC_CHARS, EMOJI_GIF_BYTES)) {
-      return reply({ ok: false, error: 'Nieprawidłowy obraz emoji (GIF do 256 KB, inne formaty są zmniejszane).' });
+    // zwykłe emoji do ok. 73 KB; animowane (GIF, animowany WebP, APNG) do 256 KB
+    if (!isValidImageDataUrl(payload.image, EMOJI_STATIC_CHARS, EMOJI_GIF_BYTES, EMOJI_GIF_BYTES)) {
+      return reply({ ok: false, error: 'Nieprawidłowy obraz emoji (animacja do 256 KB, zwykłe obrazy są zmniejszane).' });
     }
 
     const emoji = {
@@ -730,7 +761,7 @@ io.on('connection', (socket) => {
       name,
       data: payload.image,
       v: mediaVersion(payload.image),
-      animated: payload.image.startsWith('data:image/gif'),
+      animated: isAnimatedDataUrl(payload.image),
       by: user.accountId,
       createdAt: Date.now(),
     };
@@ -1166,6 +1197,12 @@ io.on('connection', (socket) => {
 async function start() {
   await store.init();
   console.log(`Historia: ${store.label}, wiadomości i pliki usuwane po ${RETENTION_DAYS} dn.`);
+  if (!DATA_IS_PERSISTENT) {
+    console.warn(
+      'UWAGA: brak MONGODB_URI – konta, wiadomości i emoji znikną przy każdym wdrożeniu i uśpieniu serwera. ' +
+        'Ustaw MONGODB_URI (np. darmowy MongoDB Atlas), żeby je zachować.'
+    );
+  }
 
   for (const emoji of await store.loadEmoji()) emojiById.set(emoji.id, emoji);
   console.log(`Wczytano emoji: ${emojiById.size}`);

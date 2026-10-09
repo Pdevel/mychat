@@ -2313,7 +2313,7 @@ socket.on('emoji:list', (list) => {
 });
 
 // --- Zarządzanie emoji (Ustawienia → Emoji) ---
-const emojiDraft = { image: null };
+const emojiDraft = { image: null, note: '' };
 
 function renderEmojiSettings() {
   $('emoji-count').textContent = `${customEmoji.length}/${maxEmoji}`;
@@ -2380,6 +2380,7 @@ function updateEmojiAddState(serverError) {
     level = 'is-warn';
   } else {
     ready = true;
+    if (emojiDraft.note) message = `${emojiDraft.note} ${message}`;
   }
   if (serverError) {
     message = serverError;
@@ -2390,14 +2391,264 @@ function updateEmojiAddState(serverError) {
   $('emoji-add-save').disabled = !ready;
 }
 
-// Obraz emoji: GIF zostaje w oryginale (animacja), reszta jest zmniejszana do 128x128 z zachowaniem przezroczystości.
-function fileToEmoji(file) {
-  return new Promise((resolve, reject) => {
-    if (!file || !file.type.startsWith('image/')) return reject(new Error('To nie jest obrazek.'));
-    if (file.type === 'image/gif') {
-      if (file.size > 256 * 1024) return reject(new Error('Animowane emoji (GIF) może mieć maksymalnie 256 KB.'));
-      return readAsDataUrl(file).then(resolve, reject);
+// ---------- Obraz emoji: statyczny albo animowany ----------
+// Typ rozpoznajemy po zawartości pliku, a nie po rozszerzeniu (animacje z internetu często są .webp albo mają złe rozszerzenie).
+//  • animacja do 256 KB (GIF, animowany WebP, APNG) zostaje bez zmian – animacja się nie psuje,
+//  • większa animacja jest zmniejszana do GIF-a (potrafią to Chrome/Edge),
+//  • zwykły obraz jest zmniejszany do 128x128 z zachowaniem przezroczystości.
+const EMOJI_ANIM_LIMIT = 256 * 1024; // limit serwera dla animowanych emoji
+const EMOJI_ANIM_TARGET = 240 * 1024; // do tylu bajtów zmniejszamy (z zapasem na base64)
+
+function sniffImageType(bytes) {
+  const ascii = (from, to) => String.fromCharCode(...bytes.subarray(from, to));
+  if (bytes.length > 12 && ascii(0, 4) === 'GIF8') return 'image/gif';
+  if (bytes.length > 12 && bytes[0] === 0x89 && ascii(1, 4) === 'PNG') return 'image/png';
+  if (bytes.length > 20 && ascii(0, 4) === 'RIFF' && ascii(8, 12) === 'WEBP') return 'image/webp';
+  return null;
+}
+
+function isAnimatedImage(type, bytes) {
+  const ascii = (from, to) => String.fromCharCode(...bytes.subarray(from, to));
+  if (type === 'image/gif') return true;
+  if (type === 'image/webp') return ascii(12, 16) === 'VP8X' && (bytes[20] & 0x02) !== 0; // bit „animacja” w nagłówku
+  if (type === 'image/png') {
+    // APNG ma fragment „acTL” przed danymi obrazu (IDAT)
+    for (let pos = 8; pos + 8 <= bytes.length; ) {
+      const length = ((bytes[pos] << 24) | (bytes[pos + 1] << 16) | (bytes[pos + 2] << 8) | bytes[pos + 3]) >>> 0;
+      const name = ascii(pos + 4, pos + 8);
+      if (name === 'acTL') return true;
+      if (name === 'IDAT' || name === 'IEND') return false;
+      pos += 12 + length;
     }
+  }
+  return false;
+}
+
+// --- Minimalny koder GIF (do zmniejszania zbyt dużych animacji) ---
+function lzwEncode(indices, minCodeSize) {
+  const clear = 1 << minCodeSize;
+  const end = clear + 1;
+  const out = [];
+  let codeSize = minCodeSize + 1;
+  let next = end + 1;
+  let dict = new Map();
+  let buffer = 0;
+  let bits = 0;
+  const emit = (code) => {
+    buffer |= code << bits;
+    bits += codeSize;
+    while (bits >= 8) {
+      out.push(buffer & 255);
+      buffer >>>= 8;
+      bits -= 8;
+    }
+  };
+  emit(clear);
+  let prefix = indices[0];
+  for (let i = 1; i < indices.length; i += 1) {
+    const key = (prefix << 8) | indices[i];
+    const found = dict.get(key);
+    if (found !== undefined) {
+      prefix = found;
+      continue;
+    }
+    emit(prefix);
+    if (next < 4096) {
+      dict.set(key, next);
+      next += 1;
+      if (next > 1 << codeSize && codeSize < 12) codeSize += 1;
+    } else {
+      emit(clear);
+      dict = new Map();
+      codeSize = minCodeSize + 1;
+      next = end + 1;
+    }
+    prefix = indices[i];
+  }
+  emit(prefix);
+  emit(end);
+  if (bits > 0) out.push(buffer & 255);
+  return out;
+}
+
+// Paleta 255 kolorów metodą „median cut” (indeks 255 zostaje na przezroczystość)
+function buildPalette(frames) {
+  const histogram = new Map(); // klucz 15-bitowy -> liczba pikseli
+  for (const px of frames) {
+    for (let i = 0; i < px.length; i += 4) {
+      if (px[i + 3] < 128) continue;
+      const key = ((px[i] >> 3) << 10) | ((px[i + 1] >> 3) << 5) | (px[i + 2] >> 3);
+      histogram.set(key, (histogram.get(key) || 0) + 1);
+    }
+  }
+  const colors = Array.from(histogram, ([key, count]) => ({
+    r: ((key >> 10) << 3) + 4,
+    g: (((key >> 5) & 31) << 3) + 4,
+    b: ((key & 31) << 3) + 4,
+    count,
+  }));
+  if (!colors.length) return [[0, 0, 0]];
+
+  let boxes = [colors];
+  while (boxes.length < 255) {
+    // dzielimy pudełko o największej rozpiętości kanału (i większej od jednego koloru)
+    let best = -1;
+    let bestRange = 0;
+    let bestChannel = 'r';
+    boxes.forEach((box, index) => {
+      if (box.length < 2) return;
+      for (const channel of ['r', 'g', 'b']) {
+        let min = 255;
+        let max = 0;
+        for (const c of box) {
+          if (c[channel] < min) min = c[channel];
+          if (c[channel] > max) max = c[channel];
+        }
+        if (max - min > bestRange) {
+          bestRange = max - min;
+          best = index;
+          bestChannel = channel;
+        }
+      }
+    });
+    if (best < 0) break;
+    const box = boxes[best].sort((a, b) => a[bestChannel] - b[bestChannel]);
+    const half = box.reduce((sum, c) => sum + c.count, 0) / 2;
+    let acc = 0;
+    let cut = 1;
+    for (let i = 0; i < box.length - 1; i += 1) {
+      acc += box[i].count;
+      cut = i + 1;
+      if (acc >= half) break;
+    }
+    boxes.splice(best, 1, box.slice(0, cut), box.slice(cut));
+  }
+  return boxes.map((box) => {
+    const total = box.reduce((sum, c) => sum + c.count, 0);
+    const avg = (channel) => Math.round(box.reduce((sum, c) => sum + c[channel] * c.count, 0) / total);
+    return [avg('r'), avg('g'), avg('b')];
+  });
+}
+
+// frames: [{ pixels: Uint8ClampedArray(RGBA), delay: setne sekundy }] o rozmiarze size x size
+function encodeGif(frames, size) {
+  const palette = buildPalette(frames.map((f) => f.pixels));
+  const cache = new Map();
+  const nearest = (r, g, b) => {
+    const key = ((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3);
+    let found = cache.get(key);
+    if (found === undefined) {
+      let bestDistance = Infinity;
+      found = 0;
+      palette.forEach(([pr, pg, pb], index) => {
+        const d = (pr - r) ** 2 + (pg - g) ** 2 + (pb - b) ** 2;
+        if (d < bestDistance) {
+          bestDistance = d;
+          found = index;
+        }
+      });
+      cache.set(key, found);
+    }
+    return found;
+  };
+
+  const bytes = [];
+  const word = (n) => bytes.push(n & 255, (n >> 8) & 255);
+  bytes.push(...'GIF89a'.split('').map((c) => c.charCodeAt(0)));
+  word(size);
+  word(size);
+  bytes.push(0xf7, 0, 0); // globalna tablica kolorów: 256 pozycji
+  for (let i = 0; i < 256; i += 1) bytes.push(...(palette[i] || [0, 0, 0]));
+  bytes.push(0x21, 0xff, 0x0b, ...'NETSCAPE2.0'.split('').map((c) => c.charCodeAt(0)), 3, 1, 0, 0, 0); // zapętlenie
+
+  for (const frame of frames) {
+    const px = frame.pixels;
+    const indices = new Uint8Array(size * size);
+    for (let i = 0, j = 0; i < px.length; i += 4, j += 1) {
+      indices[j] = px[i + 3] < 128 ? 255 : nearest(px[i], px[i + 1], px[i + 2]);
+    }
+    bytes.push(0x21, 0xf9, 4, (2 << 2) | 1); // sterowanie klatką: przezroczystość + czyszczenie tła
+    word(frame.delay);
+    bytes.push(255, 0);
+    bytes.push(0x2c);
+    word(0);
+    word(0);
+    word(size);
+    word(size);
+    bytes.push(0, 8); // minimalny rozmiar kodu LZW
+    const data = lzwEncode(indices, 8);
+    for (let i = 0; i < data.length; i += 255) {
+      const chunk = data.slice(i, i + 255);
+      bytes.push(chunk.length, ...chunk);
+    }
+    bytes.push(0);
+  }
+  bytes.push(0x3b);
+  return new Uint8Array(bytes);
+}
+
+function bytesToBase64(bytes) {
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(binary);
+}
+
+// Duża animacja (GIF / animowany WebP / APNG) -> mały GIF. Wymaga ImageDecoder (Chrome, Edge).
+async function shrinkAnimationToGif(bytes, type) {
+  if (!('ImageDecoder' in window)) {
+    throw new Error(
+      'Ta animacja ma ponad 256 KB. Zmniejsz ją (np. na ezgif.com) albo dodaj emoji w Chrome/Edge – tam zmniejszy się sama.'
+    );
+  }
+  const decoder = new ImageDecoder({ data: bytes, type });
+  await decoder.tracks.ready;
+  const total = decoder.tracks.selectedTrack.frameCount || 1;
+  const step = Math.max(1, Math.ceil(total / 60)); // do 60 klatek, równomiernie
+  const decoded = [];
+  for (let index = 0; index < total; index += step) {
+    const { image } = await decoder.decode({ frameIndex: index });
+    decoded.push({ bitmap: await createImageBitmap(image), ms: Math.max(20, (image.duration || 100000) / 1000) * step });
+    image.close();
+  }
+  decoder.close();
+
+  // Coraz mniejszy rozmiar i coraz mniej klatek, aż zmieści się w limicie.
+  const attempts = [
+    [128, 1], [96, 1], [96, 2], [72, 2], [64, 3], [48, 3],
+  ];
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  try {
+    for (const [size, skip] of attempts) {
+      canvas.width = canvas.height = size;
+      const frames = [];
+      for (let i = 0; i < decoded.length; i += skip) {
+        const { bitmap } = decoded[i];
+        const group = decoded.slice(i, i + skip);
+        ctx.clearRect(0, 0, size, size);
+        const scale = Math.min(size / bitmap.width, size / bitmap.height);
+        const w = Math.round(bitmap.width * scale);
+        const h = Math.round(bitmap.height * scale);
+        ctx.drawImage(bitmap, Math.round((size - w) / 2), Math.round((size - h) / 2), w, h);
+        frames.push({
+          pixels: ctx.getImageData(0, 0, size, size).data,
+          delay: Math.max(2, Math.round(group.reduce((sum, f) => sum + f.ms, 0) / 10)), // setne sekundy; <2 przeglądarki spowalniają
+        });
+      }
+      const gif = encodeGif(frames, size);
+      if (gif.length <= EMOJI_ANIM_TARGET) {
+        return { dataUrl: `data:image/gif;base64,${bytesToBase64(gif)}`, bytes: gif.length, size };
+      }
+    }
+  } finally {
+    decoded.forEach((f) => f.bitmap.close());
+  }
+  throw new Error('Nie udało się zmniejszyć tej animacji do 256 KB – wybierz krótszą lub prostszą.');
+}
+
+// Zwykły (nieruchomy) obraz: do 128x128 z przezroczystością, w PNG albo WebP, tak by zmieścił się w limicie.
+function staticToEmoji(file) {
+  return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(file);
     const img = new Image();
     img.onload = () => {
@@ -2424,13 +2675,39 @@ function fileToEmoji(file) {
   });
 }
 
+// Zwraca { dataUrl, animated, note } – note to krótka informacja dla użytkownika (np. o zmniejszeniu animacji).
+async function fileToEmoji(file) {
+  if (!file || !file.type.startsWith('image/')) throw new Error('To nie jest obrazek.');
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const type = sniffImageType(bytes);
+
+  if (type && isAnimatedImage(type, bytes)) {
+    if (bytes.length <= EMOJI_ANIM_LIMIT) {
+      // mała animacja zostaje w oryginale (typ z zawartości pliku, nie z rozszerzenia)
+      const dataUrl = await readAsDataUrl(new Blob([bytes], { type }));
+      return { dataUrl, animated: true, note: `Animowane emoji (${formatSize(bytes.length)}).` };
+    }
+    const result = await shrinkAnimationToGif(bytes, type);
+    return {
+      dataUrl: result.dataUrl,
+      animated: true,
+      note: `Animację zmniejszono z ${formatSize(bytes.length)} do ${formatSize(result.bytes)} (${result.size}×${result.size}).`,
+    };
+  }
+  return { dataUrl: await staticToEmoji(file), animated: false, note: '' };
+}
+
 $('emoji-add-pick').addEventListener('click', () => $('emoji-add-file').click());
 $('emoji-add-file').addEventListener('change', async (e) => {
   const file = e.target.files[0];
   e.target.value = '';
   if (!file) return;
   try {
-    emojiDraft.image = await fileToEmoji(file);
+    $('emoji-add-hint').className = 'emoji-add__hint';
+    $('emoji-add-hint').textContent = 'Przetwarzanie obrazu…'; // zmniejszanie dużej animacji potrafi chwilę potrwać
+    const result = await fileToEmoji(file);
+    emojiDraft.image = result.dataUrl;
+    emojiDraft.note = result.note;
     const preview = $('emoji-add-preview');
     preview.style.backgroundImage = `url("${emojiDraft.image}")`;
     preview.textContent = '';
@@ -2442,7 +2719,9 @@ $('emoji-add-file').addEventListener('change', async (e) => {
     }
   } catch (err) {
     emojiDraft.image = null;
-    toast(err.message);
+    emojiDraft.note = '';
+    updateEmojiAddState(err.message); // powód widać pod formularzem
+    return toast(err.message);
   }
   updateEmojiAddState();
 });
@@ -2466,6 +2745,7 @@ $('emoji-add-save').addEventListener('click', () => {
     backup.emoji.push({ name, image: emojiDraft.image });
     backup.saveEmojiList();
     emojiDraft.image = null;
+    emojiDraft.note = '';
     $('emoji-add-name').value = '';
     const preview = $('emoji-add-preview');
     preview.style.backgroundImage = '';
