@@ -281,6 +281,7 @@ async function emitMessage(socket, nick, extra) {
   const msg = {
     id: crypto.randomUUID(),
     senderId: socket.id,
+    accountId: users.get(socket.id)?.accountId, // pozwala autorowi usunąć własną wiadomość
     nick,
     time: Date.now(),
     ...extra,
@@ -333,7 +334,7 @@ io.on('connection', (socket) => {
     const firstSession = !isOnline(account.id);
     users.set(socket.id, { accountId: account.id, nick });
 
-    reply({ ok: true, nick, avatar: account.avatar, id: socket.id });
+    reply({ ok: true, nick, avatar: account.avatar, id: socket.id, accountId: account.id });
 
     if (!alreadyIn) {
       // Historia z ostatnich dni (pliki bez zawartości – pobierane na żądanie przez 'getFile').
@@ -408,6 +409,30 @@ io.on('connection', (socket) => {
     if (!data || typeof data !== 'object' || JSON.stringify(data).length > 20000) return;
     if (rateLimited(socket, 'signal', 300, 10000)) return;
     io.to(to).emit('voice:signal', { from: socket.id, data });
+  });
+
+  // Usuwanie wiadomości: tylko autor może usunąć własną wiadomość (znika u wszystkich i z serwera).
+  socket.on('deleteMessage', async (id, ack) => {
+    const reply = typeof ack === 'function' ? ack : () => {};
+    const user = users.get(socket.id);
+    if (!user) return reply({ ok: false, error: 'Najpierw dołącz do czatu.' });
+    if (typeof id !== 'string' || id.length > 64) return reply({ ok: false, error: 'Nieprawidłowa wiadomość.' });
+    if (rateLimited(socket, 'delete', 20, 10000)) {
+      return reply({ ok: false, error: 'Zwolnij trochę – za dużo usunięć naraz.' });
+    }
+    try {
+      const msg = await store.get(id);
+      if (!msg) return reply({ ok: false, error: 'Ta wiadomość już nie istnieje.' });
+      // Starsze wiadomości (sprzed kont) nie mają accountId – wtedy rozpoznajemy autora po nicku.
+      const owner = msg.accountId ? msg.accountId === user.accountId : msg.nick === user.nick;
+      if (!owner) return reply({ ok: false, error: 'Możesz usuwać tylko własne wiadomości.' });
+      await store.remove(id);
+      io.emit('messageDeleted', id);
+      reply({ ok: true });
+    } catch (err) {
+      console.error('Błąd usuwania wiadomości:', err.message);
+      reply({ ok: false, error: 'Nie udało się usunąć wiadomości.' });
+    }
   });
 
   socket.on('getFile', async (id, ack) => {

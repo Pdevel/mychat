@@ -68,6 +68,19 @@ class FileStore {
     return this.messages.filter((m) => m.time >= since).slice(-limit);
   }
 
+  async get(id) {
+    return this.messages.find((m) => m.id === id) || null;
+  }
+
+  async remove(id) {
+    const idx = this.messages.findIndex((m) => m.id === id);
+    if (idx < 0) return false;
+    const [msg] = this.messages.splice(idx, 1);
+    if (msg.kind === 'file') await fs.unlink(path.join(this.filesDir, msg.id)).catch(() => {});
+    this.scheduleSave();
+    return true;
+  }
+
   async fileData(id) {
     const cutoff = Date.now() - this.retentionMs;
     const meta = this.messages.find((m) => m.kind === 'file' && m.id === id && m.time >= cutoff);
@@ -172,6 +185,15 @@ class MongoStore {
       .limit(limit)
       .toArray();
     return docs.reverse();
+  }
+
+  async get(id) {
+    return this.col.findOne({ _id: id }, { projection: { data: 0, _id: 0, createdAt: 0 } });
+  }
+
+  async remove(id) {
+    const res = await this.col.deleteOne({ _id: id });
+    return res.deletedCount > 0;
   }
 
   async fileData(id) {
