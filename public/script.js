@@ -94,6 +94,7 @@ let currentChannel = store.get('mychat.channel', { id: DEFAULT_CHANNEL }).id;
 const isGroupChannel = (id) => typeof id === 'string' && id.startsWith('g_');
 let lastMainChannel = isGroupChannel(currentChannel) ? DEFAULT_CHANNEL : currentChannel; // dokąd wraca ikona „M”
 let groups = []; // prywatne grupy, do których należysz (lista przychodzi z serwera)
+const lastGroupChannel = new Map(); // grupa -> ostatnio oglądany w niej kanał
 let adultConfirmed = store.get('mychat.adult', { ok: false }).ok === true; // potwierdzenie pełnoletności (nsfw)
 const unreadChannels = new Set(); // kanały z nowymi wiadomościami, których nie oglądasz
 const mentionCounts = new Map(); // kanał -> ile razy oznaczono Cię tam, gdy go nie oglądałeś
@@ -1195,10 +1196,11 @@ function addMessage(m, { historic = false } = {}) {
     });
     actions.appendChild(react);
 
-    if (mine) {
+    // Cudze wiadomości w grupie może usuwać też moderator (uprawnienie „Zarządzanie wiadomościami”).
+    if (mine || hasGroupPerm(groupByChannel(currentChannel), 'manageMessages')) {
       const del = el('button', 'msg__action msg__action--danger', '🗑');
       del.type = 'button';
-      del.title = 'Usuń wiadomość';
+      del.title = mine ? 'Usuń wiadomość' : 'Usuń wiadomość (moderacja)';
       del.setAttribute('aria-label', 'Usuń wiadomość');
       del.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -1417,24 +1419,41 @@ function renderMembersPanel() {
   const group = groupByChannel(currentChannel);
   if (!group) return renderMembers(onlineUsers);
   const online = new Map(onlineUsers.map((u) => [u.id, u]));
+  const roles = group.roles || [];
+  const topRoleOf = (m) => {
+    const idx = (m.roles || []).map((id) => roles.findIndex((r) => r.id === id)).filter((i) => i !== -1);
+    return idx.length ? Math.min(...idx) : -1;
+  };
   const list = groupMembers
-    .map((m) => ({ ...m, ...(online.get(m.id) || { status: 'offline' }), isOwner: m.isOwner, offline: !online.has(m.id) }))
+    .map((m) => ({ ...m, ...(online.get(m.id) || { status: 'offline' }), isOwner: m.isOwner, offline: !online.has(m.id), topRole: topRoleOf(m) }))
     .sort((a, b) => Number(a.offline) - Number(b.offline) || a.nick.localeCompare(b.nick, 'pl'));
-  renderMembers(list, { group });
+
+  // Sekcje jak na Discordzie: twórca, potem role od najwyższej, na końcu osoby bez roli.
+  const sections = [];
+  const owners = list.filter((u) => u.isOwner);
+  if (owners.length) sections.push({ title: 'TWÓRCA', items: owners });
+  roles.forEach((role, i) => {
+    const items = list.filter((u) => !u.isOwner && u.topRole === i);
+    if (items.length) sections.push({ title: role.name.toUpperCase(), color: role.color, items });
+  });
+  const rest = list.filter((u) => !u.isOwner && u.topRole === -1);
+  if (rest.length) sections.push({ title: roles.length || owners.length ? 'CZŁONKOWIE' : '', items: rest });
+  renderMembers(list, { group, sections, roles });
 }
 
 function loadGroupMembers() {
   const group = groupByChannel(currentChannel);
   if (!group) return;
   socket.timeout(10000).emit('group:members', group.id, (err, res) => {
-    if (err || !res || !res.ok || currentChannel !== group.channel) return;
+    const now = groupByChannel(currentChannel);
+    if (err || !res || !res.ok || !now || now.id !== group.id) return;
     groupMembers = res.members;
     groupMembersFor = group.id;
     renderMembersPanel();
   });
 }
 
-function renderMembers(list, { group = null } = {}) {
+function renderMembers(list, { group = null, sections = null, roles = [] } = {}) {
   list.forEach((u) => {
     avatars.set(u.nick, u.avatar);
     setNickStyle(u.id, u.nick, u);
@@ -1442,8 +1461,8 @@ function renderMembers(list, { group = null } = {}) {
   const onlineCount = group ? list.filter((u) => !u.offline).length : list.length;
   onlineEl.textContent = `${onlineCount} online`;
   membersTitleEl.textContent = group ? `CZŁONKOWIE — ${list.length} (${onlineCount} online)` : `ONLINE — ${list.length}`;
-  membersListEl.replaceChildren(
-    ...list.map((u) => {
+  const nodes = [];
+  const memberRow = (u, roleColor) => {
       const row = el('div', 'member' + (u.offline ? ' member--offline' : ''));
       markProfileTrigger(row, u.nick, u.id);
       const avatar = makeAvatar(u.nick, 'avatar--sm avatar--dot');
@@ -1453,6 +1472,11 @@ function renderMembers(list, { group = null } = {}) {
       const text = el('div', 'member__text');
       const name = el('span', 'member__name', u.nick);
       applyNickStyle(name, u.nick, u.id);
+      if (roleColor && !u.nickColor) {
+        // kolor roli (jak na Discordzie), chyba że osoba ustawiła własny kolor nicku
+        name.classList.remove('nick-styled');
+        name.style.color = roleColor;
+      }
       if (u.isOwner) {
         const crown = el('span', 'member__crown', '👑');
         crown.title = 'Twórca grupy';
@@ -1465,8 +1489,17 @@ function renderMembers(list, { group = null } = {}) {
       if (u.statusText && !u.offline) text.appendChild(el('span', 'member__status', u.statusText));
       row.appendChild(text);
       return row;
-    })
-  );
+  };
+
+  if (sections) {
+    sections.forEach((s) => {
+      if (s.title) nodes.push(el('div', 'members__section', `${s.title} — ${s.items.length}`));
+      s.items.forEach((u) => nodes.push(memberRow(u, s.color || (u.topRole >= 0 && roles[u.topRole] ? roles[u.topRole].color : null))));
+    });
+  } else {
+    list.forEach((u) => nodes.push(memberRow(u, null)));
+  }
+  membersListEl.replaceChildren(...nodes);
   refreshAvatars();
   refreshNickStyles(); // ktoś mógł zmienić styl nicku – odśwież też wiadomości na ekranie
 }
@@ -3925,13 +3958,26 @@ socket.on('activity', ({ channel, mention }) => {
 });
 
 // ---------- Kanały tekstowe: lista, przełączanie, bramka wiekowa ----------
+const groupChannelsOf = (g) => (Array.isArray(g.channels) && g.channels.length ? g.channels : [{ id: g.channel, name: 'ogólny', isDefault: true }]);
+
 function groupByChannel(id) {
-  return isGroupChannel(id) ? groups.find((g) => g.channel === id) || null : null;
+  return isGroupChannel(id) ? groups.find((g) => groupChannelsOf(g).some((c) => c.id === id)) || null : null;
 }
+
+// Uprawnienia w oglądanej grupie (poza grupami wszystko dozwolone w ramach zwykłych zasad).
+const hasGroupPerm = (group, perm) => Boolean(group) && Array.isArray(group.perms) && group.perms.includes(perm);
+const myCurrentGroup = () => groupByChannel(currentChannel);
+const canPostHere = () => {
+  const group = myCurrentGroup();
+  return !group || hasGroupPerm(group, 'send');
+};
 
 function channelById(id) {
   const group = groupByChannel(id);
-  if (group) return { id: group.channel, name: group.name, group: true };
+  if (group) {
+    const entry = groupChannelsOf(group).find((c) => c.id === id);
+    return { id, name: entry.name, group: true };
+  }
   return channels.find((c) => c.id === id) || channels[0];
 }
 
@@ -3939,13 +3985,15 @@ function renderChannels() {
   const group = groupByChannel(currentChannel);
   const current = channelById(currentChannel);
 
-  // W grupie lewy panel pokazuje tylko jej jeden czat (kanały ogólne i głosowy są poza grupą).
-  $('channels-header').textContent = group ? `👥 ${group.name}` : 'MyChat';
-  $('channels-category').textContent = group ? 'CZAT GRUPY' : 'KANAŁY TEKSTOWE';
+  // W grupie lewy panel pokazuje kanały tej grupy (kanały ogólne i głosowy są poza grupą).
+  $('channels-title').textContent = group ? `👥 ${group.name}` : 'MyChat';
+  $('channels-category').textContent = 'KANAŁY TEKSTOWE';
   $('voice-block').classList.toggle('hidden', Boolean(group));
+  $('group-gear').classList.toggle('hidden', !group);
+  $('channel-add').classList.toggle('hidden', !hasGroupPerm(group, 'manageChannels'));
 
   $('channel-list').replaceChildren(
-    ...(group ? [{ id: group.channel, name: 'czat' }] : channels).map((c) => {
+    ...(group ? groupChannelsOf(group) : channels).map((c) => {
       const active = c.id === currentChannel;
       const unread = unreadChannels.has(c.id) && !active;
       const item = el('button', 'channel' + (active ? ' channel--active' : '') + (unread ? ' channel--unread' : ''));
@@ -3973,17 +4021,26 @@ function renderChannels() {
     const optgroup = el('optgroup');
     optgroup.label = 'Grupy';
     groups.forEach((g) => {
-      const opt = el('option', '', `👥 ${g.name}${mark(g.channel)}`);
-      opt.value = g.channel;
-      optgroup.appendChild(opt);
+      groupChannelsOf(g).forEach((c) => {
+        const opt = el('option', '', `👥 ${g.name} › ${c.name}${mark(c.id)}`);
+        opt.value = c.id;
+        optgroup.appendChild(opt);
+      });
     });
     options.push(optgroup);
   }
   select.replaceChildren(...options);
   select.value = currentChannel;
 
-  $('channel-title').textContent = group ? group.name : current.name;
-  messageInput.placeholder = group ? `Napisz wiadomość w grupie ${group.name}` : `Napisz wiadomość na #${current.name}`;
+  $('channel-title').textContent = group ? `${group.name} › ${current.name}` : current.name;
+  const canPost = canPostHere();
+  messageInput.placeholder = !canPost
+    ? 'Nie masz uprawnienia do pisania w tej grupie'
+    : group
+      ? `Napisz wiadomość w #${current.name} (${group.name})`
+      : `Napisz wiadomość na #${current.name}`;
+  messageInput.disabled = !canPost;
+  $('message-form').classList.toggle('composer--locked', !canPost);
   messagesEl.dataset.nsfw = current.nsfw ? '1' : '';
   renderRail();
 }
@@ -4001,16 +4058,20 @@ function renderRail() {
 
   $('rail-groups').replaceChildren(
     ...groups.map((g) => {
-      const active = g.channel === currentChannel;
+      const ids = groupChannelsOf(g).map((c) => c.id);
+      const active = ids.includes(currentChannel);
       const btn = el('button', 'rail__icon' + (active ? ' is-active' : ''), (g.name.trim()[0] || '?').toUpperCase());
       btn.type = 'button';
       btn.title = g.name;
       btn.setAttribute('aria-label', `Grupa ${g.name}`);
       btn.style.background = colorFor(g.name);
-      const mentions = active ? 0 : mentionCounts.get(g.channel) || 0;
+      const mentions = ids.reduce((n, id) => n + (id === currentChannel ? 0 : mentionCounts.get(id) || 0), 0);
       if (mentions) btn.appendChild(el('span', 'rail__badge', String(mentions)));
-      else if (!active && unreadChannels.has(g.channel)) btn.appendChild(el('span', 'rail__dot'));
-      btn.addEventListener('click', () => switchChannel(g.channel));
+      else if (ids.some((id) => id !== currentChannel && unreadChannels.has(id))) btn.appendChild(el('span', 'rail__dot'));
+      btn.addEventListener('click', () => {
+        const last = lastGroupChannel.get(g.id);
+        switchChannel(last && ids.includes(last) ? last : g.channel);
+      });
       return btn;
     })
   );
@@ -4038,6 +4099,8 @@ function showAgeGate(onConfirm) {
 function showChannelView(id) {
   currentChannel = id;
   if (!isGroupChannel(id)) lastMainChannel = id;
+  const viewedGroup = groupByChannel(id);
+  if (viewedGroup) lastGroupChannel.set(viewedGroup.id, id);
   historyLoading = true; // nowe wiadomości czekają, aż przyjdzie historia tego kanału
   pendingLive.length = 0;
   unreadChannels.delete(id);
@@ -4224,12 +4287,15 @@ function closeGroups() {
 
 function setGroups(list) {
   groups = Array.isArray(list) ? list : [];
-  // Gdyby grupa, którą oglądasz, zniknęła z listy bez zdarzenia usunięcia – wróć do kanałów ogólnych.
-  if (isGroupChannel(currentChannel) && !groupByChannel(currentChannel)) showChannelView(lastMainChannel);
+  // Gdyby grupa lub kanał, który oglądasz, zniknął bez zdarzenia usunięcia – wróć do grupy albo do kanałów ogólnych.
+  if (isGroupChannel(currentChannel) && !groupByChannel(currentChannel)) {
+    const owner = groups.find((g) => currentChannel.startsWith(`g_${g.id}`));
+    showChannelView(owner ? owner.channel : lastMainChannel);
+  }
   renderChannels();
   renderGroupList();
-  const group = groupByChannel(currentChannel);
-  if (group) renderMembersPanel();
+  if (groupByChannel(currentChannel)) renderMembersPanel();
+  renderGroupSettings();
 }
 
 function upsertGroup(info) {
@@ -4282,8 +4348,8 @@ function renderGroupList() {
       head.append(icon, info);
       card.appendChild(head);
 
-      // Kod widzi i generuje tylko twórca (serwer w ogóle nie wysyła go pozostałym).
-      if (g.isOwner && g.code) {
+      // Kod widzi i generuje twórca oraz osoby z uprawnieniem „Kody dostępu” (serwer nie wysyła go pozostałym).
+      if (g.code) {
         const box = el('div', 'group-card__code');
         box.appendChild(el('div', 'group-card__code-label', 'JEDNORAZOWY KOD DOSTĘPU'));
         box.appendChild(el('span', 'group-card__code-value', g.code));
@@ -4311,30 +4377,471 @@ function renderGroupList() {
       });
       actions.appendChild(open);
 
-      if (g.isOwner) {
-        const del = el('button', 'btn-secondary btn-sm btn-danger', 'Usuń grupę');
-        del.type = 'button';
-        del.addEventListener('click', () => {
-          if (!confirm(`Usunąć grupę „${g.name}”? Wszyscy członkowie zostaną z niej usunięci, a cała historia czatu przepadnie.`)) return;
-          removedByMe.add(g.id);
-          groupAction('group:delete', g.id, () => toast(`Usunięto grupę ${g.name}`, true));
-        });
-        actions.appendChild(del);
-      } else {
-        const leave = el('button', 'btn-secondary btn-sm', 'Opuść');
-        leave.type = 'button';
-        leave.addEventListener('click', () => {
-          if (!confirm(`Opuścić grupę „${g.name}”? Aby wrócić, będziesz potrzebować nowego kodu od twórcy.`)) return;
-          removedByMe.add(g.id);
-          groupAction('group:leave', g.id, () => toast(`Opuszczono grupę ${g.name}`, true));
-        });
-        actions.appendChild(leave);
-      }
+      const settingsBtn = el('button', 'btn-secondary btn-sm', '⚙ Ustawienia');
+      settingsBtn.type = 'button';
+      settingsBtn.addEventListener('click', () => openGroupSettings(g.id));
+      actions.appendChild(settingsBtn);
+
+      actions.appendChild(leaveOrDeleteButton(g));
       card.appendChild(actions);
       return card;
     })
   );
 }
+
+function leaveOrDeleteButton(g) {
+  if (g.isOwner) {
+    const del = el('button', 'btn-secondary btn-sm btn-danger', 'Usuń grupę');
+    del.type = 'button';
+    del.addEventListener('click', () => {
+      if (!confirm(`Usunąć grupę „${g.name}”? Wszyscy członkowie zostaną z niej usunięci, a cała historia czatu przepadnie.`)) return;
+      removedByMe.add(g.id);
+      groupAction('group:delete', g.id, () => toast(`Usunięto grupę ${g.name}`, true));
+    });
+    return del;
+  }
+  const leave = el('button', 'btn-secondary btn-sm', 'Opuść');
+  leave.type = 'button';
+  leave.addEventListener('click', () => {
+    if (!confirm(`Opuścić grupę „${g.name}”? Aby wrócić, będziesz potrzebować nowego kodu od twórcy.`)) return;
+    removedByMe.add(g.id);
+    groupAction('group:leave', g.id, () => toast(`Opuszczono grupę ${g.name}`, true));
+  });
+  return leave;
+}
+
+// ---------- Ustawienia grupy: przegląd, kanały, role, członkowie ----------
+const PERM_LABELS = {
+  admin: ['Administrator', 'Wszystkie uprawnienia (poza usunięciem grupy). Nadawaj ostrożnie.'],
+  send: ['Pisanie wiadomości', 'Wysyłanie wiadomości, GIFów i plików.'],
+  manageMessages: ['Zarządzanie wiadomościami', 'Usuwanie cudzych wiadomości.'],
+  manageChannels: ['Zarządzanie kanałami', 'Tworzenie, zmiana nazwy i usuwanie kanałów.'],
+  manageRoles: ['Zarządzanie rolami', 'Tworzenie ról i nadawanie ich osobom stojącym niżej w hierarchii.'],
+  kick: ['Wyrzucanie członków', 'Usuwanie z grupy osób stojących niżej w hierarchii.'],
+  invite: ['Kody dostępu', 'Podgląd i generowanie jednorazowego kodu do grupy.'],
+  manageGroup: ['Zmiana nazwy grupy', 'Edycja nazwy grupy.'],
+};
+const PERM_ORDER = ['admin', 'send', 'manageMessages', 'manageChannels', 'manageRoles', 'kick', 'invite', 'manageGroup'];
+
+const gsetModal = $('gset-modal');
+const gset = { groupId: null, tab: 'overview', roleId: 'everyone', openMember: null, members: [], membersFor: null };
+
+const gsetGroup = () => groups.find((g) => g.id === gset.groupId) || null;
+const roleIdx = (g, id) => g.roles.findIndex((r) => r.id === id);
+// Pozycja osoby w hierarchii: twórca -1, bez ról – nieskończoność (im mniej, tym wyżej)
+const memberRank = (g, m) => {
+  if (m.isOwner) return -1;
+  const idx = (m.roles || []).map((id) => roleIdx(g, id)).filter((i) => i !== -1);
+  return idx.length ? Math.min(...idx) : Infinity;
+};
+
+function openGroupSettings(groupId, tab = 'overview') {
+  gset.groupId = groupId;
+  gset.tab = tab;
+  gset.roleId = 'everyone';
+  gset.openMember = null;
+  gset.membersFor = null;
+  closeGroups();
+  gsetModal.classList.remove('hidden');
+  renderGroupSettings();
+}
+
+function closeGroupSettings() {
+  gsetModal.classList.add('hidden');
+  gset.groupId = null;
+}
+
+function fetchGsetMembers() {
+  const g = gsetGroup();
+  if (!g) return;
+  const wanted = g.id;
+  socket.timeout(10000).emit('group:members', wanted, (err, res) => {
+    if (err || !res || !res.ok || gset.groupId !== wanted) return;
+    gset.members = res.members;
+    gset.membersFor = wanted;
+    renderGroupSettings();
+  });
+}
+
+function permCheckboxes(g, current, { editable, allowAdmin = true }) {
+  const wrap = el('div', 'gset__perms');
+  PERM_ORDER.filter((p) => allowAdmin || p !== 'admin').forEach((p) => {
+    const row = el('label', 'gset__perm');
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.value = p;
+    box.checked = current.includes(p);
+    // Nadawać można tylko uprawnienia, które sam się ma (twórca i administrator mają wszystkie).
+    box.disabled = !editable || !g.perms.includes(p);
+    const text = el('span', 'gset__perm-text');
+    text.append(el('span', 'gset__perm-name', PERM_LABELS[p][0]), el('span', 'gset__perm-desc', PERM_LABELS[p][1]));
+    row.append(box, text);
+    wrap.appendChild(row);
+  });
+  return wrap;
+}
+
+function gsetSection(title) {
+  const s = el('section', 'gset__section');
+  if (title) s.appendChild(el('div', 'section-title', title));
+  return s;
+}
+
+function gsetButton(label, cls, onClick, { disabled = false, title = '' } = {}) {
+  const b = el('button', cls, label);
+  b.type = 'button';
+  b.disabled = disabled;
+  if (title) b.title = title;
+  b.addEventListener('click', onClick);
+  return b;
+}
+
+function gsetOverview(g, body) {
+  const nameSec = gsetSection('NAZWA GRUPY');
+  const row = el('div', 'groups__row');
+  const input = el('input', 'field');
+  input.value = g.name;
+  input.maxLength = 30;
+  input.disabled = !g.perms.includes('manageGroup');
+  row.append(
+    input,
+    gsetButton('Zapisz', 'btn-primary btn-sm', () => groupAction('group:rename', { groupId: g.id, name: input.value }, () => toast('Zapisano nazwę', true)), {
+      disabled: input.disabled,
+    })
+  );
+  nameSec.appendChild(row);
+  body.appendChild(nameSec);
+
+  const permSec = gsetSection('TWOJE UPRAWNIENIA');
+  const mine = g.isOwner ? ['Twórca grupy – masz wszystkie uprawnienia'] : PERM_ORDER.filter((p) => g.perms.includes(p)).map((p) => PERM_LABELS[p][0]);
+  const chips = el('div', 'gset__chips');
+  (mine.length ? mine : ['brak specjalnych uprawnień']).forEach((t) => chips.appendChild(el('span', 'gset__chip', t)));
+  permSec.appendChild(chips);
+  body.appendChild(permSec);
+
+  if (g.code) {
+    const codeSec = gsetSection('JEDNORAZOWY KOD DOSTĘPU');
+    const box = el('div', 'group-card__code');
+    box.appendChild(el('span', 'group-card__code-value', g.code));
+    box.append(
+      gsetButton('Kopiuj', 'btn-secondary btn-sm', () => {
+        copyText(g.code);
+        toast('Kod skopiowany', true);
+      }),
+      gsetButton('Nowy kod', 'btn-secondary btn-sm', () => groupAction('group:code', g.id, () => toast('Wygenerowano nowy kod', true)))
+    );
+    codeSec.appendChild(box);
+    codeSec.appendChild(el('div', 'groups__hint', 'Po użyciu kod wygasa, a w jego miejsce powstaje następny.'));
+    body.appendChild(codeSec);
+  }
+
+  const leaveSec = gsetSection('');
+  leaveSec.appendChild(leaveOrDeleteButton(g));
+  body.appendChild(leaveSec);
+}
+
+function gsetChannels(g, body) {
+  const canManage = g.perms.includes('manageChannels');
+  const listSec = gsetSection(`KANAŁY TEKSTOWE — ${g.channels.length}`);
+  g.channels.forEach((c) => {
+    const row = el('div', 'gset__row');
+    row.appendChild(el('span', 'hash', '#'));
+    const input = el('input', 'field');
+    input.value = c.name;
+    input.maxLength = 24;
+    input.disabled = !canManage;
+    row.appendChild(input);
+    if (canManage) {
+      row.appendChild(
+        gsetButton('Zapisz', 'btn-secondary btn-sm', () =>
+          groupAction('group:channel:rename', { groupId: g.id, channel: c.id, name: input.value }, () => toast('Zapisano nazwę kanału', true))
+        )
+      );
+      if (!c.isDefault) {
+        row.appendChild(
+          gsetButton('Usuń', 'btn-secondary btn-sm btn-danger', () => {
+            if (!confirm(`Usunąć kanał #${c.name}? Wszystkie jego wiadomości i pliki przepadną.`)) return;
+            groupAction('group:channel:delete', { groupId: g.id, channel: c.id }, () => toast('Usunięto kanał', true));
+          })
+        );
+      }
+    } else if (c.isDefault) {
+      row.appendChild(el('span', 'gset__tag', 'główny'));
+    }
+    listSec.appendChild(row);
+  });
+  body.appendChild(listSec);
+
+  if (canManage) {
+    const addSec = gsetSection('NOWY KANAŁ');
+    const row = el('form', 'groups__row');
+    const input = el('input', 'field');
+    input.id = 'gset-new-channel';
+    input.placeholder = 'nazwa-kanału';
+    input.maxLength = 24;
+    row.append(input, gsetButton('Dodaj', 'btn-primary btn-sm', () => {}));
+    row.lastChild.type = 'submit';
+    row.addEventListener('submit', (e) => {
+      e.preventDefault();
+      if (!input.value.trim()) return;
+      groupAction('group:channel:create', { groupId: g.id, name: input.value }, (res) => {
+        toast('Dodano kanał', true);
+        input.value = '';
+        lastGroupChannel.set(g.id, res.channel);
+      });
+    });
+    addSec.appendChild(row);
+    addSec.appendChild(el('div', 'groups__hint', `Do ${15} kanałów w grupie. Każdy członek widzi wszystkie kanały.`));
+    body.appendChild(addSec);
+  } else {
+    body.appendChild(el('div', 'groups__hint', 'Nie masz uprawnienia do zarządzania kanałami.'));
+  }
+}
+
+function gsetRoles(g, body) {
+  const canManage = g.perms.includes('manageRoles');
+  const layout = el('div', 'gset__roles');
+
+  // lewa kolumna: lista ról (od najwyższej)
+  const list = el('div', 'gset__rolelist');
+  const item = (id, label, color, count, idx) => {
+    const row = el('div', 'gset__roleitem' + (gset.roleId === id ? ' is-active' : ''));
+    const dot = el('span', 'gset__dot');
+    dot.style.background = color || 'var(--text-muted)';
+    row.append(dot, el('span', 'gset__rolename', label), el('span', 'gset__rolecount', String(count)));
+    row.addEventListener('click', () => {
+      gset.roleId = id;
+      renderGroupSettings();
+    });
+    if (idx !== null && canManage && g.rank < idx) {
+      const mover = el('span', 'gset__movers');
+      const up = gsetButton('▲', 'gset__mv', (e) => {
+        e.stopPropagation();
+        groupAction('group:role:move', { groupId: g.id, roleId: id, dir: -1 }, () => {});
+      }, { disabled: idx === 0 || g.rank >= idx - 1, title: 'Wyżej' });
+      const down = gsetButton('▼', 'gset__mv', (e) => {
+        e.stopPropagation();
+        groupAction('group:role:move', { groupId: g.id, roleId: id, dir: 1 }, () => {});
+      }, { disabled: idx === g.roles.length - 1, title: 'Niżej' });
+      mover.append(up, down);
+      row.appendChild(mover);
+    }
+    return row;
+  };
+  g.roles.forEach((r, i) => list.appendChild(item(r.id, r.name, r.color, r.memberCount, i)));
+  list.appendChild(item('everyone', '@everyone', null, g.memberCount, null));
+  if (canManage) {
+    list.appendChild(
+      gsetButton('+ Nowa rola', 'btn-secondary btn-sm gset__newrole', () =>
+        groupAction('group:role:create', { groupId: g.id, name: 'nowa rola', perms: [] }, (res) => {
+          gset.roleId = res.roleId; // zdarzenie z listą grup mogło przyjść wcześniej – przerysuj z zaznaczoną nową rolą
+          renderGroupSettings();
+        })
+      )
+    );
+  }
+  layout.appendChild(list);
+
+  // prawa kolumna: edytor wybranej roli
+  const editor = el('div', 'gset__editor');
+  const isEveryone = gset.roleId === 'everyone';
+  const idx = isEveryone ? -1 : roleIdx(g, gset.roleId);
+  if (!isEveryone && idx === -1) gset.roleId = 'everyone';
+  const role = isEveryone || idx === -1 ? { id: 'everyone', name: '@everyone', color: null, perms: g.everyone } : g.roles[idx];
+  const editable = canManage && (isEveryone || g.rank < idx);
+
+  const nameInput = el('input', 'field');
+  nameInput.value = role.name;
+  nameInput.maxLength = 24;
+  nameInput.disabled = !editable || isEveryone;
+  let colorInput = null;
+  let noColor = null;
+  if (!isEveryone) {
+    editor.appendChild(el('div', 'section-title', 'NAZWA ROLI'));
+    editor.appendChild(nameInput);
+    editor.appendChild(el('div', 'section-title gset__spaced', 'KOLOR'));
+    const colorRow = el('div', 'gset__colorrow');
+    colorInput = el('input', 'gset__color');
+    colorInput.type = 'color';
+    colorInput.value = role.color || '#99aab5';
+    colorInput.disabled = !editable;
+    const noColorLabel = el('label', 'gset__nocolor');
+    noColor = document.createElement('input');
+    noColor.type = 'checkbox';
+    noColor.checked = !role.color;
+    noColor.disabled = !editable;
+    noColorLabel.append(noColor, document.createTextNode(' bez koloru'));
+    colorInput.addEventListener('input', () => (noColor.checked = false));
+    colorRow.append(colorInput, noColorLabel);
+    editor.appendChild(colorRow);
+  } else {
+    editor.appendChild(el('div', 'groups__hint', 'Uprawnienia, które dostaje każdy członek grupy.'));
+  }
+  editor.appendChild(el('div', 'section-title gset__spaced', 'UPRAWNIENIA'));
+  const perms = permCheckboxes(g, role.perms, { editable, allowAdmin: !isEveryone });
+  editor.appendChild(perms);
+
+  const actions = el('div', 'group-card__actions');
+  if (editable) {
+    actions.appendChild(
+      gsetButton('Zapisz', 'btn-primary btn-sm', () => {
+        const chosen = Array.from(perms.querySelectorAll('input:checked')).map((b) => b.value);
+        // Nieedytowalnych (niedostępnych dla Ciebie) uprawnień nie ruszamy – serwer i tak by je odrzucił.
+        const payload = { groupId: g.id, roleId: role.id, perms: chosen };
+        if (!isEveryone) {
+          payload.name = nameInput.value;
+          payload.color = noColor.checked ? null : colorInput.value;
+        }
+        groupAction('group:role:update', payload, () => toast('Zapisano rolę', true));
+      })
+    );
+    if (!isEveryone) {
+      actions.appendChild(
+        gsetButton('Usuń rolę', 'btn-secondary btn-sm btn-danger', () => {
+          if (!confirm(`Usunąć rolę „${role.name}”? Osoby, które ją mają, stracą jej uprawnienia.`)) return;
+          groupAction('group:role:delete', { groupId: g.id, roleId: role.id }, () => {
+            gset.roleId = 'everyone';
+            renderGroupSettings();
+            toast('Usunięto rolę', true);
+          });
+        })
+      );
+    }
+  } else {
+    actions.appendChild(el('div', 'groups__hint', canManage ? 'Ta rola jest wyżej lub na równi z Twoją – nie możesz jej zmieniać.' : 'Nie masz uprawnienia do zarządzania rolami.'));
+  }
+  editor.appendChild(actions);
+  layout.appendChild(editor);
+  body.appendChild(layout);
+}
+
+function gsetMembers(g, body) {
+  if (gset.membersFor !== g.id) {
+    body.appendChild(el('div', 'groups__empty', 'Wczytuję członków…'));
+    fetchGsetMembers();
+    return;
+  }
+  const canRoles = g.perms.includes('manageRoles');
+  const canKick = g.perms.includes('kick');
+  const members = gset.members
+    .slice()
+    .sort((a, b) => memberRank(g, a) - memberRank(g, b) || a.nick.localeCompare(b.nick, 'pl'));
+  const sec = gsetSection(`CZŁONKOWIE — ${members.length}`);
+  members.forEach((m) => {
+    const rank = memberRank(g, m);
+    const isMe = m.id === myAccountId;
+    const card = el('div', 'gset__member');
+    const row = el('div', 'gset__memberrow');
+    row.appendChild(makeAvatar(m.nick, 'avatar--sm'));
+    const info = el('div', 'gset__memberinfo');
+    const name = el('span', 'gset__membername', m.nick);
+    info.appendChild(name);
+    if (m.isOwner) info.appendChild(el('span', 'member__crown', '👑'));
+    const chipRow = el('div', 'gset__chips');
+    (m.roles || []).forEach((id) => {
+      const r = g.roles.find((x) => x.id === id);
+      if (!r) return;
+      const chip = el('span', 'gset__chip', r.name);
+      if (r.color) chip.style.borderColor = r.color;
+      chipRow.appendChild(chip);
+    });
+    const left = el('div', 'gset__memberleft');
+    left.append(info, chipRow);
+    row.appendChild(left);
+
+    const touchable = !m.isOwner && (isMe || g.rank < rank);
+    const actions = el('div', 'gset__memberactions');
+    if (canRoles && touchable && g.roles.length) {
+      actions.appendChild(
+        gsetButton(gset.openMember === m.id ? 'Role ▴' : 'Role ▾', 'btn-secondary btn-sm', () => {
+          gset.openMember = gset.openMember === m.id ? null : m.id;
+          renderGroupSettings();
+        })
+      );
+    }
+    if (canKick && !isMe && !m.isOwner && g.rank < rank) {
+      actions.appendChild(
+        gsetButton('Wyrzuć', 'btn-secondary btn-sm btn-danger', () => {
+          if (!confirm(`Wyrzucić ${m.nick} z grupy? Wróci tylko z nowym kodem.`)) return;
+          groupAction('group:kick', { groupId: g.id, accountId: m.id }, () => toast(`Wyrzucono ${m.nick}`, true));
+        })
+      );
+    }
+    row.appendChild(actions);
+    card.appendChild(row);
+
+    if (gset.openMember === m.id && canRoles && touchable) {
+      const picker = el('div', 'gset__picker');
+      g.roles.forEach((r, i) => {
+        const label = el('label', 'gset__pick');
+        const box = document.createElement('input');
+        box.type = 'checkbox';
+        box.checked = (m.roles || []).includes(r.id);
+        box.disabled = !(g.rank < i); // tylko role niżej od Twojej najwyższej
+        box.addEventListener('change', () => {
+          const next = new Set(m.roles || []);
+          if (box.checked) next.add(r.id);
+          else next.delete(r.id);
+          groupAction('group:member:roles', { groupId: g.id, accountId: m.id, roles: Array.from(next) }, () => {
+            m.roles = Array.from(next); // od razu pokaż zmianę; potem dojdzie odświeżenie z serwera
+          });
+        });
+        const dot = el('span', 'gset__dot');
+        dot.style.background = r.color || 'var(--text-muted)';
+        label.append(box, dot, document.createTextNode(` ${r.name}`));
+        picker.appendChild(label);
+      });
+      card.appendChild(picker);
+    }
+    sec.appendChild(card);
+  });
+  body.appendChild(sec);
+}
+
+function renderGroupSettings() {
+  if (gsetModal.classList.contains('hidden')) return;
+  const g = gsetGroup();
+  if (!g) return closeGroupSettings(); // grupa zniknęła (usunięta, wyjście)
+  const body = $('gset-body');
+  // Nie przerysowujemy w trakcie pisania w polu – inaczej zniknęłoby ci to, co wpisujesz.
+  const active = document.activeElement;
+  if (body.contains(active) && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA') && active.type !== 'checkbox') return;
+
+  $('gset-title').textContent = `⚙ ${g.name}`;
+  document.querySelectorAll('.gset__tab').forEach((t) => t.classList.toggle('is-active', t.dataset.tab === gset.tab));
+  const scroll = body.scrollTop;
+  const fresh = el('div', 'gset__content');
+  if (gset.tab === 'channels') gsetChannels(g, fresh);
+  else if (gset.tab === 'roles') gsetRoles(g, fresh);
+  else if (gset.tab === 'members') gsetMembers(g, fresh);
+  else gsetOverview(g, fresh);
+  body.replaceChildren(fresh);
+  body.scrollTop = scroll;
+}
+
+document.querySelectorAll('.gset__tab').forEach((tab) =>
+  tab.addEventListener('click', () => {
+    gset.tab = tab.dataset.tab;
+    renderGroupSettings();
+  })
+);
+$('gset-close').addEventListener('click', closeGroupSettings);
+gsetModal.addEventListener('mousedown', (e) => {
+  if (e.target === gsetModal) closeGroupSettings();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !gsetModal.classList.contains('hidden')) closeGroupSettings();
+});
+$('group-gear').addEventListener('click', () => {
+  const g = myCurrentGroup();
+  if (g) openGroupSettings(g.id);
+});
+$('channel-add').addEventListener('click', () => {
+  const g = myCurrentGroup();
+  if (!g) return;
+  openGroupSettings(g.id, 'channels');
+  setTimeout(() => $('gset-new-channel') && $('gset-new-channel').focus(), 30);
+});
 
 $('group-join-form').addEventListener('submit', (e) => {
   e.preventDefault();
@@ -4373,26 +4880,51 @@ document.addEventListener('keydown', (e) => {
 
 socket.on('groups', setGroups);
 
-// Ktoś dołączył lub wyszedł – odśwież listę członków oglądanej grupy.
+// Ktoś dołączył, wyszedł albo zmieniono role – odśwież listę członków (panel i ustawienia grupy).
 socket.on('group:members-changed', ({ groupId }) => {
   const group = groupByChannel(currentChannel);
   if (group && group.id === groupId) loadGroupMembers();
+  if (gset.groupId === groupId && !gsetModal.classList.contains('hidden')) {
+    gset.membersFor = null; // wymusza ponowne pobranie
+    renderGroupSettings();
+  }
 });
 
-// Wyjście z grupy, jej usunięcie przez twórcę: znika z listy, a lokalna kopia czatu z archiwum.
-socket.on('group:removed', async ({ groupId, channel }) => {
+// Wyjście z grupy, wyrzucenie albo usunięcie grupy: znika z listy, a lokalna kopia jej czatów z archiwum.
+socket.on('group:removed', async ({ groupId, channel, channels: removedChannels }) => {
   const group = groups.find((g) => g.id === groupId);
   const mine = removedByMe.delete(groupId);
+  const ids = Array.isArray(removedChannels) && removedChannels.length ? removedChannels : [channel];
   groups = groups.filter((g) => g.id !== groupId);
-  unreadChannels.delete(channel);
-  mentionCounts.delete(channel);
-  if (currentChannel === channel) {
+  ids.forEach((id) => {
+    unreadChannels.delete(id);
+    mentionCounts.delete(id);
+  });
+  if (ids.includes(currentChannel)) {
     showChannelView(DEFAULT_CHANNEL); // serwer przeniósł już to połączenie na kanał domyślny i zaraz wyśle jego historię
   } else {
     renderChannels();
   }
   renderGroupList();
+  renderGroupSettings();
   if (group && !mine) toast(`Grupa „${group.name}” została usunięta lub nie masz już do niej dostępu.`);
+  try {
+    await archive.opening;
+    for (const id of ids) await archive.removeChannel(id);
+  } catch (err) {
+    handleArchiveError(err);
+  }
+});
+
+// Usunięto jeden kanał grupy: jego wiadomości znikają też z archiwum lokalnego.
+socket.on('group:channel-removed', async ({ groupId, channel }) => {
+  unreadChannels.delete(channel);
+  mentionCounts.delete(channel);
+  const group = groups.find((g) => g.id === groupId);
+  if (currentChannel === channel && group) {
+    showChannelView(group.channel); // serwer przeniósł nas już na kanał główny grupy i zaraz wyśle jego historię
+    toast('Ten kanał został usunięty.');
+  }
   try {
     await archive.opening;
     await archive.removeChannel(channel);
@@ -4400,6 +4932,8 @@ socket.on('group:removed', async ({ groupId, channel }) => {
     handleArchiveError(err);
   }
 });
+
+socket.on('group:denied', ({ error }) => toast(error || 'Brak uprawnień.'));
 
 socket.on('typing', ({ nick, isTyping, channel }) => {
   if (channel && channel !== currentChannel) return;

@@ -54,9 +54,15 @@
 
     <!-- Lista kanałów -->
     <aside class="channels">
-      <div id="channels-header" class="channels__header">MyChat</div>
+      <div class="channels__header">
+        <span id="channels-title" class="channels__title">MyChat</span>
+        <button type="button" id="group-gear" class="icon-btn icon-btn--small hidden" aria-label="Ustawienia grupy" title="Ustawienia grupy">⚙</button>
+      </div>
       <div class="channels__list">
-        <div id="channels-category" class="channels__category">KANAŁY TEKSTOWE</div>
+        <div class="channels__cathead">
+          <span id="channels-category" class="channels__category">KANAŁY TEKSTOWE</span>
+          <button type="button" id="channel-add" class="channels__add hidden" aria-label="Dodaj kanał" title="Dodaj kanał">+</button>
+        </div>
         <div id="channel-list"></div>
 
         <div id="voice-block">
@@ -419,6 +425,21 @@
         <div class="section-title">TWOJE GRUPY</div>
         <div id="group-list" class="groups__list"></div>
       </section>
+    </div>
+  </div>
+
+  <!-- Ustawienia grupy: przegląd, kanały, role i uprawnienia, członkowie -->
+  <div id="gset-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="gset-title">
+    <div class="modal__card gset">
+      <button type="button" id="gset-close" class="modal__close" aria-label="Zamknij">✕</button>
+      <h3 id="gset-title">Ustawienia grupy</h3>
+      <div class="gset__tabs" role="tablist" aria-label="Kategorie ustawień grupy">
+        <button type="button" class="gset__tab is-active" role="tab" data-tab="overview">Przegląd</button>
+        <button type="button" class="gset__tab" role="tab" data-tab="channels">Kanały</button>
+        <button type="button" class="gset__tab" role="tab" data-tab="roles">Role</button>
+        <button type="button" class="gset__tab" role="tab" data-tab="members">Członkowie</button>
+      </div>
+      <div id="gset-body" class="gset__body"></div>
     </div>
   </div>
 

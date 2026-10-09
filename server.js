@@ -583,11 +583,78 @@ const isGroupMember = (group, accountId) => group.members.includes(accountId);
 const formatCode = (code) => `${code.slice(0, 4)}-${code.slice(4)}`;
 const normalizeCode = (value) => String(value || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
 
+// Kanały grupy: domyślny ma id `g_<grupa>` (tak jak przed wprowadzeniem własnych kanałów), kolejne `g_<grupa>_<kanał>`.
+const GROUP_CHANNEL_RE = /^g_([0-9a-f]{12})(?:_([0-9a-f]{6}))?$/;
+const groupChannelId = (group, chId) => (chId ? `g_${group.id}_${chId}` : `g_${group.id}`);
+
+// Grupa, do której należy kanał (tylko jeśli taki kanał w niej naprawdę istnieje).
 function groupOfChannel(channelId) {
-  return typeof channelId === 'string' && channelId.startsWith('g_') ? groupsById.get(channelId.slice(2)) || null : null;
+  const match = typeof channelId === 'string' && GROUP_CHANNEL_RE.exec(channelId);
+  const group = match && groupsById.get(match[1]);
+  if (!group) return null;
+  return group.channels.some((c) => c.id === (match[2] || '')) ? group : null;
+}
+const belongsToGroup = (channelId, groupId) =>
+  typeof channelId === 'string' && (channelId === `g_${groupId}` || channelId.startsWith(`g_${groupId}_`));
+
+// ---- Role i uprawnienia (jak na Discordzie) ----
+// Twórca grupy ma zawsze wszystkie uprawnienia. Pozostali dostają je z roli @everyone i ze swoich ról.
+// Role są uporządkowane od najwyższej: można zarządzać tylko rolami i osobami STOJĄCYMI NIŻEJ od własnej najwyższej roli.
+const PERMISSIONS = ['admin', 'send', 'manageMessages', 'manageChannels', 'manageRoles', 'kick', 'invite', 'manageGroup'];
+const DEFAULT_EVERYONE = ['send'];
+const MAX_ROLES = 15;
+const MAX_GROUP_CHANNELS = 15;
+const MAX_ROLES_PER_MEMBER = 8;
+const MAX_ROLE_NAME = 24;
+const MAX_CHANNEL_NAME = 24;
+
+// Uzupełnia grupy zapisane przed wprowadzeniem ról i kanałów.
+function normalizeGroup(group) {
+  if (!Array.isArray(group.channels) || !group.channels.length) group.channels = [{ id: '', name: 'ogólny' }];
+  if (!Array.isArray(group.roles)) group.roles = [];
+  if (!Array.isArray(group.everyone)) group.everyone = DEFAULT_EVERYONE.slice();
+  if (!group.memberRoles || typeof group.memberRoles !== 'object') group.memberRoles = {};
+  return group;
 }
 
+const roleIndex = (group, roleId) => group.roles.findIndex((r) => r.id === roleId);
+
+function memberRoleIds(group, accountId) {
+  const ids = group.memberRoles[accountId];
+  return Array.isArray(ids) ? ids.filter((id) => roleIndex(group, id) !== -1) : [];
+}
+
+// Im niższa liczba, tym wyższa pozycja (twórca = -1, ktoś bez ról = Infinity).
+function topRank(group, accountId) {
+  if (group.ownerId === accountId) return -1;
+  return memberRoleIds(group, accountId).reduce((best, id) => Math.min(best, roleIndex(group, id)), Infinity);
+}
+
+function permsOf(group, accountId) {
+  if (group.ownerId === accountId) return new Set(PERMISSIONS);
+  const set = new Set(group.everyone);
+  for (const id of memberRoleIds(group, accountId)) group.roles[roleIndex(group, id)].perms.forEach((p) => set.add(p));
+  return set.has('admin') ? new Set(PERMISSIONS) : set;
+}
+const can = (group, accountId, perm) => permsOf(group, accountId).has(perm);
+
+// Czy to połączenie może pisać na swoim kanale (poza grupami zawsze tak).
+function mayPost(socket) {
+  const group = groupOfChannel(socket.data.channel);
+  if (!group) return true;
+  const user = users.get(socket.id);
+  return Boolean(user) && isGroupMember(group, user.accountId) && can(group, user.accountId, 'send');
+}
+const NO_POST_ERROR = 'Nie masz uprawnienia do pisania w tej grupie.';
+
+const cleanPerms = (value, { allowAdmin = true } = {}) =>
+  Array.from(new Set(Array.isArray(value) ? value : [])).filter((p) => PERMISSIONS.includes(p) && (allowAdmin || p !== 'admin'));
+const cleanColor = (value) => (typeof value === 'string' && /^#[0-9a-fA-F]{6}$/.test(value) ? value.toLowerCase() : null);
+const cleanChannelName = (value) =>
+  cleanText(typeof value === 'string' ? value : '', MAX_CHANNEL_NAME).toLowerCase().replace(/\s+/g, '-').replace(/^-+|-+$/g, '');
+
 function indexGroup(group) {
+  normalizeGroup(group);
   groupsById.set(group.id, group);
   if (group.code) groupsByCode.set(group.code, group.id);
 }
@@ -613,18 +680,27 @@ async function persistGroup(group) {
 
 const groupsOf = (accountId) => Array.from(groupsById.values()).filter((g) => isGroupMember(g, accountId));
 
-// Co klient wie o grupie. Kod dostaje wyłącznie twórca.
+// Co klient wie o grupie. Kod dostaje tylko twórca i osoby z uprawnieniem „invite”.
 function groupInfo(group, accountId) {
   const isOwner = group.ownerId === accountId;
+  const perms = permsOf(group, accountId);
+  const rank = topRank(group, accountId);
+  const counts = new Map();
+  for (const id of group.members) memberRoleIds(group, id).forEach((r) => counts.set(r, (counts.get(r) || 0) + 1));
   return {
     id: group.id,
     name: group.name,
-    channel: groupChannel(group.id),
+    channel: groupChannel(group.id), // kanał domyślny
+    channels: group.channels.map((c) => ({ id: groupChannelId(group, c.id), name: c.name, isDefault: !c.id })),
     isOwner,
     ownerId: group.ownerId,
     memberCount: group.members.length,
     maxMembers: MAX_GROUP_MEMBERS,
-    ...(isOwner ? { code: formatCode(group.code) } : {}),
+    perms: Array.from(perms),
+    rank: rank === Infinity ? 9999 : rank,
+    everyone: group.everyone.slice(),
+    roles: group.roles.map((r) => ({ id: r.id, name: r.name, color: r.color || null, perms: r.perms.slice(), memberCount: counts.get(r.id) || 0 })),
+    ...(perms.has('invite') ? { code: formatCode(group.code) } : {}),
   };
 }
 
@@ -651,10 +727,11 @@ function joinGroupRooms(accountId) {
 // wracają na kanał domyślny. Klient dostaje `group:removed`, żeby usunąć grupę z listy i swoje lokalne kopie.
 async function revokeGroupAccess(accountId, group) {
   const channel = groupChannel(group.id);
+  const channels = group.channels.map((c) => groupChannelId(group, c.id));
   for (const s of accountSockets(accountId)) {
     s.leave(`grp:${group.id}`);
-    s.emit('group:removed', { groupId: group.id, channel });
-    if (s.data.channel === channel) {
+    s.emit('group:removed', { groupId: group.id, channel, channels });
+    if (belongsToGroup(s.data.channel, group.id)) {
       enterChannel(s, DEFAULT_CHANNEL);
       await sendHistory(s, DEFAULT_CHANNEL);
     }
@@ -1074,6 +1151,7 @@ io.on('connection', (socket) => {
     }
 
     const group = { id: crypto.randomBytes(6).toString('hex'), name, ownerId: account.id, members: [account.id], code: null, createdAt: Date.now() };
+    normalizeGroup(group);
     rotateGroupCode(group);
     indexGroup(group);
     await persistGroup(group);
@@ -1117,12 +1195,13 @@ io.on('connection', (socket) => {
     const reply = typeof ack === 'function' ? ack : () => {};
     const account = accountOf();
     const group = account && groupsById.get(groupId);
-    if (!group) return reply({ ok: false, error: 'Nie ma takiej grupy.' });
-    if (group.ownerId !== account.id) return reply({ ok: false, error: 'Kod może generować tylko twórca grupy.' });
+    if (!group || !isGroupMember(group, account.id)) return reply({ ok: false, error: 'Nie ma takiej grupy.' });
+    // Domyślnie kody generuje tylko twórca; może to też zlecić roli z uprawnieniem „Kody dostępu”.
+    if (!can(group, account.id, 'invite')) return reply({ ok: false, error: 'Nie masz uprawnienia do generowania kodów.' });
     if (rateLimited(socket, 'groupCode', 10, 60000)) return reply({ ok: false, error: 'Zwolnij trochę.' });
     rotateGroupCode(group);
     await persistGroup(group);
-    pushGroups(account.id);
+    group.members.forEach((id) => can(group, id, 'invite') && pushGroups(id)); // nowy kod widzą wszyscy uprawnieni
     reply({ ok: true, code: formatCode(group.code) });
   });
 
@@ -1136,6 +1215,7 @@ io.on('connection', (socket) => {
       return reply({ ok: false, error: 'Jesteś twórcą grupy – nie możesz z niej wyjść. Możesz ją usunąć.' });
     }
     group.members = group.members.filter((id) => id !== account.id);
+    delete group.memberRoles[account.id];
     await persistGroup(group);
     await revokeGroupAccess(account.id, group);
     pushGroups(account.id);
@@ -1158,7 +1238,7 @@ io.on('connection', (socket) => {
     if (group.code) groupsByCode.delete(group.code);
     try {
       await store.deleteGroup(group.id);
-      await store.removeChannelMessages(groupChannel(group.id));
+      for (const c of group.channels) await store.removeChannelMessages(groupChannelId(group, c.id));
     } catch (err) {
       console.error('Błąd usuwania grupy:', err.message);
     }
@@ -1188,8 +1268,249 @@ io.on('connection', (socket) => {
           nickColor: a.nickColor || null,
           nickFont: a.nickFont || null,
           isOwner: a.id === group.ownerId,
+          roles: memberRoleIds(group, a.id),
         })),
     });
+  });
+
+  // ---------- Grupy: kanały, role i uprawnienia ----------
+  // Sprawdza, że to członek grupy z wymaganym uprawnieniem. Zwraca { account, group } albo { error }.
+  const groupFor = (groupId, perm) => {
+    const account = accountOf();
+    if (!account) return { error: 'Najpierw dołącz do czatu.' };
+    const group = typeof groupId === 'string' ? groupsById.get(groupId) : null;
+    if (!group || !isGroupMember(group, account.id)) return { error: 'Nie należysz do tej grupy.' };
+    if (perm && !can(group, account.id, perm)) return { error: 'Nie masz do tego uprawnienia.' };
+    return { account, group };
+  };
+  // Po każdej zmianie: zapis, świeże dane (z uprawnieniami dopasowanymi do każdej osoby) i odświeżenie listy członków.
+  const refreshGroup = async (group) => {
+    await persistGroup(group);
+    group.members.forEach(pushGroups);
+    io.to(`grp:${group.id}`).emit('group:members-changed', { groupId: group.id });
+  };
+  // Uprawnienia, które możesz nadawać lub odbierać: tylko te, które sam masz (administrator i twórca – wszystkie).
+  const grantable = (group, accountId, before, after) => {
+    const mine = permsOf(group, accountId);
+    const changed = [...before.filter((p) => !after.includes(p)), ...after.filter((p) => !before.includes(p))];
+    return changed.every((p) => mine.has(p));
+  };
+  const adminLimited = () => rateLimited(socket, 'groupAdmin', 40, 60000);
+
+  socket.on('group:rename', async (payload, ack) => {
+    const reply = typeof ack === 'function' ? ack : () => {};
+    const ctx = groupFor(payload && payload.groupId, 'manageGroup');
+    if (ctx.error) return reply({ ok: false, error: ctx.error });
+    if (adminLimited()) return reply({ ok: false, error: 'Zwolnij trochę.' });
+    const name = cleanText(payload.name, MAX_GROUP_NAME);
+    if (name.length < 2) return reply({ ok: false, error: 'Nazwa grupy musi mieć co najmniej 2 znaki.' });
+    ctx.group.name = name;
+    await refreshGroup(ctx.group);
+    reply({ ok: true });
+  });
+
+  // -- kanały --
+  socket.on('group:channel:create', async (payload, ack) => {
+    const reply = typeof ack === 'function' ? ack : () => {};
+    const ctx = groupFor(payload && payload.groupId, 'manageChannels');
+    if (ctx.error) return reply({ ok: false, error: ctx.error });
+    if (adminLimited()) return reply({ ok: false, error: 'Zwolnij trochę.' });
+    const { group } = ctx;
+    const name = cleanChannelName(payload.name);
+    if (!name) return reply({ ok: false, error: 'Podaj nazwę kanału.' });
+    if (group.channels.length >= MAX_GROUP_CHANNELS) {
+      return reply({ ok: false, error: `Grupa może mieć najwyżej ${MAX_GROUP_CHANNELS} kanałów.` });
+    }
+    if (group.channels.some((c) => c.name === name)) return reply({ ok: false, error: 'Kanał o takiej nazwie już istnieje.' });
+    let id;
+    do id = crypto.randomBytes(3).toString('hex');
+    while (group.channels.some((c) => c.id === id));
+    group.channels.push({ id, name });
+    await refreshGroup(group);
+    reply({ ok: true, channel: groupChannelId(group, id) });
+  });
+
+  socket.on('group:channel:rename', async (payload, ack) => {
+    const reply = typeof ack === 'function' ? ack : () => {};
+    const ctx = groupFor(payload && payload.groupId, 'manageChannels');
+    if (ctx.error) return reply({ ok: false, error: ctx.error });
+    if (adminLimited()) return reply({ ok: false, error: 'Zwolnij trochę.' });
+    const { group } = ctx;
+    const entry = group.channels.find((c) => groupChannelId(group, c.id) === payload.channel);
+    const name = cleanChannelName(payload.name);
+    if (!entry) return reply({ ok: false, error: 'Nie ma takiego kanału.' });
+    if (!name) return reply({ ok: false, error: 'Podaj nazwę kanału.' });
+    if (group.channels.some((c) => c !== entry && c.name === name)) return reply({ ok: false, error: 'Kanał o takiej nazwie już istnieje.' });
+    entry.name = name;
+    await refreshGroup(group);
+    reply({ ok: true });
+  });
+
+  socket.on('group:channel:delete', async (payload, ack) => {
+    const reply = typeof ack === 'function' ? ack : () => {};
+    const ctx = groupFor(payload && payload.groupId, 'manageChannels');
+    if (ctx.error) return reply({ ok: false, error: ctx.error });
+    if (adminLimited()) return reply({ ok: false, error: 'Zwolnij trochę.' });
+    const { group } = ctx;
+    const entry = group.channels.find((c) => groupChannelId(group, c.id) === payload.channel);
+    if (!entry) return reply({ ok: false, error: 'Nie ma takiego kanału.' });
+    if (!entry.id) return reply({ ok: false, error: 'Kanału głównego nie można usunąć.' });
+    const channel = groupChannelId(group, entry.id);
+    const fallback = groupChannel(group.id);
+    group.channels = group.channels.filter((c) => c !== entry);
+    try {
+      await store.removeChannelMessages(channel); // razem z plikami
+    } catch (err) {
+      console.error('Błąd usuwania kanału:', err.message);
+    }
+    io.to(`grp:${group.id}`).emit('group:channel-removed', { groupId: group.id, channel });
+    for (const s of await io.in(`ch:${channel}`).fetchSockets()) {
+      const live = io.sockets.sockets.get(s.id);
+      if (!live) continue;
+      enterChannel(live, fallback);
+      await sendHistory(live, fallback);
+    }
+    await refreshGroup(group);
+    reply({ ok: true });
+  });
+
+  // -- role --
+  // Rolę wolno ruszać, gdy stoi poniżej Twojej najwyższej roli (twórca może wszystkie).
+  const manageable = (group, accountId, idx) => idx !== -1 && topRank(group, accountId) < idx;
+
+  socket.on('group:role:create', async (payload, ack) => {
+    const reply = typeof ack === 'function' ? ack : () => {};
+    const ctx = groupFor(payload && payload.groupId, 'manageRoles');
+    if (ctx.error) return reply({ ok: false, error: ctx.error });
+    if (adminLimited()) return reply({ ok: false, error: 'Zwolnij trochę.' });
+    const { account, group } = ctx;
+    const name = cleanText(payload.name, MAX_ROLE_NAME);
+    if (!name) return reply({ ok: false, error: 'Podaj nazwę roli.' });
+    if (group.roles.length >= MAX_ROLES) return reply({ ok: false, error: `Grupa może mieć najwyżej ${MAX_ROLES} ról.` });
+    const perms = cleanPerms(payload.perms);
+    if (!grantable(group, account.id, [], perms)) return reply({ ok: false, error: 'Nie możesz nadać uprawnień, których sam nie masz.' });
+    let id;
+    do id = crypto.randomBytes(3).toString('hex');
+    while (roleIndex(group, id) !== -1);
+    group.roles.push({ id, name, color: cleanColor(payload.color), perms }); // nowa rola trafia na sam dół hierarchii
+    await refreshGroup(group);
+    reply({ ok: true, roleId: id });
+  });
+
+  socket.on('group:role:update', async (payload, ack) => {
+    const reply = typeof ack === 'function' ? ack : () => {};
+    const ctx = groupFor(payload && payload.groupId, 'manageRoles');
+    if (ctx.error) return reply({ ok: false, error: ctx.error });
+    if (adminLimited()) return reply({ ok: false, error: 'Zwolnij trochę.' });
+    const { account, group } = ctx;
+
+    if (payload.roleId === 'everyone') {
+      const perms = cleanPerms(payload.perms, { allowAdmin: false });
+      if (!grantable(group, account.id, group.everyone, perms)) return reply({ ok: false, error: 'Nie możesz zmieniać uprawnień, których sam nie masz.' });
+      group.everyone = perms;
+    } else {
+      const idx = roleIndex(group, payload.roleId);
+      if (idx === -1) return reply({ ok: false, error: 'Nie ma takiej roli.' });
+      if (!manageable(group, account.id, idx)) return reply({ ok: false, error: 'Ta rola jest wyżej lub na równi z Twoją najwyższą.' });
+      const role = group.roles[idx];
+      if (payload.name !== undefined) {
+        const name = cleanText(payload.name, MAX_ROLE_NAME);
+        if (!name) return reply({ ok: false, error: 'Podaj nazwę roli.' });
+        role.name = name;
+      }
+      if (payload.color !== undefined) role.color = cleanColor(payload.color);
+      if (payload.perms !== undefined) {
+        const perms = cleanPerms(payload.perms);
+        if (!grantable(group, account.id, role.perms, perms)) return reply({ ok: false, error: 'Nie możesz zmieniać uprawnień, których sam nie masz.' });
+        role.perms = perms;
+      }
+    }
+    await refreshGroup(group);
+    reply({ ok: true });
+  });
+
+  socket.on('group:role:move', async (payload, ack) => {
+    const reply = typeof ack === 'function' ? ack : () => {};
+    const ctx = groupFor(payload && payload.groupId, 'manageRoles');
+    if (ctx.error) return reply({ ok: false, error: ctx.error });
+    if (adminLimited()) return reply({ ok: false, error: 'Zwolnij trochę.' });
+    const { account, group } = ctx;
+    const idx = roleIndex(group, payload.roleId);
+    const target = idx + (payload.dir === -1 ? -1 : 1);
+    if (!manageable(group, account.id, idx)) return reply({ ok: false, error: 'Ta rola jest wyżej lub na równi z Twoją najwyższą.' });
+    // nie wolno przesunąć roli na pozycję swojej najwyższej roli ani wyżej
+    if (target < 0 || target >= group.roles.length || !manageable(group, account.id, target)) {
+      return reply({ ok: false, error: 'Nie można przesunąć roli w tę stronę.' });
+    }
+    [group.roles[idx], group.roles[target]] = [group.roles[target], group.roles[idx]];
+    await refreshGroup(group);
+    reply({ ok: true });
+  });
+
+  socket.on('group:role:delete', async (payload, ack) => {
+    const reply = typeof ack === 'function' ? ack : () => {};
+    const ctx = groupFor(payload && payload.groupId, 'manageRoles');
+    if (ctx.error) return reply({ ok: false, error: ctx.error });
+    if (adminLimited()) return reply({ ok: false, error: 'Zwolnij trochę.' });
+    const { account, group } = ctx;
+    const idx = roleIndex(group, payload.roleId);
+    if (!manageable(group, account.id, idx)) return reply({ ok: false, error: 'Nie możesz usunąć tej roli.' });
+    const [removed] = group.roles.splice(idx, 1);
+    for (const id of Object.keys(group.memberRoles)) {
+      group.memberRoles[id] = group.memberRoles[id].filter((r) => r !== removed.id);
+      if (!group.memberRoles[id].length) delete group.memberRoles[id];
+    }
+    await refreshGroup(group);
+    reply({ ok: true });
+  });
+
+  // Ustawia pełną listę ról członka. Zmienić można tylko role stojące niżej od Twojej najwyższej,
+  // i tylko u osób stojących niżej (albo u siebie).
+  socket.on('group:member:roles', async (payload, ack) => {
+    const reply = typeof ack === 'function' ? ack : () => {};
+    const ctx = groupFor(payload && payload.groupId, 'manageRoles');
+    if (ctx.error) return reply({ ok: false, error: ctx.error });
+    if (adminLimited()) return reply({ ok: false, error: 'Zwolnij trochę.' });
+    const { account, group } = ctx;
+    const targetId = payload.accountId;
+    if (!isGroupMember(group, targetId)) return reply({ ok: false, error: 'Tej osoby nie ma w grupie.' });
+    if (targetId === group.ownerId) return reply({ ok: false, error: 'Nie można zmieniać ról twórcy grupy.' });
+    if (targetId !== account.id && !(topRank(group, account.id) < topRank(group, targetId))) {
+      return reply({ ok: false, error: 'Ta osoba ma rolę wyżej lub na równi z Twoją.' });
+    }
+    const before = memberRoleIds(group, targetId);
+    const after = Array.from(new Set(Array.isArray(payload.roles) ? payload.roles : [])).filter((id) => roleIndex(group, id) !== -1);
+    if (after.length > MAX_ROLES_PER_MEMBER) return reply({ ok: false, error: `Jedna osoba może mieć najwyżej ${MAX_ROLES_PER_MEMBER} ról.` });
+    const changed = [...before.filter((r) => !after.includes(r)), ...after.filter((r) => !before.includes(r))];
+    if (!changed.every((id) => manageable(group, account.id, roleIndex(group, id)))) {
+      return reply({ ok: false, error: 'Możesz zmieniać tylko role stojące niżej od Twojej najwyższej.' });
+    }
+    if (after.length) group.memberRoles[targetId] = after;
+    else delete group.memberRoles[targetId];
+    await refreshGroup(group);
+    reply({ ok: true });
+  });
+
+  socket.on('group:kick', async (payload, ack) => {
+    const reply = typeof ack === 'function' ? ack : () => {};
+    const ctx = groupFor(payload && payload.groupId, 'kick');
+    if (ctx.error) return reply({ ok: false, error: ctx.error });
+    if (adminLimited()) return reply({ ok: false, error: 'Zwolnij trochę.' });
+    const { account, group } = ctx;
+    const targetId = payload.accountId;
+    const target = accountsById.get(targetId);
+    if (!target || !isGroupMember(group, targetId)) return reply({ ok: false, error: 'Tej osoby nie ma w grupie.' });
+    if (targetId === account.id) return reply({ ok: false, error: 'Nie możesz wyrzucić samego siebie – użyj „Opuść”.' });
+    if (targetId === group.ownerId || !(topRank(group, account.id) < topRank(group, targetId))) {
+      return reply({ ok: false, error: 'Ta osoba ma rolę wyżej lub na równi z Twoją.' });
+    }
+    group.members = group.members.filter((id) => id !== targetId);
+    delete group.memberRoles[targetId];
+    await revokeGroupAccess(targetId, group);
+    pushGroups(targetId);
+    groupSystemMessage(group, `${target.nick} został(a) usunięty(-a) z grupy`);
+    await refreshGroup(group);
+    reply({ ok: true });
   });
 
   socket.on('rename', async (rawNick, ack) => {
@@ -1275,7 +1596,10 @@ io.on('connection', (socket) => {
       if (!msg) return reply({ ok: false, code: 'gone', error: 'Ta wiadomość już nie istnieje na serwerze.' });
       // Starsze wiadomości (sprzed kont) nie mają accountId – wtedy rozpoznajemy autora po nicku.
       const owner = msg.accountId ? msg.accountId === user.accountId : msg.nick === user.nick;
-      if (!owner) return reply({ ok: false, error: 'Możesz usuwać tylko własne wiadomości.' });
+      // Cudze wiadomości w grupie może usuwać osoba z uprawnieniem „Zarządzanie wiadomościami” (jak moderator na Discordzie).
+      const msgGroup = groupOfChannel(msg.channel);
+      const moderator = Boolean(msgGroup) && isGroupMember(msgGroup, user.accountId) && can(msgGroup, user.accountId, 'manageMessages');
+      if (!owner && !moderator) return reply({ ok: false, error: 'Możesz usuwać tylko własne wiadomości.' });
       await store.remove(id);
       // Ślad usunięcia: urządzenia, które były offline, dowiedzą się o nim przy następnym logowaniu
       // ('sync:deleted') i usuną wiadomość ze swojego archiwum lokalnego.
@@ -1354,6 +1678,7 @@ io.on('connection', (socket) => {
     const body = typeof payload === 'string' ? { text: payload } : payload && typeof payload === 'object' ? payload : null;
     const text = body ? cleanText(body.text, MAX_MESSAGE_LENGTH) : '';
     if (!user || !text) return;
+    if (!mayPost(socket)) return socket.emit('group:denied', { error: NO_POST_ERROR });
     if (rateLimited(socket, 'msg', 10, 10000)) return;
 
     const extra = { kind: 'text', text };
@@ -1417,6 +1742,7 @@ io.on('connection', (socket) => {
     const reply = typeof ack === 'function' ? ack : () => {};
     const user = users.get(socket.id);
     if (!user) return reply({ ok: false, error: 'Najpierw dołącz do czatu.' });
+    if (!mayPost(socket)) return reply({ ok: false, error: NO_POST_ERROR });
     if (rateLimited(socket, 'gif', 5, 10000)) {
       return reply({ ok: false, error: 'Zwolnij trochę – za dużo GIFów naraz.' });
     }
@@ -1435,6 +1761,7 @@ io.on('connection', (socket) => {
     const reply = typeof ack === 'function' ? ack : () => {};
     const user = users.get(socket.id);
     if (!user) return reply({ ok: false, error: 'Najpierw dołącz do czatu.' });
+    if (!mayPost(socket)) return reply({ ok: false, error: NO_POST_ERROR });
 
     const data = payload && payload.data;
     if (!Buffer.isBuffer(data) || data.length === 0) {
