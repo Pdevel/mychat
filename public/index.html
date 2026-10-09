@@ -118,6 +118,7 @@
               <path d="M21 3H3c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h5v2h8v-2h5c1.1 0 1.99-.9 1.99-2L23 5c0-1.1-.9-2-2-2zm0 14H3V5h18v12z" />
             </svg>
           </button>
+          <button type="button" id="voice-screen-settings" class="icon-btn icon-btn--small" aria-label="Jakość udostępniania ekranu" title="Jakość udostępniania ekranu">⚙</button>
           <button type="button" id="voice-leave" class="icon-btn icon-btn--danger" aria-label="Rozłącz" title="Rozłącz">
             <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true">
               <path d="M12 9c-1.6 0-3.15.25-4.6.72v3.1c0 .39-.23.74-.56.9-.98.49-1.87 1.12-2.66 1.85-.18.18-.43.28-.7.28-.28 0-.53-.11-.71-.29L.29 13.08a.956.956 0 0 1-.29-.7c0-.28.11-.53.29-.71C3.34 8.78 7.46 7 12 7s8.66 1.78 11.71 4.67c.18.18.29.43.29.71 0 .28-.11.53-.29.71l-2.48 2.48c-.18.18-.43.29-.71.29-.27 0-.52-.11-.7-.28-.79-.73-1.68-1.36-2.66-1.85-.33-.16-.56-.51-.56-.9v-3.1C15.15 9.25 13.6 9 12 9z" />
@@ -326,6 +327,20 @@
                 <span class="switch__track"></span>
                 <span>Dźwięk nowej wiadomości</span>
               </label>
+              <div class="section-title section-title--spaced">UDOSTĘPNIANIE EKRANU</div>
+              <label class="field-label" for="screen-quality">Jakość</label>
+              <select id="screen-quality" class="field">
+                <option value="low">Oszczędna – 720p, 30 kl./s</option>
+                <option value="standard">Standard – 1080p, 30 kl./s</option>
+                <option value="high">Wysoka – 1080p, 60 kl./s</option>
+                <option value="ultra">Maksymalna – 1440p, 60 kl./s</option>
+              </select>
+              <label class="field-label" for="screen-mode">Co jest ważniejsze</label>
+              <select id="screen-mode" class="field">
+                <option value="motion">Płynność (gry, wideo)</option>
+                <option value="detail">Ostrość (tekst, kod, pulpit)</option>
+              </select>
+              <p id="screen-quality-note" class="settings-note">Zmiany działają od razu, także w trakcie udostępniania. Obraz idzie osobno do każdego widza, więc przy wielu osobach i wolnym łączu wysyłania wybierz niższą jakość – inaczej może zacinać się też dźwięk.</p>
 
               <div class="section-title section-title--spaced">ARCHIWUM LOKALNE</div>
               <label class="switch">

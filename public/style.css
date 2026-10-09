@@ -742,6 +742,16 @@ button.channel:hover {
   border-radius: 1px;
   transform: rotate(-45deg);
 }
+.voicebar .icon-btn--small {
+  width: 28px;
+  height: 36px;
+  margin-left: -6px;
+  font-size: 14px;
+  opacity: 0.75;
+}
+.voicebar .icon-btn--small:hover {
+  opacity: 1;
+}
 .voicebar #voice-screen.is-sharing {
   color: var(--green);
   background: color-mix(in srgb, var(--green) 20%, transparent);

@@ -70,6 +70,8 @@ let settings = store.get('mychat.settings', {
   theme: 'dark',
   accent: '#5865f2',
   sound: true,
+  screenQuality: 'high', // jakość udostępniania ekranu: low | standard | high | ultra
+  screenMode: 'motion', // 'motion' = płynność, 'detail' = ostrość
   archive: true, // zapisuj wiadomości na tym urządzeniu (nie znikają po okresie przechowywania na serwerze)
   archiveFiles: false, // zapisuj też zawartość plików (zajmuje więcej miejsca)
 });
@@ -266,6 +268,8 @@ function renderSettingsOptions() {
   $('accent-row').replaceChildren(...swatches, custom);
 
   $('sound-toggle').checked = settings.sound;
+  $('screen-quality').value = settings.screenQuality;
+  $('screen-mode').value = settings.screenMode;
   $('archive-toggle').checked = settings.archive;
   $('archive-files-toggle').checked = settings.archiveFiles;
   $('archive-files-toggle').disabled = !settings.archive;
@@ -3205,18 +3209,45 @@ function removeScreen(key) {
   updateScreenView();
 }
 
-// Limit przepływności: nadawca wysyła obraz osobno do każdego widza, więc im więcej osób, tym mniej na osobę.
+// ---------- Jakość udostępniania ekranu ----------
+// Obraz idzie osobno do każdego widza (bezpośrednio, bez serwera), więc im więcej widzów, tym mniej przepływności
+// przypada na jednego. `total` to budżet łącza wysyłania, a `perViewer` – maksimum dla pojedynczego widza.
+const SCREEN_PRESETS = {
+  low: { name: 'Oszczędna – 720p, 30 kl./s', width: 1280, height: 720, fps: 30, perViewer: 1_500_000, total: 4_000_000 },
+  standard: { name: 'Standard – 1080p, 30 kl./s', width: 1920, height: 1080, fps: 30, perViewer: 3_000_000, total: 8_000_000 },
+  high: { name: 'Wysoka – 1080p, 60 kl./s', width: 1920, height: 1080, fps: 60, perViewer: 6_000_000, total: 14_000_000 },
+  ultra: { name: 'Maksymalna – 1440p, 60 kl./s', width: 2560, height: 1440, fps: 60, perViewer: 10_000_000, total: 20_000_000 },
+};
+const screenPreset = () => SCREEN_PRESETS[settings.screenQuality] || SCREEN_PRESETS.high;
+
+// Limit przepływności i liczby klatek dla jednego widza.
 async function applyScreenBitrate(peer) {
-  const bps = Math.max(500_000, Math.min(2_500_000, Math.floor(6_000_000 / Math.max(1, voice.peers.size))));
+  const preset = screenPreset();
+  const viewers = Math.max(1, voice.peers.size);
+  const bps = Math.max(600_000, Math.min(preset.perViewer, Math.floor(preset.total / viewers)));
   const sender = peer.screen.video;
   if (!sender || !sender.track) return;
   try {
     const params = sender.getParameters();
     if (!params.encodings || !params.encodings.length) params.encodings = [{}];
     params.encodings[0].maxBitrate = bps;
+    params.encodings[0].maxFramerate = preset.fps;
     await sender.setParameters(params);
   } catch {
-    /* przeglądarka nie pozwala – zostaje domyślna przepływność */
+    /* przeglądarka nie pozwala – zostają ustawienia domyślne */
+  }
+}
+
+// Kodek VP9 daje wyraźnie lepszy obraz niż domyślny VP8 przy tej samej przepływności (zwłaszcza tekst i ostre krawędzie).
+// Reszta kodeków zostaje na liście, więc przeglądarki bez VP9 nadal się dogadają.
+function preferScreenCodecs(transceiver) {
+  try {
+    if (!transceiver.setCodecPreferences || !window.RTCRtpSender || !RTCRtpSender.getCapabilities) return;
+    const rank = (c) => (/VP9/i.test(c.mimeType) ? 0 : /H264/i.test(c.mimeType) ? 1 : /VP8/i.test(c.mimeType) ? 2 : /AV1/i.test(c.mimeType) ? 3 : 4);
+    const codecs = RTCRtpSender.getCapabilities('video').codecs.slice().sort((a, b) => rank(a) - rank(b));
+    transceiver.setCodecPreferences(codecs);
+  } catch {
+    /* zostaje kodek domyślny */
   }
 }
 
@@ -3228,7 +3259,9 @@ function setScreenTrack(peer, kind, track) {
   if (sender) {
     sender.replaceTrack(track).catch((err) => console.warn('Nie udało się podmienić ścieżki ekranu:', err));
   } else if (track) {
-    peer.screen[kind] = peer.pc.addTransceiver(track, { direction: 'sendonly', streams: [voice.screen] }).sender;
+    const transceiver = peer.pc.addTransceiver(track, { direction: 'sendonly', streams: [voice.screen] });
+    peer.screen[kind] = transceiver.sender;
+    if (kind === 'video') preferScreenCodecs(transceiver);
   }
 }
 
@@ -3239,25 +3272,75 @@ function addScreenTracks(peer) {
   }
 }
 
+// Podpis kafelka z własnym ekranem: rzeczywista rozdzielczość i liczba klatek, jaką dała przeglądarka.
+function screenInfoLabel() {
+  const track = voice.screen && voice.screen.getVideoTracks()[0];
+  const s = track ? track.getSettings() : {};
+  const parts = [];
+  if (s.width && s.height) parts.push(`${s.width}×${s.height}`);
+  if (s.frameRate) parts.push(`${Math.round(s.frameRate)} kl./s`);
+  return `Twój ekran${parts.length ? ` – ${parts.join(', ')}` : ''}`;
+}
+
+// Zmiana jakości w trakcie udostępniania działa od razu (bez ponownego wybierania okna).
+async function applyScreenQuality() {
+  if (!voice.screen) return;
+  const preset = screenPreset();
+  const track = voice.screen.getVideoTracks()[0];
+  if (!track) return;
+  track.contentHint = settings.screenMode === 'detail' ? 'detail' : 'motion';
+  try {
+    await track.applyConstraints({
+      frameRate: { ideal: preset.fps, max: preset.fps },
+      width: { ideal: preset.width, max: preset.width },
+      height: { ideal: preset.height, max: preset.height },
+    });
+  } catch {
+    /* źródło nie pozwala na zmianę – zostaje obecne */
+  }
+  voice.peers.forEach(applyScreenBitrate);
+  showScreen('me', voice.screen, screenInfoLabel());
+}
+
 async function startScreenShare() {
   if (!voice.active || voice.screen) return;
   if (!navigator.mediaDevices?.getDisplayMedia) {
     return toast('Ta przeglądarka nie obsługuje udostępniania ekranu (na telefonach zwykle jest niedostępne).');
   }
+  const preset = screenPreset();
+  const getDisplay = (constraints) => navigator.mediaDevices.getDisplayMedia(constraints);
   let stream;
   try {
-    stream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: { ideal: 30, max: 30 } }, audio: true });
+    // Prosimy o wybraną rozdzielczość i liczbę klatek; dźwięk bez filtrów, bo to dźwięk systemu, nie mikrofon.
+    stream = await getDisplay({
+      video: {
+        frameRate: { ideal: preset.fps, max: preset.fps },
+        width: { ideal: preset.width, max: preset.width },
+        height: { ideal: preset.height, max: preset.height },
+      },
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+    });
   } catch (err) {
-    if (err.name !== 'NotAllowedError') toast('Nie udało się rozpocząć udostępniania ekranu.');
-    return; // anulowanie w oknie wyboru nie jest błędem
+    if (err.name === 'NotAllowedError') return; // anulowanie w oknie wyboru nie jest błędem
+    try {
+      stream = await getDisplay({ video: true, audio: true }); // przeglądarka nie zna tych ograniczeń – prosta wersja
+    } catch (err2) {
+      if (err2.name !== 'NotAllowedError') toast('Nie udało się rozpocząć udostępniania ekranu.');
+      return;
+    }
   }
   if (!voice.active) return stream.getTracks().forEach((t) => t.stop()); // w międzyczasie opuszczono kanał
 
   voice.screen = stream;
+  const videoTrack = stream.getVideoTracks()[0];
+  // „motion” woli płynność (gry, wideo), „detail” – ostrość (tekst, kod, pulpit): to wpływa na to, co przeglądarka
+  // poświęca, gdy brakuje przepływności.
+  videoTrack.contentHint = settings.screenMode === 'detail' ? 'detail' : 'motion';
   // Użytkownik może zakończyć udostępnianie przyciskiem przeglądarki („Przestań udostępniać”).
-  stream.getVideoTracks()[0].addEventListener('ended', stopScreenShare);
+  videoTrack.addEventListener('ended', stopScreenShare);
   voice.peers.forEach(addScreenTracks);
-  showScreen('me', stream, 'Twój ekran');
+  voice.peers.forEach(applyScreenBitrate);
+  showScreen('me', stream, screenInfoLabel());
   applyVoiceState();
 }
 
@@ -3521,8 +3604,24 @@ $('voice-channel').addEventListener('click', joinVoice);
 $('voice-btn').addEventListener('click', () => (voice.active ? leaveVoice() : joinVoice()));
 $('voice-leave').addEventListener('click', () => leaveVoice());
 $('voice-screen').addEventListener('click', () => (voice.screen ? stopScreenShare() : startScreenShare()));
+
+// Jakość udostępniania ekranu: zapis w ustawieniach i natychmiastowe zastosowanie, jeśli akurat nadajesz.
+$('screen-quality').addEventListener('change', (e) => {
+  settings.screenQuality = e.target.value;
+  store.set('mychat.settings', settings);
+  applyScreenQuality();
+});
+$('screen-mode').addEventListener('change', (e) => {
+  settings.screenMode = e.target.value;
+  store.set('mychat.settings', settings);
+  applyScreenQuality();
+});
+$('voice-screen-settings').addEventListener('click', () => openSettings('chat'));
 // Na urządzeniach bez udostępniania ekranu (np. telefony) ukrywamy przycisk – oglądanie cudzego ekranu działa.
-if (!navigator.mediaDevices?.getDisplayMedia) $('voice-screen').classList.add('hidden');
+if (!navigator.mediaDevices?.getDisplayMedia) {
+  $('voice-screen').classList.add('hidden');
+  $('voice-screen-settings').classList.add('hidden');
+}
 $('voice-mute').addEventListener('click', () => {
   if (voice.deafened) {
     voice.deafened = false;
