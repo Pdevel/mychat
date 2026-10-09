@@ -458,6 +458,16 @@ const archive = {
     await txDone(tx);
   },
 
+  async removeMany(ids) {
+    if (!this.ready || !ids.length) return;
+    const tx = this.db.transaction(['messages', 'files'], 'readwrite');
+    ids.forEach((id) => {
+      tx.objectStore('messages').delete(id);
+      tx.objectStore('files').delete(id);
+    });
+    await txDone(tx);
+  },
+
   async clear() {
     if (!this.ready) return;
     const tx = this.db.transaction(['messages', 'files'], 'readwrite');
@@ -863,6 +873,7 @@ function join(nick) {
     pendingLive.length = 0;
     unreadChannels.delete(currentChannel);
     renderChannels();
+    syncDeletions();
     profile = { nick: res.nick, avatar: res.avatar || null };
     pendingAvatar = profile.avatar;
     store.set('mychat.profile', profile);
@@ -1688,12 +1699,32 @@ function switchChannel(id) {
   });
 }
 
-socket.on('messageDeleted', (id) => {
-  removeMessageNode(id);
-  sessionLog.delete(id);
-  localFileIds.delete(id);
-  archive.remove(id).catch(handleArchiveError);
-});
+// Usunięta wiadomość znika wszędzie: z ekranu, z pamięci sesji i z archiwum lokalnego (razem z plikiem).
+async function applyDeletions(ids) {
+  ids.forEach((id) => {
+    removeMessageNode(id);
+    sessionLog.delete(id);
+    localFileIds.delete(id);
+  });
+  try {
+    await archive.opening;
+    await archive.removeMany(ids);
+  } catch (err) {
+    handleArchiveError(err);
+  }
+}
+
+socket.on('messageDeleted', (id) => applyDeletions([id]));
+
+// Wiadomości usunięte, gdy byłeś offline, serwer zna z listy usunięć. Po zalogowaniu czyścimy z nich archiwum.
+function syncDeletions() {
+  const since = store.get('mychat.deletedSync', { at: 0 }).at || 0;
+  socket.timeout(15000).emit('sync:deleted', since, async (err, res) => {
+    if (err || !res || !res.ok) return; // spróbujemy przy następnym logowaniu
+    await applyDeletions(res.ids);
+    store.set('mychat.deletedSync', { at: res.now });
+  });
+}
 
 function mergeById(...lists) {
   const map = new Map();
