@@ -1921,9 +1921,10 @@ const voice = {
   active: false,
   joining: false,
   stream: null,
+  screen: null, // strumień z naszym udostępnianym ekranem (gdy go udostępniamy)
   muted: false,
   deafened: false,
-  users: [], // [{ id, nick, muted, deafened }] – z serwera
+  users: [], // [{ id, nick, muted, deafened, sharing }] – z serwera
   peers: new Map(), // socket.id -> { pc, pending, audio }
 };
 
@@ -1983,7 +1984,14 @@ function renderVoiceUsers() {
   const list = voice.users;
   $('voice-count').textContent = list.length ? `${list.length}/${maxVoiceUsers}` : '';
 
-  const flag = (u) => (u.deafened ? el('span', 'voice-member__flags', '🙉') : u.muted ? el('span', 'voice-member__flags', '🔇') : null);
+  // Znaczki przy osobie: czerwone LIVE (udostępnia ekran) oraz wyciszenie / wyłączony dźwięk
+  const flags = (u) => {
+    const nodes = [];
+    if (u.sharing) nodes.push(el('span', 'voice-live', 'LIVE'));
+    if (u.deafened) nodes.push(el('span', 'voice-member__flags', '🙉'));
+    else if (u.muted) nodes.push(el('span', 'voice-member__flags', '🔇'));
+    return nodes;
+  };
 
   $('voice-members').replaceChildren(
     ...list.map((u) => {
@@ -1991,8 +1999,7 @@ function renderVoiceUsers() {
       row.dataset.voiceId = u.id;
       row.appendChild(makeAvatar(u.nick));
       row.appendChild(el('span', 'voice-member__name', u.nick));
-      const f = flag(u);
-      if (f) row.appendChild(f);
+      row.append(...flags(u));
       return row;
     })
   );
@@ -2003,8 +2010,7 @@ function renderVoiceUsers() {
       chip.dataset.voiceId = u.id;
       chip.appendChild(makeAvatar(u.nick));
       chip.appendChild(el('span', '', u.nick));
-      const f = flag(u);
-      if (f) chip.appendChild(f);
+      chip.append(...flags(u));
       return chip;
     })
   );
@@ -2022,6 +2028,8 @@ function updateVoiceUI() {
   $('voice-mute').title = voice.muted ? 'Włącz mikrofon' : 'Wycisz mikrofon';
   $('voice-deafen').classList.toggle('is-off', voice.deafened);
   $('voice-deafen').title = voice.deafened ? 'Włącz dźwięk' : 'Wyłącz dźwięk';
+  $('voice-screen').classList.toggle('is-sharing', Boolean(voice.screen));
+  $('voice-screen').title = voice.screen ? 'Zatrzymaj udostępnianie ekranu' : 'Udostępnij ekran';
   renderVoiceUsers();
 }
 
@@ -2030,23 +2038,178 @@ function applyVoiceState() {
   voice.peers.forEach((p) => {
     if (p.audio) p.audio.muted = voice.deafened;
   });
-  if (voice.active) socket.emit('voice:state', { muted: voice.muted, deafened: voice.deafened });
+  screens.forEach((s, key) => {
+    if (key !== 'me') s.video.muted = voice.deafened; // dźwięk cudzego ekranu też wyciszamy
+  });
+  if (voice.active) {
+    socket.emit('voice:state', { muted: voice.muted, deafened: voice.deafened, sharing: Boolean(voice.screen) });
+  }
   updateVoiceUI();
+}
+
+// ---------- Udostępnianie ekranu ----------
+// Obraz idzie tymi samymi połączeniami co głos (peer-to-peer), a do trwającej rozmowy dokładamy go
+// przez ponowną negocjację. Podgląd każdego udostępnianego ekranu to „kafelek” nad czatem.
+const screens = new Map(); // 'me' lub socket.id -> { tile, video }
+
+function updateScreenView() {
+  $('screen-view').classList.toggle('hidden', screens.size === 0);
+}
+
+function showScreen(key, stream, label) {
+  let entry = screens.get(key);
+  if (!entry) {
+    const tile = el('div', 'screen-tile');
+    tile.dataset.voiceId = key === 'me' ? '' : key;
+    const bar = el('div', 'screen-tile__bar');
+    const title = el('span', 'screen-tile__title');
+    bar.appendChild(title);
+    const full = el('button', 'icon-btn', '⛶');
+    full.type = 'button';
+    full.title = 'Pełny ekran';
+    bar.appendChild(full);
+
+    const video = document.createElement('video');
+    video.autoplay = true;
+    video.playsInline = true;
+    video.muted = key === 'me' || voice.deafened; // własny podgląd bez dźwięku (unikamy echa)
+
+    const toggleFullscreen = () => {
+      if (document.fullscreenElement) document.exitFullscreen();
+      else tile.requestFullscreen?.().catch(() => {});
+    };
+    full.addEventListener('click', toggleFullscreen);
+    video.addEventListener('dblclick', toggleFullscreen);
+
+    tile.append(bar, video);
+    $('screen-view').appendChild(tile);
+    entry = { tile, video, title };
+    screens.set(key, entry);
+  }
+  entry.title.textContent = label;
+  if (entry.video.srcObject !== stream) entry.video.srcObject = stream;
+  entry.video.play().catch(() => {});
+  updateScreenView();
+}
+
+function removeScreen(key) {
+  const entry = screens.get(key);
+  if (!entry) return;
+  entry.video.srcObject = null;
+  entry.tile.remove();
+  screens.delete(key);
+  updateScreenView();
+}
+
+// Limit przepływności: nadawca wysyła obraz osobno do każdego widza, więc im więcej osób, tym mniej na osobę.
+async function applyScreenBitrate(peer) {
+  const bps = Math.max(500_000, Math.min(2_500_000, Math.floor(6_000_000 / Math.max(1, voice.peers.size))));
+  for (const sender of peer.screenSenders) {
+    if (!sender.track || sender.track.kind !== 'video') continue;
+    try {
+      const params = sender.getParameters();
+      if (!params.encodings || !params.encodings.length) params.encodings = [{}];
+      params.encodings[0].maxBitrate = bps;
+      await sender.setParameters(params);
+    } catch {
+      /* przeglądarka nie pozwala – zostaje domyślna przepływność */
+    }
+  }
+}
+
+function addScreenTracks(peer) {
+  if (!voice.screen || peer.screenSenders.length) return;
+  peer.screenSenders = voice.screen.getTracks().map((track) => peer.pc.addTrack(track, voice.screen));
+}
+
+async function startScreenShare() {
+  if (!voice.active || voice.screen) return;
+  if (!navigator.mediaDevices?.getDisplayMedia) {
+    return toast('Ta przeglądarka nie obsługuje udostępniania ekranu (na telefonach zwykle jest niedostępne).');
+  }
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: { ideal: 30, max: 30 } }, audio: true });
+  } catch (err) {
+    if (err.name !== 'NotAllowedError') toast('Nie udało się rozpocząć udostępniania ekranu.');
+    return; // anulowanie w oknie wyboru nie jest błędem
+  }
+  if (!voice.active) return stream.getTracks().forEach((t) => t.stop()); // w międzyczasie opuszczono kanał
+
+  voice.screen = stream;
+  // Użytkownik może zakończyć udostępnianie przyciskiem przeglądarki („Przestań udostępniać”).
+  stream.getVideoTracks()[0].addEventListener('ended', stopScreenShare);
+  voice.peers.forEach(addScreenTracks);
+  showScreen('me', stream, 'Twój ekran');
+  applyVoiceState();
+}
+
+function stopScreenShare() {
+  if (!voice.screen) return;
+  const stream = voice.screen;
+  voice.screen = null;
+  voice.peers.forEach((peer) => {
+    peer.screenSenders.forEach((sender) => {
+      try {
+        peer.pc.removeTrack(sender);
+      } catch {
+        /* połączenie już zamknięte */
+      }
+    });
+    peer.screenSenders = [];
+  });
+  stream.getTracks().forEach((t) => t.stop());
+  removeScreen('me');
+  applyVoiceState();
 }
 
 function closePeer(id) {
   const peer = voice.peers.get(id);
   if (!peer) return;
   peer.pc.onicecandidate = peer.pc.ontrack = peer.pc.onconnectionstatechange = null;
+  peer.pc.onnegotiationneeded = peer.pc.onsignalingstatechange = null;
   peer.pc.close();
   peer.audio?.remove();
   unwatchSpeaking(id);
+  removeScreen(id);
   voice.peers.delete(id);
+}
+
+function sendSdp(to, description) {
+  socket.emit('voice:signal', { to, data: { sdp: { type: description.type, sdp: description.sdp } } });
 }
 
 function createPeer(id) {
   const pc = new RTCPeerConnection({ iceServers });
-  const peer = { pc, pending: [], audio: null };
+  const peer = {
+    pc,
+    pending: [], // kandydaci ICE, którzy dotarli przed opisem sesji
+    audio: null,
+    micStreamId: null, // strumień z mikrofonem tej osoby; każdy inny to udostępniany ekran
+    screenSenders: [], // nasze nadajniki ekranu do tej osoby
+    // „Perfect negotiation”: gdy obie strony wyślą ofertę naraz, jedna (uprzejma) ustępuje.
+    polite: socket.id > id,
+    makingOffer: false,
+    ignoreOffer: false,
+    negotiationEnabled: false, // pierwsza wymiana (mikrofony) idzie osobną ścieżką, potem negocjujemy zmiany
+  };
+
+  // Zmiany w trakcie rozmowy (np. dołożenie obrazu ekranu) wymagają nowej oferty.
+  pc.onnegotiationneeded = async () => {
+    if (!peer.negotiationEnabled) return;
+    try {
+      peer.makingOffer = true;
+      await pc.setLocalDescription();
+      sendSdp(id, pc.localDescription);
+    } catch (err) {
+      console.warn('Błąd negocjacji połączenia głosowego:', err);
+    } finally {
+      peer.makingOffer = false;
+    }
+  };
+  pc.onsignalingstatechange = () => {
+    if (pc.signalingState === 'stable' && peer.screenSenders.length) applyScreenBitrate(peer);
+  };
 
   voice.stream.getTracks().forEach((track) => pc.addTrack(track, voice.stream));
 
@@ -2055,6 +2218,14 @@ function createPeer(id) {
   };
   pc.ontrack = (e) => {
     const stream = e.streams[0] || new MediaStream([e.track]);
+    // Pierwszy dźwięk od tej osoby to mikrofon; wszystko inne (obraz i dźwięk ekranu) trafia do kafelka.
+    const isMic = e.track.kind === 'audio' && (peer.micStreamId === null || peer.micStreamId === stream.id);
+    if (!isMic) {
+      const owner = voice.users.find((u) => u.id === id);
+      showScreen(id, stream, `${owner ? owner.nick : 'Ktoś'} udostępnia ekran`);
+      return;
+    }
+    peer.micStreamId = stream.id;
     if (!peer.audio) {
       const audio = document.createElement('audio');
       audio.autoplay = true;
@@ -2077,13 +2248,16 @@ function createPeer(id) {
   return peer;
 }
 
+// Po pierwszej wymianie ofert włączamy negocjację zmian i dokładamy ekran, jeśli właśnie go udostępniamy.
+function enableNegotiation(peer) {
+  peer.negotiationEnabled = true;
+  addScreenTracks(peer);
+}
+
 async function callPeer(id) {
-  const { pc } = createPeer(id);
-  await pc.setLocalDescription(await pc.createOffer());
-  socket.emit('voice:signal', {
-    to: id,
-    data: { sdp: { type: pc.localDescription.type, sdp: pc.localDescription.sdp } },
-  });
+  const peer = createPeer(id);
+  await peer.pc.setLocalDescription(await peer.pc.createOffer());
+  sendSdp(id, peer.pc.localDescription);
 }
 
 async function flushCandidates(peer) {
@@ -2098,22 +2272,35 @@ socket.on('voice:signal', async ({ from, data }) => {
     let peer = voice.peers.get(from);
 
     if (data.sdp) {
-      if (data.sdp.type === 'offer') {
+      const description = data.sdp;
+      if (description.type === 'offer') {
         peer = peer || createPeer(from);
-        await peer.pc.setRemoteDescription(data.sdp);
+        // Kolizja: obie strony wysłały ofertę naraz. Nieuprzejma ignoruje cudzą, uprzejma się wycofuje.
+        const collision = peer.makingOffer || peer.pc.signalingState !== 'stable';
+        peer.ignoreOffer = !peer.polite && collision;
+        if (peer.ignoreOffer) return;
+
+        await peer.pc.setRemoteDescription(description); // uprzejma strona automatycznie wycofuje własną ofertę
         await flushCandidates(peer);
         await peer.pc.setLocalDescription(await peer.pc.createAnswer());
-        socket.emit('voice:signal', {
-          to: from,
-          data: { sdp: { type: peer.pc.localDescription.type, sdp: peer.pc.localDescription.sdp } },
-        });
-      } else if (data.sdp.type === 'answer' && peer) {
-        await peer.pc.setRemoteDescription(data.sdp);
+        sendSdp(from, peer.pc.localDescription);
+        enableNegotiation(peer);
+      } else if (description.type === 'answer' && peer) {
+        if (peer.pc.signalingState !== 'have-local-offer') return; // spóźniona lub zbędna odpowiedź
+        await peer.pc.setRemoteDescription(description);
         await flushCandidates(peer);
+        enableNegotiation(peer);
       }
     } else if (data.candidate && peer) {
-      if (peer.pc.remoteDescription) await peer.pc.addIceCandidate(data.candidate).catch(() => {});
-      else peer.pending.push(data.candidate); // kandydat przyszedł przed ofertą/odpowiedzią
+      if (peer.pc.remoteDescription) {
+        try {
+          await peer.pc.addIceCandidate(data.candidate);
+        } catch (err) {
+          if (!peer.ignoreOffer) console.warn('Kandydat ICE odrzucony:', err);
+        }
+      } else {
+        peer.pending.push(data.candidate); // kandydat przyszedł przed ofertą/odpowiedzią
+      }
     }
   } catch (err) {
     console.warn('Błąd sygnalizacji głosowej:', err);
@@ -2166,6 +2353,11 @@ async function joinVoice() {
 function leaveVoice(notify = true) {
   if (!voice.active && !voice.stream) return;
   if (notify && voice.active && socket.connected) socket.emit('voice:leave');
+  if (voice.screen) {
+    voice.screen.getTracks().forEach((t) => t.stop());
+    voice.screen = null;
+    removeScreen('me');
+  }
   Array.from(voice.peers.keys()).forEach(closePeer);
   unwatchSpeaking('me');
   stopLocalStream();
@@ -2184,6 +2376,10 @@ socket.on('voice:users', (list) => {
     Array.from(voice.peers.keys()).forEach((id) => {
       if (!ids.has(id)) closePeer(id);
     });
+    // Osoba przestała udostępniać ekran – zamykamy jej kafelek.
+    list.forEach((u) => {
+      if (!u.sharing) removeScreen(u.id);
+    });
     if (list.length > previous) beep([660, 880]);
     else if (list.length < previous) beep([520, 380]);
   }
@@ -2193,6 +2389,9 @@ socket.on('voice:users', (list) => {
 $('voice-channel').addEventListener('click', joinVoice);
 $('voice-btn').addEventListener('click', () => (voice.active ? leaveVoice() : joinVoice()));
 $('voice-leave').addEventListener('click', () => leaveVoice());
+$('voice-screen').addEventListener('click', () => (voice.screen ? stopScreenShare() : startScreenShare()));
+// Na urządzeniach bez udostępniania ekranu (np. telefony) ukrywamy przycisk – oglądanie cudzego ekranu działa.
+if (!navigator.mediaDevices?.getDisplayMedia) $('voice-screen').classList.add('hidden');
 $('voice-mute').addEventListener('click', () => {
   if (voice.deafened) {
     voice.deafened = false;

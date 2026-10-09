@@ -184,7 +184,13 @@ const voice = new Map();
 function voiceList() {
   return Array.from(voice.entries())
     .filter(([id]) => users.has(id))
-    .map(([id, s]) => ({ id, nick: users.get(id).nick, muted: s.muted, deafened: s.deafened }));
+    .map(([id, s]) => ({
+      id,
+      nick: users.get(id).nick,
+      muted: s.muted,
+      deafened: s.deafened,
+      sharing: Boolean(s.sharing), // udostępnia ekran
+    }));
 }
 
 function broadcastVoice() {
@@ -708,7 +714,7 @@ io.on('connection', (socket) => {
     }
     // Osoba dołączająca sama zainicjuje połączenia z tymi, którzy już są na kanale.
     const peers = Array.from(voice.keys()).filter((id) => id !== socket.id && users.has(id));
-    voice.set(socket.id, { muted: false, deafened: false });
+    voice.set(socket.id, { muted: false, deafened: false, sharing: false });
     reply({ ok: true, peers });
     broadcastVoice();
   });
@@ -720,6 +726,7 @@ io.on('connection', (socket) => {
     if (!entry || !state) return;
     entry.muted = Boolean(state.muted);
     entry.deafened = Boolean(state.deafened);
+    entry.sharing = Boolean(state.sharing);
     broadcastVoice();
   });
 

@@ -725,6 +725,77 @@ button.channel:hover {
   border-radius: 1px;
   transform: rotate(-45deg);
 }
+.voicebar #voice-screen.is-sharing {
+  color: var(--green);
+  background: color-mix(in srgb, var(--green) 20%, transparent);
+}
+.voice-live {
+  padding: 1px 5px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  color: #fff;
+  background: var(--red);
+  border-radius: 4px;
+  animation: pulse-dot 1.6s ease-in-out infinite;
+}
+
+/* Podgląd udostępnianych ekranów */
+.screenview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  flex-shrink: 0;
+  max-height: 50vh;
+  padding: 8px;
+  overflow-y: auto;
+  background: #000;
+  border-bottom: 1px solid var(--bg-tertiary);
+  animation: bar-in 0.25s ease-out;
+}
+.screen-tile {
+  position: relative;
+  flex: 1 1 320px;
+  min-width: 0;
+  overflow: hidden;
+  background: #0b0b0d;
+  border-radius: 8px;
+}
+.screen-tile video {
+  display: block;
+  width: 100%;
+  max-height: calc(50vh - 56px);
+  object-fit: contain;
+  background: #000;
+}
+.screen-tile__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 4px 2px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.6);
+}
+.screen-tile__bar .icon-btn {
+  width: 32px;
+  height: 32px;
+  font-size: 18px;
+  color: #fff;
+}
+.screen-tile:fullscreen {
+  display: flex;
+  flex-direction: column;
+  border-radius: 0;
+}
+.screen-tile:fullscreen video {
+  flex: 1;
+  max-height: none;
+  min-height: 0;
+}
+
 .icon-btn--danger:hover {
   color: var(--red);
 }
