@@ -477,7 +477,42 @@ function profileOf(account) {
     banner: mediaUrl(account, 'banner'),
     nickColor: account.nickColor || null,
     nickFont: account.nickFont || null,
+    streak: {
+      count: (account.streak && account.streak.count) || 0,
+      best: (account.streak && account.streak.best) || 0,
+      lastDay: (account.streak && account.streak.lastDay) || null,
+    },
   };
+}
+
+// Streak: kolejne dni, w których obejrzano film do końca. Dzień (RRRR-MM-DD) podaje klient w swojej strefie czasowej;
+// serwer przyjmuje tylko dni bliskie jego własnej dacie (±1), żeby nie dało się wpisać dowolnej daty.
+const DAY_MS = 24 * 60 * 60 * 1000;
+const dayNumber = (day) => Date.parse(`${day}T00:00:00Z`) / DAY_MS;
+
+function registerWatchedDay(account, day) {
+  if (typeof day !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(day)) return null;
+  const n = dayNumber(day);
+  if (!Number.isFinite(n) || Math.abs(n - Math.floor(Date.now() / DAY_MS)) > 1) return null;
+  const s = account.streak || { count: 0, best: 0, lastDay: null };
+  let increased = false;
+  if (!s.lastDay) {
+    s.count = 1;
+    increased = true;
+  } else {
+    const gap = n - dayNumber(s.lastDay);
+    if (gap === 1) {
+      s.count += 1;
+      increased = true;
+    } else if (gap > 1) {
+      s.count = 1;
+      increased = true;
+    }
+  }
+  if (increased) s.lastDay = day;
+  s.best = Math.max(s.best || 0, s.count);
+  account.streak = s;
+  return { increased };
 }
 
 // Waliduje pola profilu z `payload` (tylko te, które przyszły). Zwraca poprawne pola w `next`
@@ -1137,6 +1172,19 @@ io.on('connection', (socket) => {
     await persistAccount(account);
     reply({ ok: true, profile: profileOf(account) });
     broadcastUsers(); // zmienił się status widoczny na liście osób
+  });
+
+  // Obejrzano film do końca – zalicza dzień do streaka (jeden dzień liczy się raz).
+  socket.on('streak:complete', async (payload, ack) => {
+    const reply = typeof ack === 'function' ? ack : () => {};
+    const user = users.get(socket.id);
+    const account = user && accountsById.get(user.accountId);
+    if (!account) return reply({ ok: false, error: 'Najpierw dołącz do czatu.' });
+    if (rateLimited(socket, 'streak', 10, 60000)) return reply({ ok: false, error: 'Zwolnij trochę.' });
+    const result = registerWatchedDay(account, payload && payload.day);
+    if (!result) return reply({ ok: false, error: 'Nieprawidłowy dzień.' });
+    if (result.increased) await persistAccount(account);
+    reply({ ok: true, increased: result.increased, profile: profileOf(account) });
   });
 
   // Odtworzenie profilu z lokalnej kopii zapasowej urządzenia. Dozwolone raz, tuż po założeniu konta –
