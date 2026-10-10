@@ -4358,48 +4358,13 @@ body.media-hidden .filecard {
   }
 }
 
-/* ============ Shorty: układ pionowy i przewijanie do kolejnego ============ */
+/* ============ Shorty: układ pionowy ============ */
 .vembed--short {
   max-width: 320px;
 }
 .vembed--short .vembed__stage {
   aspect-ratio: 9 / 16;
   max-height: min(72vh, 560px);
-}
-.shorts-strip {
-  position: absolute;
-  top: 0;
-  right: 0;
-  bottom: 56px;
-  z-index: 3;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 46px;
-  color: #fff;
-  background: linear-gradient(to left, rgba(0, 0, 0, 0.3), transparent);
-  cursor: ns-resize;
-  touch-action: none;
-}
-.shorts-strip:hover {
-  background: linear-gradient(to left, rgba(0, 0, 0, 0.5), transparent);
-}
-.shorts-strip__hint {
-  display: grid;
-  place-items: center;
-  animation: shorts-nudge 1.8s ease-in-out infinite;
-}
-.shorts-strip__hint .icon {
-  width: 26px;
-  height: 26px;
-  filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.7));
-}
-@keyframes shorts-nudge {
-  0%, 100% { transform: translateY(-8px); opacity: 0.45; }
-  50% { transform: translateY(8px); opacity: 1; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .shorts-strip__hint { animation: none; opacity: 0.8; }
 }
 .miniplayer--short {
   width: min(max(200px, calc(var(--mp-w, 300px) * 0.7)), calc(100vw - 20px));

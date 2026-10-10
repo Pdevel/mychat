@@ -45,7 +45,6 @@
     bookmark: '<path d="M6.5 3h11v18l-5.5-4.2L6.5 21z"/>',
     plus: '<path d="M12 5v14M5 12h14"/>',
     chart: '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
-    shuffle: '<path d="M16 4h5v5M4 20L21 4M21 15v5h-5M15 15l6 5M4 4l5 5"/>',
     size: '<path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/>',
     cinema: '<rect x="2.5" y="6" width="19" height="12" rx="2"/><path d="M7 21h10"/>',
     save: '<path d="M5 3h11l4 4v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M7 3v6h8V3M7 21v-7h10v7"/>',
