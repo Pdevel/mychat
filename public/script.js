@@ -95,7 +95,7 @@ if (profile.avatar && profile.avatar.startsWith('data:')) {
 }
 
 // Wersje do sprawdzenia, czy telefon pobrał nową stronę i czy serwer jest po wdrożeniu.
-const CLIENT_VERSION = '2026-10-10g';
+const CLIENT_VERSION = '2026-10-10h';
 let serverInfo = null;
 function renderVersionInfo() {
   const server = serverInfo ? `serwer: ${serverInfo.version}${serverInfo.party ? '' : ' (STARSZY – brak seansów, wdróż ponownie)'}` : 'serwer: sprawdzam…';
@@ -1683,6 +1683,50 @@ function makeImage(src, onLoad) {
   return img;
 }
 
+// ---------- Ulubione GIFy ----------
+// Gwiazdka w prawym górnym rogu GIFa (w czacie i w wynikach wyszukiwania) zapisuje go na liście na tym urządzeniu (do 100).
+// Lista pokazuje się w panelu GIF, w zakładce „Ulubione”, jako małe podglądy – kliknięcie wysyła GIF.
+const gifFavStore = store.get('mychat.gifs', { list: [] });
+const gifFavs = () => (Array.isArray(gifFavStore.list) ? gifFavStore.list : []);
+const isGifFav = (url) => gifFavs().includes(url);
+function toggleGifFav(url) {
+  const list = gifFavs();
+  const at = list.indexOf(url);
+  if (at >= 0) list.splice(at, 1);
+  else list.unshift(url);
+  gifFavStore.list = list.slice(0, 100);
+  store.set('mychat.gifs', gifFavStore);
+  document.dispatchEvent(new CustomEvent('gifs-changed'));
+  return at < 0;
+}
+
+// Przycisk gwiazdki, który sam pilnuje swojego stanu, gdy ulubione zmienią się gdziekolwiek.
+function makeGifFavButton(url) {
+  const btn = iconNode('button', 'giffav', 'star');
+  btn.type = 'button';
+  const sync = () => {
+    const on = isGifFav(url);
+    btn.classList.toggle('is-fav', on);
+    btn.title = on ? 'Usuń GIFa z ulubionych' : 'Dodaj GIFa do ulubionych';
+    btn.setAttribute('aria-label', btn.title);
+    btn.setAttribute('aria-pressed', String(on));
+  };
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation(); // nie otwieraj podglądu ani nie wysyłaj GIFa z panelu
+    toggleGifFav(url);
+  });
+  document.addEventListener('gifs-changed', () => btn.isConnected && sync());
+  sync();
+  return btn;
+}
+
+// GIF w wiadomości: obraz z gwiazdką w prawym górnym rogu.
+function makeGifBox(url, onLoad) {
+  const box = el('div', 'gifmsg');
+  box.append(makeImage(url, onLoad), makeGifFavButton(url));
+  return box;
+}
+
 function fileIcon(mime, name) {
   if (mime.startsWith('image/')) return 'image';
   if (mime.startsWith('audio/')) return 'music';
@@ -2363,7 +2407,7 @@ function addMessage(m, { historic = false } = {}) {
   };
 
   if (m.kind === 'gif') {
-    wrap.appendChild(makeImage(m.url, afterMediaLoad));
+    wrap.appendChild(makeGifBox(m.url, afterMediaLoad));
   } else if (m.kind === 'file') {
     wrap.appendChild(makeFileContent(m, afterMediaLoad));
   } else {
@@ -4021,25 +4065,97 @@ async function loadGifs(query) {
     const res = await fetch(`/api/gifs?q=${encodeURIComponent(query)}`);
     if (!res.ok) throw new Error('request failed');
     const list = await res.json();
-    if (request !== gifRequest) return;
+    if (request !== gifRequest || gifTab !== 'search') return;
     gifGrid.replaceChildren(
       ...list.map((g) => {
+        const cell = el('div', 'gif-cell');
         const img = el('img');
         img.src = g.preview;
         img.loading = 'lazy';
         img.referrerPolicy = 'no-referrer';
         img.alt = 'GIF';
         img.addEventListener('click', () => sendGif(g.url));
-        return img;
+        cell.append(img, makeGifFavButton(g.url));
+        return cell;
       })
     );
     gifHint.textContent = list.length ? 'Obsługiwane przez GIPHY' : 'Brak wyników.';
   } catch {
-    if (request !== gifRequest) return;
+    if (request !== gifRequest || gifTab !== 'search') return;
     gifGrid.replaceChildren();
     gifHint.textContent = 'Nie udało się pobrać GIFów. Możesz wkleić link poniżej.';
   }
 }
+
+// Zakładki panelu: wyszukiwarka i ulubione (małe podglądy).
+let gifTab = 'search';
+const gifTabSearch = $('gif-tab-search');
+const gifTabFavs = $('gif-tab-favs');
+
+function renderGifTabs() {
+  gifTabSearch.classList.toggle('is-active', gifTab === 'search');
+  gifTabFavs.classList.toggle('is-active', gifTab === 'favs');
+  gifTabFavs.replaceChildren(icon('star'), document.createTextNode(` Ulubione (${gifFavs().length})`));
+}
+
+function renderGifFavs() {
+  const list = gifFavs();
+  gifGrid.classList.add('gif-grid--favs');
+  gifGrid.replaceChildren(
+    ...list.map((url) => {
+      const cell = el('div', 'gif-cell');
+      const img = el('img');
+      img.src = url;
+      img.loading = 'lazy';
+      img.referrerPolicy = 'no-referrer';
+      img.alt = 'Ulubiony GIF';
+      img.addEventListener('click', () => sendGif(url));
+      img.addEventListener('error', () => cell.classList.add('gif-cell--broken'));
+      const remove = iconNode('button', 'giffav gif-cell__remove', 'close');
+      remove.type = 'button';
+      remove.title = 'Usuń z ulubionych';
+      remove.setAttribute('aria-label', remove.title);
+      remove.addEventListener('click', (e) => {
+        e.stopPropagation();
+        toggleGifFav(url);
+      });
+      cell.append(img, remove);
+      return cell;
+    })
+  );
+  gifHint.textContent = list.length
+    ? 'Kliknij GIFa, aby go wysłać. ✕ usuwa z ulubionych.'
+    : 'Nie masz jeszcze ulubionych GIFów – kliknij gwiazdkę w prawym górnym rogu GIFa w czacie.';
+}
+
+function showGifTab(tab) {
+  gifTab = tab;
+  renderGifTabs();
+  gifRequest += 1; // spóźniona odpowiedź wyszukiwarki nie nadpisze ulubionych
+  if (tab === 'favs') {
+    gifSearch.classList.add('hidden');
+    renderGifFavs();
+    return;
+  }
+  gifGrid.classList.remove('gif-grid--favs');
+  if (gifSearchEnabled) {
+    gifSearch.classList.remove('hidden');
+    loadGifs(gifSearch.value.trim());
+    gifSearch.focus();
+  } else {
+    gifSearch.classList.add('hidden');
+    gifGrid.replaceChildren();
+    gifHint.textContent =
+      'Wyszukiwarka GIFów jest wyłączona (brak klucza GIPHY_API_KEY na serwerze). Wklej link do GIFa z Tenor lub Giphy albo bezpośredni link do obrazka.';
+    gifUrlInput.focus();
+  }
+}
+gifTabSearch.addEventListener('click', () => showGifTab('search'));
+gifTabFavs.addEventListener('click', () => showGifTab('favs'));
+document.addEventListener('gifs-changed', () => {
+  renderGifTabs();
+  if (gifTab === 'favs' && !gifPanel.classList.contains('hidden')) renderGifFavs();
+});
 
 function sendGif(url) {
   if (!socket.connected) return toast('Brak połączenia z serwerem.');
@@ -4055,17 +4171,8 @@ function sendGif(url) {
 
 $('gif-btn').addEventListener('click', () => {
   if (!togglePopup(gifPanel, $('gif-btn'))) return;
-  if (gifSearchEnabled) {
-    gifSearch.classList.remove('hidden');
-    loadGifs(gifSearch.value.trim());
-    gifSearch.focus();
-  } else {
-    gifSearch.classList.add('hidden');
-    gifGrid.replaceChildren();
-    gifHint.textContent =
-      'Wyszukiwarka GIFów jest wyłączona (brak klucza GIPHY_API_KEY na serwerze). Wklej link do GIFa z Tenor lub Giphy albo bezpośredni link do obrazka.';
-    gifUrlInput.focus();
-  }
+  // bez wyszukiwarki (brak klucza) i z zapisanymi ulubionymi od razu pokazujemy ulubione
+  showGifTab(!gifSearchEnabled && gifFavs().length ? 'favs' : gifTab);
 });
 
 gifSearch.addEventListener('input', () => {

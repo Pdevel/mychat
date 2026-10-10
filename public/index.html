@@ -12,7 +12,7 @@
     href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Caveat:wght@600&family=Creepster&family=Fredoka:wght@600&family=Lobster&family=Orbitron:wght@700&family=Pacifico&family=Playfair+Display:wght@700&family=Press+Start+2P&family=Roboto+Mono:wght@600&family=Special+Elite&display=swap"
     rel="stylesheet"
   />
-  <link rel="stylesheet" href="style.css?v=20261010g" />
+  <link rel="stylesheet" href="style.css?v=20261010h" />
 </head>
 <body>
   <!-- Ekran logowania -->
@@ -175,6 +175,10 @@
             <div id="emoji-panel" class="popup popup--emoji hidden"></div>
             <div id="emoji-suggest" class="popup popup--suggest hidden" role="listbox"></div>
             <div id="gif-panel" class="popup popup--gif hidden">
+              <div class="gif-tabs">
+                <button type="button" id="gif-tab-search" class="gif-tab is-active">GIFy</button>
+                <button type="button" id="gif-tab-favs" class="gif-tab"></button>
+              </div>
               <input id="gif-search" type="text" placeholder="Szukaj GIFów…" maxlength="50" />
               <div id="gif-grid" class="gif-grid"></div>
               <div id="gif-hint" class="gif-hint"></div>
@@ -518,7 +522,7 @@
   <div id="toasts" class="toasts" aria-live="assertive"></div>
 
   <script src="/socket.io/socket.io.js"></script>
-  <script src="icons.js?v=20261010g"></script>
-  <script src="script.js?v=20261010g"></script>
+  <script src="icons.js?v=20261010h"></script>
+  <script src="script.js?v=20261010h"></script>
 </body>
 </html>
