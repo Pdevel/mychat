@@ -984,87 +984,74 @@ async function emitMessage(socket, nick, extra) {
 }
 
 // ---------- Komenda !rule34 <tag> ----------
-// Losowe zdjęcie albo film z rule34.xxx dla podanych tagów. API wymaga konta: zmienne R34_USER_ID i R34_API_KEY
-// (rule34.xxx -> Account -> Options -> API Access Credentials).
-const R34_USER_ID = process.env.R34_USER_ID || '';
-const R34_API_KEY = process.env.R34_API_KEY || '';
+// Losowy obrazek z publicznych galerii typu Moebooru (yande.re, a gdy nie odpowiada – konachan.com). Nie wymagają
+// klucza API. Tagi pisze się jak w tych galeriach, np. makima_(chainsaw_man); można dodać np. rating:explicit.
+const R34_SOURCES = ['https://yande.re', 'https://konachan.com'];
+const R34_HOSTS = /(^|\.)(yande\.re|konachan\.com)$/;
 // Treści związane z nieletnimi są zablokowane na stałe: odrzucamy takie zapytania, dokładamy wykluczenia do
 // zapytania i odfiltrowujemy wyniki z takimi tagami.
 const R34_BLOCKED = new Set([
   'loli', 'lolicon', 'shota', 'shotacon', 'child', 'children', 'kid', 'kids', 'underage', 'minor', 'toddler',
   'baby', 'infant', 'preteen', 'young', 'cub', 'toddlercon', 'childlike',
 ]);
-const R34_EXCLUDE = '-loli -shota -child -underage -toddler -young -cub -baby';
+const R34_EXCLUDE = '-loli -shota'; // galerie pozwalają na 6 tagów w zapytaniu: 3 użytkownika + order:random + 2 wykluczenia
 const R34_IMAGE = /\.(jpe?g|png|gif|webp)$/i;
-const R34_VIDEO = /\.(mp4|webm)$/i;
 
 const userError = (message) => Object.assign(new Error(message), { userMessage: message });
 const hasBlockedTag = (text) => String(text).toLowerCase().split(/[^a-z0-9]+/).some((t) => R34_BLOCKED.has(t));
 
-async function r34Request(params, asJson) {
-  const query = new URLSearchParams({ page: 'dapi', s: 'post', q: 'index', api_key: R34_API_KEY, user_id: R34_USER_ID, ...params });
-  const res = await fetch(`https://api.rule34.xxx/index.php?${query}`, {
-    headers: { 'User-Agent': 'MyChatBot/1.0' },
-    signal: AbortSignal.timeout(8000),
-  });
-  const body = await res.text();
-  if (!res.ok || /Missing authentication|Authentication failed/i.test(body.slice(0, 300))) {
-    throw userError('Rule34 odrzuciło zapytanie – sprawdź R34_USER_ID i R34_API_KEY na serwerze.');
+function pickUsablePost(posts, base) {
+  const usable = [];
+  for (const p of posts) {
+    if (!p || typeof p.file_url !== 'string' || hasBlockedTag(p.tags)) continue;
+    try {
+      // Duże oryginały zastępujemy mniejszą wersją, żeby czat się nie zamulał.
+      const src = p.file_size > 3e6 && typeof p.sample_url === 'string' && p.sample_url ? p.sample_url : p.file_url;
+      const u = new URL(src, base);
+      if (u.protocol !== 'https:' || !R34_HOSTS.test(u.hostname) || !R34_IMAGE.test(u.pathname)) continue;
+      usable.push(u.href);
+    } catch {
+      /* pomijamy zepsuty adres */
+    }
   }
-  if (!asJson) return body;
-  try {
-    const parsed = JSON.parse(body);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
+  return usable.length ? usable[Math.floor(Math.random() * usable.length)] : null;
 }
 
 async function fetchRule34(rawTags) {
-  const tags = String(rawTags).trim().split(/\s+/).filter(Boolean).slice(0, 4);
+  const tags = String(rawTags).trim().split(/\s+/).filter(Boolean).slice(0, 3);
   if (!tags.length) throw userError('Użycie: !rule34 nazwa_tagu  (np. !rule34 makima_(chainsaw_man))');
   if (tags.some((t) => t.length > 60 || !/^-?[A-Za-z0-9_()'.:!-]+$/.test(t))) throw userError('Nieprawidłowy tag.');
   if (hasBlockedTag(tags.join(' '))) throw userError('Ten tag jest zablokowany.');
 
-  const query = `${tags.join(' ')} ${R34_EXCLUDE}`;
-  const countXml = await r34Request({ tags: query, limit: '1' }, false);
-  const count = Number((countXml.match(/<posts[^>]*\bcount="(\d+)"/) || [])[1] || 0);
-  if (!count) throw userError('Nic nie znaleziono dla tego tagu.');
-
-  const PAGE = 100;
-  const pages = Math.max(1, Math.ceil(Math.min(count, 10000) / PAGE));
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const posts = await r34Request({ tags: query, limit: String(PAGE), pid: String(Math.floor(Math.random() * pages)), json: '1' }, true);
-    const usable = posts.filter((p) => {
-      if (!p || typeof p.file_url !== 'string' || hasBlockedTag(p.tags)) return false;
-      try {
-        const u = new URL(p.file_url);
-        return (u.hostname === 'rule34.xxx' || u.hostname.endsWith('.rule34.xxx')) && (R34_IMAGE.test(u.pathname) || R34_VIDEO.test(u.pathname));
-      } catch {
-        return false;
-      }
-    });
-    if (!usable.length) continue;
-    const pick = usable[Math.floor(Math.random() * usable.length)];
-    const url = new URL(pick.file_url);
-    url.protocol = 'https:';
-    return { url: url.href, video: R34_VIDEO.test(url.pathname), tags: tags.join(' ') };
+  const query = `${tags.join(' ')} order:random ${R34_EXCLUDE}`;
+  let answered = false;
+  for (const base of R34_SOURCES) {
+    try {
+      const res = await fetch(`${base}/post.json?${new URLSearchParams({ tags: query, limit: '40' })}`, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; MyChatBot/1.0)', Accept: 'application/json' },
+        signal: AbortSignal.timeout(8000),
+      });
+      if (!res.ok) throw new Error(`${base} ${res.status}`);
+      const posts = await res.json();
+      if (!Array.isArray(posts)) throw new Error(`${base}: nieoczekiwana odpowiedź`);
+      answered = true;
+      const url = pickUsablePost(posts, base);
+      if (url) return { url, tags: tags.join(' ') };
+    } catch (err) {
+      console.error('Błąd !rule34:', err.message);
+    }
   }
-  throw userError('Nie udało się znaleźć pasującego wyniku. Spróbuj ponownie.');
+  throw userError(answered ? 'Nic nie znaleziono dla tego tagu.' : 'Galeria chwilowo nie odpowiada. Spróbuj za chwilę.');
 }
 
 async function handleRule34(socket, user, args) {
-  if (!R34_USER_ID || !R34_API_KEY) {
-    return socket.emit('notice', { error: 'Komenda !rule34 nie jest skonfigurowana (brak R34_USER_ID / R34_API_KEY na serwerze).' });
-  }
   if (rateLimited(socket, 'r34', 3, 30000)) return socket.emit('notice', { error: 'Zwolnij trochę z !rule34.' });
   try {
     const post = await fetchRule34(args);
-    if (post.video) await emitMessage(socket, user.nick, { kind: 'text', text: `🔎 ${post.tags}\n${post.url}` });
-    else await emitMessage(socket, user.nick, { kind: 'gif', url: post.url });
+    await emitMessage(socket, user.nick, { kind: 'gif', url: post.url });
   } catch (err) {
     if (!err.userMessage) console.error('Błąd !rule34:', err.message);
-    socket.emit('notice', { error: err.userMessage || 'Nie udało się pobrać wyniku z rule34.' });
+    socket.emit('notice', { error: err.userMessage || 'Nie udało się pobrać wyniku.' });
   }
 }
 
