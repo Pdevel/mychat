@@ -662,13 +662,6 @@ function makePlayerNode(video, className, { startSec = 0, ambient = false } = {}
     v.autoplay = true;
     v.preload = 'metadata';
     v.referrerPolicy = 'no-referrer';
-    // Zaliczamy tylko film obejrzany naprawdę (min. 90% czasu odtworzone, nie samo przewinięcie na koniec).
-    v.addEventListener('ended', () => {
-      if (!(v.duration > 0)) return;
-      let seen = 0;
-      for (let i = 0; i < v.played.length; i++) seen += v.played.end(i) - v.played.start(i);
-      if (seen >= v.duration * 0.9) reportWatched();
-    });
     const src = videoSrcAt(video, startSec);
     if (ambient) {
       v.crossOrigin = 'anonymous';
@@ -733,7 +726,7 @@ function makeVideoEmbed(video, afterChange) {
   openBtn.target = '_blank';
   openBtn.rel = 'noopener noreferrer';
   openBtn.title = 'Otwórz w nowej karcie';
-  // Odtwarzacze w ramce nie mówią, kiedy film się skończył – streak zaliczasz tu ręcznie.
+  // Odtwarzacz w ramce nie mówi, kiedy film się skończył – streak (tylko Pornhub) zaliczasz tu ręcznie.
   const doneBtn = iconNode('button', 'vembed__btn hidden', 'sparkle');
   doneBtn.type = 'button';
   doneBtn.title = 'Obejrzałem do końca – zalicz do streaka';
@@ -752,7 +745,7 @@ function makeVideoEmbed(video, afterChange) {
   const showStage = (playing) => {
     stage.replaceChildren();
     stopBtn.classList.toggle('hidden', !playing);
-    doneBtn.classList.toggle('hidden', !playing || cur.kind === 'video');
+    doneBtn.classList.toggle('hidden', !playing || cur.provider !== 'pornhub');
     if (playing) {
       stage.appendChild(makePlayerNode(cur, 'vembed__player'));
       closeMiniPlayer();
@@ -1447,7 +1440,7 @@ function openMiniPlayer(video, opts = {}) {
   function show() {
     const v = list[index];
     box.dataset.provider = v.provider;
-    watched.hidden = v.kind === 'video'; // pliki wideo zaliczają się same po obejrzeniu
+    watched.hidden = v.provider !== 'pornhub'; // streak dotyczy tylko filmów z Pornhuba
     marksPanel.classList.add('hidden');
     const node = live ? makePlayerNode(v, 'miniplayer__media', { startSec, ambient: settings.partyGlow === 'image' }) : waitPanel();
     body.replaceChildren(node, feed, marksPanel);
