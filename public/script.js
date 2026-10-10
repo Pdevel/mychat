@@ -204,6 +204,19 @@ function el(tag, className, text) {
   return node;
 }
 
+// Pomocnicze elementy z ikonami (zestaw w icons.js): podpis i ikona po prawej oraz znaczek przy osobie w kanale głosowym.
+function textWithIcon(text, name) {
+  const span = el('span', 'text-icon', `${text} `);
+  span.appendChild(icon(name));
+  return span;
+}
+
+function voiceFlag(name, title) {
+  const flag = iconNode('span', 'voice-member__flags', name);
+  flag.title = title;
+  return flag;
+}
+
 function toast(text, info = false) {
   const t = el('div', 'toast' + (info ? ' toast--info' : ''), text);
   $('toasts').appendChild(t);
@@ -591,17 +604,17 @@ function makeVideoEmbed(video, afterChange) {
   const card = el('div', 'vembed');
   const stage = el('div', 'vembed__stage');
   const header = el('div', 'vembed__bar');
-  header.appendChild(el('span', 'vembed__label', `▶ ${video.label}`));
+  header.appendChild(iconNode('span', 'vembed__label', 'play', video.label));
   const actions = el('div', 'vembed__actions');
 
-  const popBtn = el('button', 'vembed__btn', '⧉ Mały odtwarzacz');
+  const popBtn = iconNode('button', 'vembed__btn', 'popout', 'Mały odtwarzacz');
   popBtn.type = 'button';
   popBtn.title = 'Oglądaj w pływającym oknie – zostaje przy zmianie kanału';
   popBtn.addEventListener('click', () => {
     showStage(false);
     openMiniPlayer(video);
   });
-  const openBtn = el('a', 'vembed__btn', '↗');
+  const openBtn = iconNode('a', 'vembed__btn', 'external');
   openBtn.href = video.href;
   openBtn.target = '_blank';
   openBtn.rel = 'noopener noreferrer';
@@ -628,7 +641,7 @@ function makeVideoEmbed(video, afterChange) {
         img.src = video.thumb;
         poster.appendChild(img);
       }
-      poster.appendChild(el('span', 'vembed__play', '▶'));
+      poster.appendChild(iconNode('span', 'vembed__play', 'play'));
       poster.addEventListener('click', () => {
         showStage(true);
         afterChange();
@@ -654,12 +667,12 @@ function openMiniPlayer(video) {
   closeMiniPlayer();
   const box = el('div', 'miniplayer');
   const bar = el('div', 'miniplayer__bar');
-  bar.appendChild(el('span', 'miniplayer__title', `▶ ${video.label}`));
-  const collapse = el('button', 'miniplayer__btn', '–');
+  bar.appendChild(iconNode('span', 'miniplayer__title', 'play', video.label));
+  const collapse = iconNode('button', 'miniplayer__btn', 'minus');
   collapse.type = 'button';
   collapse.title = 'Zwiń / rozwiń';
   collapse.addEventListener('click', () => box.classList.toggle('miniplayer--collapsed'));
-  const close = el('button', 'miniplayer__btn', '✕');
+  const close = iconNode('button', 'miniplayer__btn', 'close');
   close.type = 'button';
   close.title = 'Zamknij odtwarzacz';
   close.addEventListener('click', closeMiniPlayer);
@@ -737,13 +750,17 @@ function makeImage(src, onLoad) {
 }
 
 function fileIcon(mime, name) {
-  if (mime.startsWith('image/')) return '🖼️';
-  if (mime.startsWith('audio/')) return '🎵';
-  if (mime.startsWith('video/')) return '🎬';
-  if (mime === 'application/pdf') return '📕';
-  if (/\.(zip|rar|7z|tar|gz)$/i.test(name)) return '🗜️';
-  if (mime.startsWith('text/')) return '📄';
-  return '📎';
+  if (mime.startsWith('image/')) return 'image';
+  if (mime.startsWith('audio/')) return 'music';
+  if (mime.startsWith('video/')) return 'film';
+  if (mime === 'application/pdf') return 'file';
+  if (/\.(zip|rar|7z|tar|gz)$/i.test(name)) return 'archive';
+  if (mime.startsWith('text/')) return 'file-text';
+  return 'paperclip';
+}
+
+function fileIconBox(mime, name) {
+  return iconNode('div', 'filecard__icon', fileIcon(mime, name));
 }
 
 const INLINE_IMAGE = /^image\/(png|jpe?g|gif|webp|avif|bmp)$/;
@@ -1137,14 +1154,14 @@ async function loadFileBytes(m) {
 // Karta pliku z historii: zawartość jest pobierana dopiero po kliknięciu.
 function makeRemoteFileCard(m, onLoad) {
   const card = el('div', 'filecard');
-  card.appendChild(el('div', 'filecard__icon', fileIcon(m.mime, m.name)));
+  card.appendChild(fileIconBox(m.mime, m.name));
   const info = el('div', 'filecard__info');
   info.appendChild(el('div', 'filecard__name', m.name));
-  info.appendChild(el('div', 'filecard__size', formatSize(m.size) + (localFileIds.has(m.id) ? ' · 💾 zapisano lokalnie' : '')));
+  info.appendChild(el('div', 'filecard__size', formatSize(m.size) + (localFileIds.has(m.id) ? ' · zapisano lokalnie' : '')));
   card.appendChild(info);
 
   const inline = INLINE_IMAGE.test(m.mime) || INLINE_VIDEO.test(m.mime) || INLINE_AUDIO.test(m.mime);
-  const btn = el('button', 'icon-btn', inline ? '👁' : '⬇');
+  const btn = iconNode('button', 'icon-btn', inline ? 'eye' : 'download');
   btn.type = 'button';
   btn.title = inline ? 'Pokaż' : 'Pobierz';
   btn.addEventListener('click', async () => {
@@ -1185,12 +1202,12 @@ function makeFileContent(m, onLoad) {
   }
 
   const card = el('div', 'filecard');
-  card.appendChild(el('div', 'filecard__icon', fileIcon(m.mime, m.name)));
+  card.appendChild(fileIconBox(m.mime, m.name));
   const info = el('div', 'filecard__info');
   info.appendChild(el('div', 'filecard__name', m.name));
   info.appendChild(el('div', 'filecard__size', formatSize(m.size)));
   card.appendChild(info);
-  const dl = el('a', 'icon-btn', '⬇');
+  const dl = iconNode('a', 'icon-btn', 'download');
   dl.href = url;
   dl.download = m.name;
   dl.title = 'Pobierz';
@@ -1372,7 +1389,7 @@ function addMessage(m, { historic = false } = {}) {
   if (m.id) {
     // Pasek akcji widoczny po najechaniu: odpowiedź i reakcja (każdy) oraz usunięcie (tylko autor)
     const actions = el('div', 'msg__actions');
-    const answer = el('button', 'msg__action', '↩');
+    const answer = iconNode('button', 'msg__action', 'reply');
     answer.type = 'button';
     answer.title = 'Odpowiedz';
     answer.setAttribute('aria-label', 'Odpowiedz na wiadomość');
@@ -1382,7 +1399,7 @@ function addMessage(m, { historic = false } = {}) {
     });
     actions.appendChild(answer);
 
-    const react = el('button', 'msg__action js-react', '😀');
+    const react = iconNode('button', 'msg__action js-react', 'smile');
     react.type = 'button';
     react.title = 'Dodaj reakcję';
     react.setAttribute('aria-label', 'Dodaj reakcję');
@@ -1394,7 +1411,7 @@ function addMessage(m, { historic = false } = {}) {
 
     // Cudze wiadomości w grupie może usuwać też moderator (uprawnienie „Zarządzanie wiadomościami”).
     if (mine || hasGroupPerm(groupByChannel(currentChannel), 'manageMessages')) {
-      const del = el('button', 'msg__action msg__action--danger', '🗑');
+      const del = iconNode('button', 'msg__action msg__action--danger', 'trash');
       del.type = 'button';
       del.title = mine ? 'Usuń wiadomość' : 'Usuń wiadomość (moderacja)';
       del.setAttribute('aria-label', 'Usuń wiadomość');
@@ -1446,7 +1463,7 @@ function addMessage(m, { historic = false } = {}) {
 // m.replyTo (z serwera): { id, nick, accountId, kind, preview } albo { id, missing: true }, gdy oryginału już nie ma.
 function previewOfMessage(m) {
   if (m.kind === 'gif') return 'GIF';
-  if (m.kind === 'file') return `📎 ${m.name}`;
+  if (m.kind === 'file') return `Plik: ${m.name}`;
   return String(m.text || '').slice(0, 120);
 }
 
@@ -1532,7 +1549,7 @@ function renderReplyBar() {
     renderReplyBar();
   });
 
-  const close = el('button', 'icon-btn', '✕');
+  const close = iconNode('button', 'icon-btn', 'close');
   close.type = 'button';
   close.title = 'Anuluj odpowiedź';
   close.addEventListener('click', clearReply);
@@ -1675,7 +1692,7 @@ function renderMembers(list, { group = null, sections = null, roles = [] } = {})
         name.style.color = roleColor;
       }
       if (u.isOwner) {
-        const crown = el('span', 'member__crown', '👑');
+        const crown = iconNode('span', 'member__crown', 'crown');
         crown.title = 'Twórca grupy';
         const nameRow = el('div', 'member__row');
         nameRow.append(name, crown);
@@ -2321,8 +2338,8 @@ const QUICK_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
 
 // Zawartość wybieraczki: zakładki „Emoji” i „Własne”; onPick dostaje znak Unicode albo :nazwa:.
 function fillEmojiPicker(container, onPick, { quick = false } = {}) {
-  const tabStd = el('button', 'epicker__tab is-active', '😀 Emoji');
-  const tabCustom = el('button', 'epicker__tab', `⭐ Własne (${customEmoji.length})`);
+  const tabStd = iconNode('button', 'epicker__tab is-active', 'smile', 'Emoji');
+  const tabCustom = iconNode('button', 'epicker__tab', 'star', `Własne (${customEmoji.length})`);
   tabStd.type = tabCustom.type = 'button';
   const tabs = el('div', 'epicker__tabs');
   tabs.append(tabStd, tabCustom);
@@ -2633,7 +2650,7 @@ function renderEmojiSettings() {
       text.appendChild(el('div', 'emoji-card__by', e.by ? `dodał(a) ${e.by}` : ''));
       card.appendChild(text);
       if (e.byId && e.byId === myAccountId) {
-        const del = el('button', 'icon-btn icon-btn--danger', '🗑');
+        const del = iconNode('button', 'icon-btn icon-btn--danger', 'trash');
         del.type = 'button';
         del.title = 'Usuń emoji';
         del.addEventListener('click', () => {
@@ -3385,8 +3402,8 @@ function renderVoiceUsers() {
   const flags = (u) => {
     const nodes = [];
     if (u.sharing) nodes.push(el('span', 'voice-live', 'LIVE'));
-    if (u.deafened) nodes.push(el('span', 'voice-member__flags', '🙉'));
-    else if (u.muted) nodes.push(el('span', 'voice-member__flags', '🔇'));
+    if (u.deafened) nodes.push(voiceFlag('headphones-off', 'Dźwięk wyłączony'));
+    else if (u.muted) nodes.push(voiceFlag('mic-off', 'Wyciszony'));
     return nodes;
   };
 
@@ -3464,7 +3481,7 @@ function showScreen(key, stream, label) {
     const bar = el('div', 'screen-tile__bar');
     const title = el('span', 'screen-tile__title');
     bar.appendChild(title);
-    const full = el('button', 'icon-btn', '⛶');
+    const full = iconNode('button', 'icon-btn', 'expand');
     full.type = 'button';
     full.title = 'Pełny ekran';
     bar.appendChild(full);
@@ -4602,7 +4619,7 @@ function renderGroupList() {
       });
       actions.appendChild(open);
 
-      const settingsBtn = el('button', 'btn-secondary btn-sm', '⚙ Ustawienia');
+      const settingsBtn = iconNode('button', 'btn-secondary btn-sm', 'gear', 'Ustawienia');
       settingsBtn.type = 'button';
       settingsBtn.addEventListener('click', () => openGroupSettings(g.id));
       actions.appendChild(settingsBtn);
@@ -4713,7 +4730,9 @@ function gsetSection(title) {
 }
 
 function gsetButton(label, cls, onClick, { disabled = false, title = '' } = {}) {
-  const b = el('button', cls, label);
+  const b = el('button', cls);
+  if (typeof label === 'string') b.textContent = label;
+  else b.appendChild(label); // ikona (węzeł SVG)
   b.type = 'button';
   b.disabled = disabled;
   if (title) b.title = title;
@@ -4873,11 +4892,11 @@ function gsetRoles(g, body) {
     });
     if (idx !== null && canManage && g.rank < idx) {
       const mover = el('span', 'gset__movers');
-      const up = gsetButton('▲', 'gset__mv', (e) => {
+      const up = gsetButton(icon('chevron-up'), 'gset__mv', (e) => {
         e.stopPropagation();
         groupAction('group:role:move', { groupId: g.id, roleId: id, dir: -1 }, () => {});
       }, { disabled: idx === 0 || g.rank >= idx - 1, title: 'Wyżej' });
-      const down = gsetButton('▼', 'gset__mv', (e) => {
+      const down = gsetButton(icon('chevron-down'), 'gset__mv', (e) => {
         e.stopPropagation();
         groupAction('group:role:move', { groupId: g.id, roleId: id, dir: 1 }, () => {});
       }, { disabled: idx === g.roles.length - 1, title: 'Niżej' });
@@ -4994,7 +5013,7 @@ function gsetMembers(g, body) {
     const info = el('div', 'gset__memberinfo');
     const name = el('span', 'gset__membername', m.nick);
     info.appendChild(name);
-    if (m.isOwner) info.appendChild(el('span', 'member__crown', '👑'));
+    if (m.isOwner) info.appendChild(iconNode('span', 'member__crown', 'crown'));
     const chipRow = el('div', 'gset__chips');
     (m.roles || []).forEach((id) => {
       const r = g.roles.find((x) => x.id === id);
@@ -5011,7 +5030,7 @@ function gsetMembers(g, body) {
     const actions = el('div', 'gset__memberactions');
     if (canRoles && touchable && g.roles.length) {
       actions.appendChild(
-        gsetButton(gset.openMember === m.id ? 'Role ▴' : 'Role ▾', 'btn-secondary btn-sm', () => {
+        gsetButton(textWithIcon('Role', gset.openMember === m.id ? 'chevron-up' : 'chevron-down'), 'btn-secondary btn-sm', () => {
           gset.openMember = gset.openMember === m.id ? null : m.id;
           renderGroupSettings();
         })
@@ -5065,7 +5084,7 @@ function renderGroupSettings() {
   const active = document.activeElement;
   if (body.contains(active) && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA') && active.type !== 'checkbox') return;
 
-  $('gset-title').textContent = `⚙ ${g.name}`;
+  setIcon($('gset-title'), 'gear', g.name);
   document.querySelectorAll('.gset__tab').forEach((t) => t.classList.toggle('is-active', t.dataset.tab === gset.tab));
   const scroll = body.scrollTop;
   const fresh = el('div', 'gset__content');
