@@ -1454,7 +1454,7 @@ audio.media {
 }
 .epicker__grid {
   display: grid;
-  grid-template-columns: repeat(8, 1fr);
+  grid-template-columns: repeat(8, minmax(0, 1fr));
   gap: 2px;
   flex: 1;
   min-height: 0;
@@ -3080,7 +3080,8 @@ textarea.field {
     flex-direction: row;
     gap: 4px;
     width: auto;
-    padding: 12px 52px 8px 10px;
+    margin-right: 52px; /* pas po prawej zajmuje przycisk zamknięcia – zakładki nie wchodzą pod niego */
+    padding: 12px 10px 8px 10px;
     overflow-x: auto;
     overflow-y: hidden;
   }
@@ -3092,7 +3093,7 @@ textarea.field {
     padding: 8px 12px;
   }
   .settings__body {
-    flex-direction: column-reverse; /* podgląd nad formularzem */
+    flex-direction: column; /* podgląd (order: -1) nad formularzem; column-reverse sklejałoby krótką zawartość z dołem */
     gap: 0;
     overflow-y: auto;
   }
@@ -3102,6 +3103,7 @@ textarea.field {
     overflow: visible;
   }
   .settings__preview {
+    order: -1;
     width: 100%;
     padding: 16px 16px 0;
     overflow: visible;
@@ -3545,4 +3547,82 @@ textarea.field {
 }
 .btn-sm .icon {
   vertical-align: -0.2em;
+}
+
+/* ============ Telefon: odtwarzacz i karty wideo ============ */
+.vembed {
+  max-width: 100%;
+}
+.vembed__bar {
+  flex-wrap: wrap;
+}
+.vembed__btn {
+  white-space: nowrap;
+}
+.vembed__label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 720px) {
+  /* mały odtwarzacz nie zasłania pola wiadomości – siedzi nad nim, po prawej */
+  .miniplayer {
+    right: 10px;
+    bottom: calc(76px + env(safe-area-inset-bottom));
+    width: min(240px, 64vw);
+  }
+}
+
+/* ============ Wąskie telefony: nagłówek mieści się bez wypychania przycisków poza ekran ============ */
+@media (max-width: 720px) {
+  .channel-select {
+    flex: 0 1 auto;
+    min-width: 0;
+  }
+  .topbar__online {
+    flex-shrink: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+}
+@media (max-width: 400px) {
+  .topbar {
+    gap: 4px;
+    padding: 0 4px 0 10px;
+  }
+  .topbar .icon-btn {
+    width: 36px;
+  }
+  .topbar .icon-btn--text {
+    width: auto;
+    padding: 0 6px;
+  }
+  .topbar__online {
+    font-size: 12px;
+  }
+}
+
+@media (max-width: 400px) {
+  /* wybieraczka emoji: osiem kolumn mieści się też na najwęższych ekranach */
+  .epicker__grid button,
+  .epicker__quick button {
+    min-width: 0;
+    font-size: 21px;
+  }
+  .epicker__grid .emoji {
+    width: 24px;
+    height: 24px;
+  }
+}
+
+/* Telefon w poziomie: wyskakujące panele nie wychodzą ponad górną krawędź ekranu */
+@media (max-height: 520px) {
+  .popup--emoji,
+  .popup--gif {
+    max-height: calc(100vh - 110px);
+    overflow-y: auto;
+  }
+  .popup--emoji {
+    overflow-y: hidden; /* siatka emoji przewija się sama, zakładki zostają na górze */
+  }
 }
