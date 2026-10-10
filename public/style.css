@@ -4272,103 +4272,50 @@ body.media-hidden .filecard {
   margin-left: auto;
 }
 
-/* ============ Tryb jednej ręki (telefon) ============ */
-.thumbdock {
-  display: none;
-}
+/* ============ Tryb jednej ręki: przyciski odtwarzaczy na dole (telefon) ============ */
 @media (max-width: 720px) {
-  body.onehand .thumbdock {
-    position: fixed;
-    bottom: calc(80px + var(--partybar-h, 0px) + env(safe-area-inset-bottom));
-    z-index: 52;
+  /* karta wideo w wiadomości: nazwa u góry, film, przyciski w dolnym rzędzie */
+  body.onehand .vembed {
     display: flex;
     flex-direction: column;
-    gap: 10px;
   }
-  body.onehand--left .thumbdock {
-    left: 12px;
-    align-items: flex-start;
+  body.onehand .vembed__bar {
+    display: contents;
   }
-  body.onehand--right .thumbdock {
-    right: 12px;
-    align-items: flex-end;
+  body.onehand .vembed__label {
+    order: 0;
+    padding: 6px 10px;
+    font-size: 12px;
+    color: var(--text-muted);
   }
-  .thumbdock__toggle,
-  .thumbdock__btn {
-    display: grid;
-    place-items: center;
-    flex-shrink: 0;
-    border: 0;
-    border-radius: 50%;
-    color: var(--text-strong);
-    cursor: pointer;
-    box-shadow: 0 4px 14px var(--shadow);
-  }
-  .thumbdock__toggle {
-    width: 54px;
-    height: 54px;
-    background: var(--accent);
-    color: #fff;
-    font-size: 24px;
-  }
-  .thumbdock__btn {
-    width: 48px;
-    height: 48px;
-    background: var(--bg-panel);
-    font-size: 22px;
-  }
-  .thumbdock__menu {
-    display: none;
-    flex-direction: column;
-    gap: 10px;
-    animation: card-in 0.18s ease-out;
-  }
-  .thumbdock.is-open .thumbdock__menu {
-    display: flex;
-  }
-
-  /* wspólne oglądanie: pasek tuż nad polem wiadomości, pod kciukiem */
-  body.onehand .main__chat > .messages {
+  body.onehand .vembed__stage {
     order: 1;
   }
-  body.onehand .main__chat > .partybar {
+  body.onehand .vembed__actions {
     order: 2;
-    border-top: 1px solid var(--bg-tertiary);
-    border-bottom: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 6px 8px;
   }
-  body.onehand .main__chat > .composer {
-    order: 3;
-  }
-  body.onehand .partybar__actions .btn-primary,
-  body.onehand .partybar__actions .btn-secondary {
+  body.onehand .vembed__btn {
     min-height: 40px;
+    padding: 0 12px;
+  }
+  body.onehand .vembed__btn .icon {
+    width: 18px;
+    height: 18px;
+  }
+  body.onehand--left .vembed__actions,
+  body.onehand--left .miniplayer--onehand .miniplayer__btns {
+    justify-content: flex-start;
+  }
+  body.onehand--right .vembed__actions,
+  body.onehand--right .miniplayer--onehand .miniplayer__btns {
+    justify-content: flex-end;
   }
 
-  /* akcje wiadomości po stronie kciuka, na dole wiadomości */
-  body.onehand .msg__actions {
-    top: auto;
-    bottom: -14px;
-  }
-  body.onehand--left .msg__actions {
-    right: auto;
-    left: 64px;
-  }
-
-  /* okno odtwarzacza: obok dokowiska, przyciski w dolnym rzędzie */
-  body.onehand--left .miniplayer:not(.miniplayer--cinema) {
-    left: 76px !important;
-    right: auto !important;
-    top: auto !important;
-    bottom: calc(76px + var(--partybar-h, 0px) + env(safe-area-inset-bottom)) !important;
-    width: min(var(--mp-w), calc(100vw - 86px));
-  }
-  body.onehand--right .miniplayer:not(.miniplayer--cinema) {
-    right: 76px !important;
-    left: auto !important;
-    top: auto !important;
-    bottom: calc(76px + var(--partybar-h, 0px) + env(safe-area-inset-bottom)) !important;
-    width: min(var(--mp-w), calc(100vw - 86px));
-  }
+  /* okno odtwarzacza: tytuł u góry, film, a przyciski w dolnym rzędzie po stronie kciuka */
   .miniplayer--onehand {
     display: flex;
     flex-direction: column;
@@ -4394,33 +4341,19 @@ body.media-hidden .filecard {
   }
   .miniplayer--onehand .miniplayer__btns {
     order: 4;
-    flex-wrap: nowrap;
-    justify-content: space-between;
-    gap: 2px;
+    flex-wrap: wrap;
+    gap: 0;
     margin: 0;
     padding: 4px;
     background: var(--bg-tertiary);
   }
   .miniplayer--onehand .miniplayer__btn {
-    flex: 1;
-    width: auto;
-    min-width: 0;
-    height: 44px;
+    flex: 0 0 auto;
+    width: 34px;
+    height: 42px;
   }
   .miniplayer--onehand .miniplayer__btn .icon {
     width: 20px;
     height: 20px;
-  }
-  .miniplayer--onehand.miniplayer--s .miniplayer__btns {
-    flex-wrap: wrap;
-  }
-}
-
-@media (max-width: 720px) {
-  body.onehand--left .partybar {
-    padding-left: 76px;
-  }
-  body.onehand--right .partybar {
-    padding-right: 76px;
   }
 }

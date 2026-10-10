@@ -12,7 +12,7 @@
     href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Caveat:wght@600&family=Creepster&family=Fredoka:wght@600&family=Lobster&family=Orbitron:wght@700&family=Pacifico&family=Playfair+Display:wght@700&family=Press+Start+2P&family=Roboto+Mono:wght@600&family=Special+Elite&display=swap"
     rel="stylesheet"
   />
-  <link rel="stylesheet" href="style.css?v=20261010c" />
+  <link rel="stylesheet" href="style.css?v=20261010d" />
 </head>
 <body>
   <!-- Ekran logowania -->
@@ -390,11 +390,11 @@
                 <option value="steady">Stała, w kolorze serwisu</option>
                 <option value="off">Wyłączona</option>
               </select>
-              <label class="field-label" for="one-hand">Tryb jednej ręki (telefon)</label>
+              <label class="field-label" for="one-hand">Przyciski odtwarzaczy na dole (telefon)</label>
               <select id="one-hand" class="field">
-                <option value="off">Wyłączony</option>
-                <option value="left">Lewa ręka – przyciski przy lewym kciuku</option>
-                <option value="right">Prawa ręka – przyciski przy prawym kciuku</option>
+                <option value="off">Wyłączone – przyciski u góry</option>
+                <option value="left">Lewa ręka – przyciski na dole, po lewej</option>
+                <option value="right">Prawa ręka – przyciski na dole, po prawej</option>
               </select>
               <label class="field-label" for="party-emoji">Moje reakcje podczas seansu (do 8 emotek)</label>
               <input id="party-emoji" class="field" type="text" maxlength="40" autocomplete="off" />
@@ -518,7 +518,7 @@
   <div id="toasts" class="toasts" aria-live="assertive"></div>
 
   <script src="/socket.io/socket.io.js"></script>
-  <script src="icons.js?v=20261010c"></script>
-  <script src="script.js?v=20261010c"></script>
+  <script src="icons.js?v=20261010d"></script>
+  <script src="script.js?v=20261010d"></script>
 </body>
 </html>

@@ -95,7 +95,7 @@ if (profile.avatar && profile.avatar.startsWith('data:')) {
 }
 
 // Wersje do sprawdzenia, czy telefon pobrał nową stronę i czy serwer jest po wdrożeniu.
-const CLIENT_VERSION = '2026-10-10c';
+const CLIENT_VERSION = '2026-10-10d';
 let serverInfo = null;
 function renderVersionInfo() {
   const server = serverInfo ? `serwer: ${serverInfo.version}${serverInfo.party ? '' : ' (STARSZY – brak seansów, wdróż ponownie)'}` : 'serwer: sprawdzam…';
@@ -840,73 +840,18 @@ document.addEventListener('visibilitychange', () => {
 applyDiscreet();
 
 // ---------- Tryb jednej ręki (telefon) ----------
-// Lewa albo prawa ręka: przyciski z górnego paska trafiają do „dokowiska” przy dolnej krawędzi (tam sięga kciuk),
-// okno odtwarzacza ma przyciski na dole, a pasek wspólnego oglądania zjeżdża tuż nad pole wiadomości.
+// Lewa albo prawa ręka: przyciski w karcie wideo i w oknie odtwarzacza przechodzą do dolnego rzędu, po stronie kciuka.
+// Reszta aplikacji wygląda tak samo. Działa tylko na wąskich ekranach.
 const narrowScreen = window.matchMedia('(max-width: 720px)');
 const oneHandActive = () => settings.oneHand !== 'off' && narrowScreen.matches;
-let thumbDock = null;
-
-function buildThumbDock() {
-  const dock = el('div', 'thumbdock');
-  const menu = el('div', 'thumbdock__menu');
-  const mk = (icon, label, onClick) => {
-    const b = iconNode('button', 'thumbdock__btn', icon);
-    b.type = 'button';
-    b.title = label;
-    b.setAttribute('aria-label', label);
-    b.addEventListener('click', () => {
-      dock.classList.remove('is-open');
-      onClick();
-    });
-    return b;
-  };
-  menu.append(
-    mk('chevron-down', 'Przewiń na dół', () => messagesEl.scrollTo({ top: messagesEl.scrollHeight, behavior: 'smooth' })),
-    mk('play', 'Odtwórz ostatni film z kanału', () => {
-      const videos = channelVideos();
-      if (!videos.length) return toast('Na tym kanale nie ma jeszcze linków do filmów.', true);
-      openMiniPlayer(videos[videos.length - 1]);
-    }),
-    mk('gear', 'Ustawienia', () => $('settings-btn').click()),
-    mk('volume', 'Kanał głosowy', () => $('voice-btn').click()),
-    mk('users', 'Grupy', () => $('groups-btn').click()),
-    mk('chat', 'Zmień kanał', () => {
-      const select = $('channel-select');
-      if (select.showPicker) select.showPicker();
-      else select.focus();
-    })
-  );
-  const toggle = iconNode('button', 'thumbdock__toggle', 'list');
-  toggle.type = 'button';
-  toggle.title = 'Menu pod kciukiem';
-  toggle.setAttribute('aria-label', 'Menu pod kciukiem');
-  toggle.addEventListener('click', () => dock.classList.toggle('is-open'));
-  dock.append(menu, toggle);
-  document.addEventListener('pointerdown', (e) => {
-    if (!dock.contains(e.target)) dock.classList.remove('is-open');
-  });
-  return dock;
-}
 
 function applyOneHand() {
   document.body.classList.toggle('onehand', settings.oneHand !== 'off');
   document.body.classList.toggle('onehand--left', settings.oneHand === 'left');
   document.body.classList.toggle('onehand--right', settings.oneHand === 'right');
-  if (settings.oneHand !== 'off' && !thumbDock) {
-    thumbDock = buildThumbDock();
-    document.body.appendChild(thumbDock);
-  }
-  if (thumbDock) thumbDock.classList.remove('is-open');
 }
 narrowScreen.addEventListener('change', () => miniPlayer && miniPlayer._applyLayout?.());
 applyOneHand();
-// Pasek wspólnego oglądania stoi nad polem wiadomości, więc dokowisko i okno odtwarzacza podnoszą się o jego wysokość.
-if (window.ResizeObserver) {
-  new ResizeObserver(() => {
-    const bar = $('party-bar');
-    document.documentElement.style.setProperty('--partybar-h', bar.classList.contains('hidden') ? '0px' : `${bar.offsetHeight}px`);
-  }).observe($('party-bar'));
-}
 
 // ---------- Oglądajmy razem ----------
 // Serwer pilnuje stanu: publiczne zaproszenie dla kanału albo prywatny seans dla dwóch osób, lista uczestników,
@@ -1629,7 +1574,7 @@ function openMiniPlayer(video, opts = {}) {
   // Przeciąganie za pasek tytułu (mysz i dotyk); po puszczeniu okno przyciąga się do najbliższego rogu.
   // W trybie kinowym pasek obsługuje przesunięcie palcem w bok: następny / poprzedni film.
   bar.addEventListener('pointerdown', (e) => {
-    if (e.target.closest('button') || oneHandActive()) return; // w trybie jednej ręki okno stoi przy kciuku
+    if (e.target.closest('button')) return;
     if (box.classList.contains('miniplayer--cinema')) {
       const startX = e.clientX;
       const done = (ev) => {
@@ -4179,7 +4124,8 @@ $('party-glow').addEventListener('change', (e) => saveSetting('partyGlow', e.tar
 $('one-hand').addEventListener('change', (e) => {
   saveSetting('oneHand', e.target.value);
   applyOneHand();
-  if (e.target.value !== 'off') toast('Tryb jednej ręki działa na wąskich ekranach (telefon). Przyciski są przy dolnej krawędzi.', true);
+  if (miniPlayer && miniPlayer._applyLayout) miniPlayer._applyLayout(); // otwarte okno od razu zmienia układ
+  if (e.target.value !== 'off') toast('Przyciski odtwarzaczy są teraz na dole, po stronie kciuka (tylko na telefonie).', true);
 });
 $('party-emoji').addEventListener('change', (e) => {
   saveSetting('partyEmoji', e.target.value);
