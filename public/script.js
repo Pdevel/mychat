@@ -84,6 +84,7 @@ let settings = store.get('mychat.settings', {
   keepAwake: true, // nie wygaszaj ekranu, gdy gra film w odtwarzaczu
   discreet: false, // tryb dyskretny: neutralna karta, ukrywanie multimediów klawiszem H i przy zmianie karty
   partyEmoji: '🔥😍👏😂❤️😮', // własne reakcje na żywo (do 8)
+  oneHand: 'off', // tryb jednej ręki na telefonie: 'off' | 'left' | 'right'
 });
 // avatar = adres obrazu z serwera; avatarData = mała lokalna kopia (pozwala odtworzyć avatar po zresetowaniu serwera)
 let profile = store.get('mychat.profile', { nick: '', avatar: null, avatarData: null });
@@ -94,7 +95,7 @@ if (profile.avatar && profile.avatar.startsWith('data:')) {
 }
 
 // Wersje do sprawdzenia, czy telefon pobrał nową stronę i czy serwer jest po wdrożeniu.
-const CLIENT_VERSION = '2026-10-10b';
+const CLIENT_VERSION = '2026-10-10c';
 let serverInfo = null;
 function renderVersionInfo() {
   const server = serverInfo ? `serwer: ${serverInfo.version}${serverInfo.party ? '' : ' (STARSZY – brak seansów, wdróż ponownie)'}` : 'serwer: sprawdzam…';
@@ -314,6 +315,7 @@ function renderSettingsOptions() {
   $('screen-audio').value = settings.screenAudio;
   $('archive-toggle').checked = settings.archive;
   $('party-glow').value = settings.partyGlow;
+  $('one-hand').value = settings.oneHand;
   $('party-emoji').value = settings.partyEmoji;
   $('party-sounds-toggle').checked = settings.partySounds;
   $('party-voice-toggle').checked = settings.partyVoice;
@@ -837,6 +839,75 @@ document.addEventListener('visibilitychange', () => {
 });
 applyDiscreet();
 
+// ---------- Tryb jednej ręki (telefon) ----------
+// Lewa albo prawa ręka: przyciski z górnego paska trafiają do „dokowiska” przy dolnej krawędzi (tam sięga kciuk),
+// okno odtwarzacza ma przyciski na dole, a pasek wspólnego oglądania zjeżdża tuż nad pole wiadomości.
+const narrowScreen = window.matchMedia('(max-width: 720px)');
+const oneHandActive = () => settings.oneHand !== 'off' && narrowScreen.matches;
+let thumbDock = null;
+
+function buildThumbDock() {
+  const dock = el('div', 'thumbdock');
+  const menu = el('div', 'thumbdock__menu');
+  const mk = (icon, label, onClick) => {
+    const b = iconNode('button', 'thumbdock__btn', icon);
+    b.type = 'button';
+    b.title = label;
+    b.setAttribute('aria-label', label);
+    b.addEventListener('click', () => {
+      dock.classList.remove('is-open');
+      onClick();
+    });
+    return b;
+  };
+  menu.append(
+    mk('chevron-down', 'Przewiń na dół', () => messagesEl.scrollTo({ top: messagesEl.scrollHeight, behavior: 'smooth' })),
+    mk('play', 'Odtwórz ostatni film z kanału', () => {
+      const videos = channelVideos();
+      if (!videos.length) return toast('Na tym kanale nie ma jeszcze linków do filmów.', true);
+      openMiniPlayer(videos[videos.length - 1]);
+    }),
+    mk('gear', 'Ustawienia', () => $('settings-btn').click()),
+    mk('volume', 'Kanał głosowy', () => $('voice-btn').click()),
+    mk('users', 'Grupy', () => $('groups-btn').click()),
+    mk('chat', 'Zmień kanał', () => {
+      const select = $('channel-select');
+      if (select.showPicker) select.showPicker();
+      else select.focus();
+    })
+  );
+  const toggle = iconNode('button', 'thumbdock__toggle', 'list');
+  toggle.type = 'button';
+  toggle.title = 'Menu pod kciukiem';
+  toggle.setAttribute('aria-label', 'Menu pod kciukiem');
+  toggle.addEventListener('click', () => dock.classList.toggle('is-open'));
+  dock.append(menu, toggle);
+  document.addEventListener('pointerdown', (e) => {
+    if (!dock.contains(e.target)) dock.classList.remove('is-open');
+  });
+  return dock;
+}
+
+function applyOneHand() {
+  document.body.classList.toggle('onehand', settings.oneHand !== 'off');
+  document.body.classList.toggle('onehand--left', settings.oneHand === 'left');
+  document.body.classList.toggle('onehand--right', settings.oneHand === 'right');
+  if (settings.oneHand !== 'off' && !thumbDock) {
+    thumbDock = buildThumbDock();
+    document.body.appendChild(thumbDock);
+  }
+  if (thumbDock) thumbDock.classList.remove('is-open');
+}
+narrowScreen.addEventListener('change', () => miniPlayer && miniPlayer._applyLayout?.());
+applyOneHand();
+// Pasek wspólnego oglądania stoi nad polem wiadomości, więc dokowisko i okno odtwarzacza podnoszą się o jego wysokość.
+if (window.ResizeObserver) {
+  new ResizeObserver(() => {
+    const bar = $('party-bar');
+    document.documentElement.style.setProperty('--partybar-h', bar.classList.contains('hidden') ? '0px' : `${bar.offsetHeight}px`);
+  }).observe($('party-bar'));
+}
+
 // ---------- Oglądajmy razem ----------
 // Serwer pilnuje stanu: publiczne zaproszenie dla kanału albo prywatny seans dla dwóch osób, lista uczestników,
 // kolejka z głosowaniem, odliczanie 3-2-1 i reakcje na żywo. Klient dostaje „swój” widok seansu na kanale.
@@ -1240,8 +1311,10 @@ function openMiniPlayer(video, opts = {}) {
     box.classList.remove('miniplayer--s', 'miniplayer--m', 'miniplayer--l');
     box.classList.add(`miniplayer--${playerPrefs.size}`);
     for (const c of ['tl', 'tr', 'bl', 'br']) box.classList.toggle(`miniplayer--${c}`, c === playerPrefs.corner);
+    box.classList.toggle('miniplayer--onehand', oneHandActive()); // przyciski na dole, okno przy kciuku
   };
   applyLayout();
+  box._applyLayout = applyLayout;
 
   const bar = el('div', 'miniplayer__bar');
   const title = iconNode('span', 'miniplayer__title', 'play', '');
@@ -1269,7 +1342,9 @@ function openMiniPlayer(video, opts = {}) {
   const collapse = mkBtn('minus', 'Zwiń / rozwiń', () => box.classList.toggle('miniplayer--collapsed'));
   const close = mkBtn('close', 'Zamknij odtwarzacz', closeMiniPlayer);
   if (partyMode) prev.hidden = next.hidden = source.hidden = true;
-  bar.append(title, prev, next, source, fav, marksBtn, size, cinema, collapse, close);
+  const btns = el('div', 'miniplayer__btns');
+  btns.append(prev, next, source, fav, marksBtn, size, cinema, collapse, close);
+  bar.append(title, btns);
 
   const body = el('div', 'miniplayer__body');
   const feed = el('div', 'miniplayer__feed');
@@ -1554,7 +1629,7 @@ function openMiniPlayer(video, opts = {}) {
   // Przeciąganie za pasek tytułu (mysz i dotyk); po puszczeniu okno przyciąga się do najbliższego rogu.
   // W trybie kinowym pasek obsługuje przesunięcie palcem w bok: następny / poprzedni film.
   bar.addEventListener('pointerdown', (e) => {
-    if (e.target.closest('button')) return;
+    if (e.target.closest('button') || oneHandActive()) return; // w trybie jednej ręki okno stoi przy kciuku
     if (box.classList.contains('miniplayer--cinema')) {
       const startX = e.clientX;
       const done = (ev) => {
@@ -4101,6 +4176,11 @@ const saveSetting = (key, value) => {
   store.set('mychat.settings', settings);
 };
 $('party-glow').addEventListener('change', (e) => saveSetting('partyGlow', e.target.value));
+$('one-hand').addEventListener('change', (e) => {
+  saveSetting('oneHand', e.target.value);
+  applyOneHand();
+  if (e.target.value !== 'off') toast('Tryb jednej ręki działa na wąskich ekranach (telefon). Przyciski są przy dolnej krawędzi.', true);
+});
 $('party-emoji').addEventListener('change', (e) => {
   saveSetting('partyEmoji', e.target.value);
   e.target.value = reactionSet().join(''); // pokazujemy to, co faktycznie zostanie użyte

@@ -4263,3 +4263,164 @@ body.media-hidden .filecard {
 .media-reveal:hover {
   opacity: 0.9;
 }
+
+/* ============ Przyciski odtwarzacza w kontenerze ============ */
+.miniplayer__btns {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-left: auto;
+}
+
+/* ============ Tryb jednej ręki (telefon) ============ */
+.thumbdock {
+  display: none;
+}
+@media (max-width: 720px) {
+  body.onehand .thumbdock {
+    position: fixed;
+    bottom: calc(80px + var(--partybar-h, 0px) + env(safe-area-inset-bottom));
+    z-index: 52;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  body.onehand--left .thumbdock {
+    left: 12px;
+    align-items: flex-start;
+  }
+  body.onehand--right .thumbdock {
+    right: 12px;
+    align-items: flex-end;
+  }
+  .thumbdock__toggle,
+  .thumbdock__btn {
+    display: grid;
+    place-items: center;
+    flex-shrink: 0;
+    border: 0;
+    border-radius: 50%;
+    color: var(--text-strong);
+    cursor: pointer;
+    box-shadow: 0 4px 14px var(--shadow);
+  }
+  .thumbdock__toggle {
+    width: 54px;
+    height: 54px;
+    background: var(--accent);
+    color: #fff;
+    font-size: 24px;
+  }
+  .thumbdock__btn {
+    width: 48px;
+    height: 48px;
+    background: var(--bg-panel);
+    font-size: 22px;
+  }
+  .thumbdock__menu {
+    display: none;
+    flex-direction: column;
+    gap: 10px;
+    animation: card-in 0.18s ease-out;
+  }
+  .thumbdock.is-open .thumbdock__menu {
+    display: flex;
+  }
+
+  /* wspólne oglądanie: pasek tuż nad polem wiadomości, pod kciukiem */
+  body.onehand .main__chat > .messages {
+    order: 1;
+  }
+  body.onehand .main__chat > .partybar {
+    order: 2;
+    border-top: 1px solid var(--bg-tertiary);
+    border-bottom: 0;
+  }
+  body.onehand .main__chat > .composer {
+    order: 3;
+  }
+  body.onehand .partybar__actions .btn-primary,
+  body.onehand .partybar__actions .btn-secondary {
+    min-height: 40px;
+  }
+
+  /* akcje wiadomości po stronie kciuka, na dole wiadomości */
+  body.onehand .msg__actions {
+    top: auto;
+    bottom: -14px;
+  }
+  body.onehand--left .msg__actions {
+    right: auto;
+    left: 64px;
+  }
+
+  /* okno odtwarzacza: obok dokowiska, przyciski w dolnym rzędzie */
+  body.onehand--left .miniplayer:not(.miniplayer--cinema) {
+    left: 76px !important;
+    right: auto !important;
+    top: auto !important;
+    bottom: calc(76px + var(--partybar-h, 0px) + env(safe-area-inset-bottom)) !important;
+    width: min(var(--mp-w), calc(100vw - 86px));
+  }
+  body.onehand--right .miniplayer:not(.miniplayer--cinema) {
+    right: 76px !important;
+    left: auto !important;
+    top: auto !important;
+    bottom: calc(76px + var(--partybar-h, 0px) + env(safe-area-inset-bottom)) !important;
+    width: min(var(--mp-w), calc(100vw - 86px));
+  }
+  .miniplayer--onehand {
+    display: flex;
+    flex-direction: column;
+  }
+  .miniplayer--onehand .miniplayer__bar {
+    display: contents;
+  }
+  .miniplayer--onehand .miniplayer__title {
+    order: 0;
+    flex: 0 0 auto;
+    padding: 6px 10px;
+    cursor: grab;
+    touch-action: none;
+  }
+  .miniplayer--onehand .miniplayer__body {
+    order: 1;
+  }
+  .miniplayer--onehand .miniplayer__reactions {
+    order: 2;
+  }
+  .miniplayer--onehand .miniplayer__tools {
+    order: 3;
+  }
+  .miniplayer--onehand .miniplayer__btns {
+    order: 4;
+    flex-wrap: nowrap;
+    justify-content: space-between;
+    gap: 2px;
+    margin: 0;
+    padding: 4px;
+    background: var(--bg-tertiary);
+  }
+  .miniplayer--onehand .miniplayer__btn {
+    flex: 1;
+    width: auto;
+    min-width: 0;
+    height: 44px;
+  }
+  .miniplayer--onehand .miniplayer__btn .icon {
+    width: 20px;
+    height: 20px;
+  }
+  .miniplayer--onehand.miniplayer--s .miniplayer__btns {
+    flex-wrap: wrap;
+  }
+}
+
+@media (max-width: 720px) {
+  body.onehand--left .partybar {
+    padding-left: 76px;
+  }
+  body.onehand--right .partybar {
+    padding-right: 76px;
+  }
+}
