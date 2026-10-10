@@ -622,6 +622,73 @@ function videoSrcAt(video, sec) {
   }
 }
 
+// ---------- Streak ----------
+// Passa dni, w których obejrzano film do końca. Liczy serwer; klient podaje swoją lokalną datę.
+const localDay = (d = new Date()) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+// Passa jest „żywa”, jeśli ostatni zaliczony dzień to dziś albo wczoraj (czas oglądającego).
+function streakCount(s) {
+  if (!s || !s.lastDay) return 0;
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+  return s.lastDay === localDay() || s.lastDay === localDay(yesterday) ? s.count : 0;
+}
+
+function reportWatched() {
+  const s = myProfile.streak;
+  if (s && s.lastDay === localDay()) return toast('Dzisiejszy dzień jest już zaliczony.', true);
+  socket.timeout(8000).emit('streak:complete', { day: localDay() }, (err, res) => {
+    if (err || !res || !res.ok) return toast((res && res.error) || 'Nie udało się zapisać streaka.');
+    myProfile = res.profile;
+    toast(`Streak: ${streakCount(myProfile.streak)} dni z rzędu!`, true);
+  });
+}
+
+// Odtwarzacz Pornhuba w ramce nie zdradza stanu odtwarzania, więc mierzymy czas, który film faktycznie był otwarty:
+// licznik tyka tylko, gdy karta jest widoczna, a odtwarzacz rozwinięty i uruchomiony. Dzień zaliczysz dopiero po
+// upływie podanej przez Ciebie długości filmu (95%, min. 1 minuta).
+const watchState = new Map(); // adres filmu -> { sec: obejrzane sekundy, need: wymagane sekundy (0 = jeszcze nie podano) }
+const watchSources = new Set();
+const watchOf = (video) => {
+  let s = watchState.get(video.src);
+  if (!s) watchState.set(video.src, (s = { sec: 0, need: 0 }));
+  return s;
+};
+const watchTitle = (video) => {
+  const s = watchOf(video);
+  return s.need ? `Zalicz do streaka – obejrzano ${formatClock(s.sec)} z ${formatClock(s.need)}` : 'Zalicz do streaka – obejrzałem do końca';
+};
+
+setInterval(() => {
+  if (document.hidden) return;
+  for (const src of [...watchSources]) {
+    if (src.node.isConnected) src.seen = true;
+    else if (src.seen) watchSources.delete(src);
+    if (!src.node.isConnected || !src.active()) continue;
+    watchOf(src.video()).sec += 1;
+    src.btn.title = watchTitle(src.video());
+  }
+}, 1000);
+
+function trackWatch(node, btn, video, active) {
+  watchSources.add({ node, btn, video, active, seen: false });
+}
+
+function completeWatch(video) {
+  const s = watchOf(video);
+  if (!s.need) {
+    const answer = window.prompt('Ile trwa ten film? Np. 12:30 (liczymy czas, który faktycznie oglądasz).');
+    if (answer === null) return;
+    const len = parseClock(answer);
+    if (len === null || len < 60 || len > 4 * 3600) return toast('Podaj długość od 1:00 do 4:00:00.');
+    s.need = Math.round(len * 0.95);
+  }
+  if (s.sec < s.need) return toast(`Jeszcze ${formatClock(s.need - s.sec)} oglądania, zanim zaliczysz.`);
+  watchState.delete(video.src);
+  reportWatched();
+}
+
 // Element odtwarzacza: iframe (YouTube/Vimeo) albo <video> z własnymi kontrolkami.
 // `ambient`: próbujemy wczytać plik z CORS, żeby dało się odczytać kolory obrazu do poświaty (bez CORS wracamy do zwykłego).
 function makePlayerNode(video, className, { startSec = 0, ambient = false } = {}) {
@@ -695,7 +762,19 @@ function makeVideoEmbed(video, afterChange) {
   openBtn.target = '_blank';
   openBtn.rel = 'noopener noreferrer';
   openBtn.title = 'Otwórz w nowej karcie';
-  actions.append(stopBtn, favBtn, partyBtn, popBtn, openBtn);
+  // Odtwarzacz w ramce nie mówi, kiedy film się skończył – streak (tylko Pornhub) zaliczasz tu ręcznie.
+  const doneBtn = iconNode('button', 'vembed__btn hidden', 'sparkle');
+  doneBtn.type = 'button';
+  doneBtn.title = 'Obejrzałem do końca – zalicz do streaka';
+  doneBtn.setAttribute('aria-label', doneBtn.title);
+  doneBtn.addEventListener('click', () => completeWatch(cur));
+  trackWatch(
+    card,
+    doneBtn,
+    () => cur,
+    () => !doneBtn.classList.contains('hidden') && card.offsetParent !== null && !document.body.classList.contains('media-hidden')
+  );
+  actions.append(doneBtn, stopBtn, favBtn, partyBtn, popBtn, openBtn);
   header.appendChild(actions);
 
   // Klasy karty zależą od serwisu i od tego, czy to short (układ pionowy).
@@ -708,6 +787,7 @@ function makeVideoEmbed(video, afterChange) {
   const showStage = (playing) => {
     stage.replaceChildren();
     stopBtn.classList.toggle('hidden', !playing);
+    doneBtn.classList.toggle('hidden', !playing || cur.provider !== 'pornhub');
     if (playing) {
       stage.appendChild(makePlayerNode(cur, 'vembed__player'));
       closeMiniPlayer();
@@ -1280,6 +1360,7 @@ function openMiniPlayer(video, opts = {}) {
   const prev = mkBtn('skip-back', 'Poprzedni film (P)', () => go(-1));
   const next = mkBtn('skip-next', 'Następny film (N)', () => go(1));
   const source = mkBtn('list', 'Lista: filmy z kanału / ulubione', () => switchSource());
+  const watched = mkBtn('sparkle', 'Obejrzałem do końca – zalicz do streaka', () => completeWatch(list[index]));
   const fav = mkBtn('star', 'Dodaj do ulubionych (F)', () => {});
   bindFavButton(fav, () => list[index]);
   const marksBtn = mkBtn('bookmark', 'Zapamiętane momenty (M)', () => toggleMarks());
@@ -1293,8 +1374,18 @@ function openMiniPlayer(video, opts = {}) {
   const close = mkBtn('close', 'Zamknij odtwarzacz', closeMiniPlayer);
   if (partyMode) prev.hidden = next.hidden = source.hidden = true;
   const btns = el('div', 'miniplayer__btns');
-  btns.append(prev, next, source, fav, marksBtn, size, cinema, collapse, close);
+  btns.append(prev, next, source, watched, fav, marksBtn, size, cinema, collapse, close);
   bar.append(title, btns);
+  trackWatch(
+    box,
+    watched,
+    () => list[index],
+    () =>
+      !watched.hidden &&
+      !box.classList.contains('miniplayer--collapsed') &&
+      !box.classList.contains('miniplayer--waiting') &&
+      !document.body.classList.contains('media-hidden')
+  );
 
   const body = el('div', 'miniplayer__body');
   const feed = el('div', 'miniplayer__feed');
@@ -1401,6 +1492,7 @@ function openMiniPlayer(video, opts = {}) {
   function show() {
     const v = list[index];
     box.dataset.provider = v.provider;
+    watched.hidden = v.provider !== 'pornhub'; // streak dotyczy tylko filmów z Pornhuba
     marksPanel.classList.add('hidden');
     const node = live ? makePlayerNode(v, 'miniplayer__media', { startSec, ambient: settings.partyGlow === 'image' }) : waitPanel();
     body.replaceChildren(node, feed, marksPanel);
@@ -2725,6 +2817,15 @@ function renderProfileCard(root, p, { isMe = false, onEdit = null } = {}) {
     ? new Date(p.createdAt).toLocaleDateString('pl-PL', { day: 'numeric', month: 'long', year: 'numeric' })
     : '—';
   box.appendChild(el('div', 'pcard__text', since));
+  const days = streakCount(p.streak);
+  box.appendChild(el('div', 'pcard__label', 'STREAK'));
+  box.appendChild(
+    el(
+      'div',
+      'pcard__text' + (days ? '' : ' pcard__muted'),
+      days ? `🔥 ${days} ${days === 1 ? 'dzień' : 'dni'} z rzędu · rekord ${p.streak.best}` : `Brak passy${p.streak && p.streak.best ? ` · rekord ${p.streak.best}` : ''}`
+    )
+  );
   body.appendChild(box);
 
   if (isMe && onEdit) {
@@ -2806,6 +2907,7 @@ function updateProfilePreview() {
     createdAt: myCreatedAt,
     online: true,
     ...draft,
+    streak: myProfile.streak,
     banner: draft.bannerPreview || draft.banner,
   });
 }
@@ -6273,6 +6375,7 @@ socket.on('group:channel-removed', async ({ groupId, channel }) => {
 });
 
 socket.on('group:denied', ({ error }) => toast(error || 'Brak uprawnień.'));
+socket.on('notice', ({ error }) => toast(error || 'Coś poszło nie tak.'));
 
 socket.on('typing', ({ nick, isTyping, channel }) => {
   if (channel && channel !== currentChannel) return;

@@ -477,7 +477,42 @@ function profileOf(account) {
     banner: mediaUrl(account, 'banner'),
     nickColor: account.nickColor || null,
     nickFont: account.nickFont || null,
+    streak: {
+      count: (account.streak && account.streak.count) || 0,
+      best: (account.streak && account.streak.best) || 0,
+      lastDay: (account.streak && account.streak.lastDay) || null,
+    },
   };
+}
+
+// Streak: kolejne dni, w których obejrzano film do końca. Dzień (RRRR-MM-DD) podaje klient w swojej strefie czasowej;
+// serwer przyjmuje tylko dni bliskie jego własnej dacie (±1), żeby nie dało się wpisać dowolnej daty.
+const DAY_MS = 24 * 60 * 60 * 1000;
+const dayNumber = (day) => Date.parse(`${day}T00:00:00Z`) / DAY_MS;
+
+function registerWatchedDay(account, day) {
+  if (typeof day !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(day)) return null;
+  const n = dayNumber(day);
+  if (!Number.isFinite(n) || Math.abs(n - Math.floor(Date.now() / DAY_MS)) > 1) return null;
+  const s = account.streak || { count: 0, best: 0, lastDay: null };
+  let increased = false;
+  if (!s.lastDay) {
+    s.count = 1;
+    increased = true;
+  } else {
+    const gap = n - dayNumber(s.lastDay);
+    if (gap === 1) {
+      s.count += 1;
+      increased = true;
+    } else if (gap > 1) {
+      s.count = 1;
+      increased = true;
+    }
+  }
+  if (increased) s.lastDay = day;
+  s.best = Math.max(s.best || 0, s.count);
+  account.streak = s;
+  return { increased };
 }
 
 // Waliduje pola profilu z `payload` (tylko te, które przyszły). Zwraca poprawne pola w `next`
@@ -948,6 +983,78 @@ async function emitMessage(socket, nick, extra) {
   }
 }
 
+// ---------- Komenda !rule34 <tag> ----------
+// Losowy obrazek z publicznych galerii typu Moebooru (yande.re, a gdy nie odpowiada – konachan.com). Nie wymagają
+// klucza API. Tagi pisze się jak w tych galeriach, np. makima_(chainsaw_man); można dodać np. rating:explicit.
+const R34_SOURCES = ['https://yande.re', 'https://konachan.com'];
+const R34_HOSTS = /(^|\.)(yande\.re|konachan\.com)$/;
+// Treści związane z nieletnimi są zablokowane na stałe: odrzucamy takie zapytania, dokładamy wykluczenia do
+// zapytania i odfiltrowujemy wyniki z takimi tagami.
+const R34_BLOCKED = new Set([
+  'loli', 'lolicon', 'shota', 'shotacon', 'child', 'children', 'kid', 'kids', 'underage', 'minor', 'toddler',
+  'baby', 'infant', 'preteen', 'young', 'cub', 'toddlercon', 'childlike',
+]);
+const R34_EXCLUDE = '-loli -shota'; // galerie pozwalają na 6 tagów w zapytaniu: 3 użytkownika + order:random + 2 wykluczenia
+const R34_IMAGE = /\.(jpe?g|png|gif|webp)$/i;
+
+const userError = (message) => Object.assign(new Error(message), { userMessage: message });
+const hasBlockedTag = (text) => String(text).toLowerCase().split(/[^a-z0-9]+/).some((t) => R34_BLOCKED.has(t));
+
+function pickUsablePost(posts, base) {
+  const usable = [];
+  for (const p of posts) {
+    if (!p || typeof p.file_url !== 'string' || hasBlockedTag(p.tags)) continue;
+    try {
+      // Duże oryginały zastępujemy mniejszą wersją, żeby czat się nie zamulał.
+      const src = p.file_size > 3e6 && typeof p.sample_url === 'string' && p.sample_url ? p.sample_url : p.file_url;
+      const u = new URL(src, base);
+      if (u.protocol !== 'https:' || !R34_HOSTS.test(u.hostname) || !R34_IMAGE.test(u.pathname)) continue;
+      usable.push(u.href);
+    } catch {
+      /* pomijamy zepsuty adres */
+    }
+  }
+  return usable.length ? usable[Math.floor(Math.random() * usable.length)] : null;
+}
+
+async function fetchRule34(rawTags) {
+  const tags = String(rawTags).trim().split(/\s+/).filter(Boolean).slice(0, 3);
+  if (!tags.length) throw userError('Użycie: !rule34 nazwa_tagu  (np. !rule34 makima_(chainsaw_man))');
+  if (tags.some((t) => t.length > 60 || !/^-?[A-Za-z0-9_()'.:!-]+$/.test(t))) throw userError('Nieprawidłowy tag.');
+  if (hasBlockedTag(tags.join(' '))) throw userError('Ten tag jest zablokowany.');
+
+  const query = `${tags.join(' ')} order:random ${R34_EXCLUDE}`;
+  let answered = false;
+  for (const base of R34_SOURCES) {
+    try {
+      const res = await fetch(`${base}/post.json?${new URLSearchParams({ tags: query, limit: '40' })}`, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; MyChatBot/1.0)', Accept: 'application/json' },
+        signal: AbortSignal.timeout(8000),
+      });
+      if (!res.ok) throw new Error(`${base} ${res.status}`);
+      const posts = await res.json();
+      if (!Array.isArray(posts)) throw new Error(`${base}: nieoczekiwana odpowiedź`);
+      answered = true;
+      const url = pickUsablePost(posts, base);
+      if (url) return { url, tags: tags.join(' ') };
+    } catch (err) {
+      console.error('Błąd !rule34:', err.message);
+    }
+  }
+  throw userError(answered ? 'Nic nie znaleziono dla tego tagu.' : 'Galeria chwilowo nie odpowiada. Spróbuj za chwilę.');
+}
+
+async function handleRule34(socket, user, args) {
+  if (rateLimited(socket, 'r34', 3, 30000)) return socket.emit('notice', { error: 'Zwolnij trochę z !rule34.' });
+  try {
+    const post = await fetchRule34(args);
+    await emitMessage(socket, user.nick, { kind: 'gif', url: post.url });
+  } catch (err) {
+    if (!err.userMessage) console.error('Błąd !rule34:', err.message);
+    socket.emit('notice', { error: err.userMessage || 'Nie udało się pobrać wyniku.' });
+  }
+}
+
 io.on('connection', (socket) => {
   socket.on('join', async (payload, ack) => {
     const reply = typeof ack === 'function' ? ack : () => {};
@@ -1137,6 +1244,19 @@ io.on('connection', (socket) => {
     await persistAccount(account);
     reply({ ok: true, profile: profileOf(account) });
     broadcastUsers(); // zmienił się status widoczny na liście osób
+  });
+
+  // Obejrzano film do końca – zalicza dzień do streaka (jeden dzień liczy się raz).
+  socket.on('streak:complete', async (payload, ack) => {
+    const reply = typeof ack === 'function' ? ack : () => {};
+    const user = users.get(socket.id);
+    const account = user && accountsById.get(user.accountId);
+    if (!account) return reply({ ok: false, error: 'Najpierw dołącz do czatu.' });
+    if (rateLimited(socket, 'streak', 10, 60000)) return reply({ ok: false, error: 'Zwolnij trochę.' });
+    const result = registerWatchedDay(account, payload && payload.day);
+    if (!result) return reply({ ok: false, error: 'Nieprawidłowy dzień.' });
+    if (result.increased) await persistAccount(account);
+    reply({ ok: true, increased: result.increased, profile: profileOf(account) });
   });
 
   // Odtworzenie profilu z lokalnej kopii zapasowej urządzenia. Dozwolone raz, tuż po założeniu konta –
@@ -1789,6 +1909,9 @@ io.on('connection', (socket) => {
     if (!user || !text) return;
     if (!mayPost(socket)) return socket.emit('group:denied', { error: NO_POST_ERROR });
     if (rateLimited(socket, 'msg', 10, 10000)) return;
+
+    const command = text.match(/^!rule34(?:\s+(.*))?$/i);
+    if (command) return handleRule34(socket, user, command[1] || '');
 
     const extra = { kind: 'text', text };
     const group = groupOfChannel(socket.data.channel);
