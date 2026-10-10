@@ -6277,6 +6277,7 @@ socket.on('group:channel-removed', async ({ groupId, channel }) => {
 });
 
 socket.on('group:denied', ({ error }) => toast(error || 'Brak uprawnień.'));
+socket.on('notice', ({ error }) => toast(error || 'Coś poszło nie tak.'));
 
 socket.on('typing', ({ nick, isTyping, channel }) => {
   if (channel && channel !== currentChannel) return;
