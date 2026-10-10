@@ -4375,3 +4375,98 @@ body.media-hidden .filecard {
 .miniplayer--short.miniplayer--cinema {
   width: min(440px, 92vw, calc((100vh - 230px) * 9 / 16)) !important;
 }
+
+/* ============ Ulubione GIFy ============ */
+.gifmsg {
+  position: relative;
+  display: block;
+  width: fit-content;
+  max-width: min(400px, 100%);
+}
+.gifmsg .media {
+  max-width: 100%;
+}
+.giffav {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.62);
+  color: #fff;
+  font-size: 16px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, transform 0.15s, background 0.15s;
+}
+.gifmsg:hover .giffav,
+.gif-cell:hover .giffav,
+.giffav:focus-visible,
+.giffav.is-fav {
+  opacity: 1;
+}
+.giffav:hover {
+  background: rgba(0, 0, 0, 0.85);
+  transform: scale(1.1);
+}
+.giffav.is-fav .icon {
+  fill: currentColor;
+  color: #f0b232;
+}
+@media (hover: none) {
+  .giffav {
+    opacity: 0.9;
+  }
+}
+.gif-tabs {
+  display: flex;
+  gap: 4px;
+}
+.gif-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 12px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.gif-tab:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+.gif-tab.is-active {
+  background: var(--bg-active);
+  color: var(--text-strong);
+}
+.gif-cell {
+  position: relative;
+  min-width: 0;
+}
+.gif-cell .giffav {
+  width: 24px;
+  height: 24px;
+  top: 4px;
+  right: 4px;
+  font-size: 13px;
+}
+.gif-grid--favs {
+  grid-template-columns: repeat(4, 1fr);
+}
+.gif-grid--favs .gif-cell img {
+  height: 68px;
+}
+.gif-cell--broken img {
+  opacity: 0.35;
+}
