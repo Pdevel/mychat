@@ -553,6 +553,12 @@ function parseVideoLink(href) {
     const src = `https://player.vimeo.com/video/${m[1]}?autoplay=1${hash && /^[0-9a-f]+$/.test(hash) ? `&h=${hash}` : ''}`;
     return { kind: 'iframe', label: 'Vimeo', src, thumb: '', href };
   }
+  if (host === 'pornhub.com' || host.endsWith('.pornhub.com')) {
+    // Strona wideo (view_video.php?viewkey=…) nie wchodzi w ramkę – serwis ma osobny adres do osadzania.
+    const key = u.searchParams.get('viewkey') || (u.pathname.match(/^\/embed\/([^/?#]+)/) || [])[1];
+    if (!key || !/^[A-Za-z0-9]{6,24}$/.test(key)) return null;
+    return { kind: 'iframe', label: 'Pornhub', src: `https://www.pornhub.com/embed/${key}`, thumb: '', href };
+  }
   if (DIRECT_VIDEO.test(u.pathname)) {
     return { kind: 'video', label: u.hostname, src: u.href, thumb: '', href };
   }
