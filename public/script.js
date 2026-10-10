@@ -95,7 +95,7 @@ if (profile.avatar && profile.avatar.startsWith('data:')) {
 }
 
 // Wersje do sprawdzenia, czy telefon pobrał nową stronę i czy serwer jest po wdrożeniu.
-const CLIENT_VERSION = '2026-10-10e';
+const CLIENT_VERSION = '2026-10-10f';
 let serverInfo = null;
 function renderVersionInfo() {
   const server = serverInfo ? `serwer: ${serverInfo.version}${serverInfo.party ? '' : ' (STARSZY – brak seansów, wdróż ponownie)'}` : 'serwer: sprawdzam…';
@@ -582,10 +582,12 @@ function parseVideoLink(href) {
     if (!id || !YT_ID.test(id)) return null;
     const start = parseInt(u.searchParams.get('t') || u.searchParams.get('start') || '', 10);
     const query = `autoplay=1&rel=0${start > 0 ? `&start=${start}` : ''}`;
+    const short = /^\/shorts\//.test(u.pathname);
     return {
       kind: 'iframe',
       provider: 'youtube',
-      label: 'YouTube',
+      short,
+      label: short ? 'YouTube Shorts' : 'YouTube',
       src: `https://www.youtube-nocookie.com/embed/${id}?${query}`,
       thumb: `https://i.ytimg.com/vi/${id}/hqdefault.jpg`,
       href,
@@ -602,7 +604,8 @@ function parseVideoLink(href) {
     // Strona wideo (view_video.php?viewkey=…) nie wchodzi w ramkę – serwis ma osobny adres do osadzania.
     const key = u.searchParams.get('viewkey') || (u.pathname.match(/^\/(?:embed|shorties)\/([^/?#]+)/) || [])[1];
     if (!key || !/^[A-Za-z0-9]{6,24}$/.test(key)) return null;
-    return { kind: 'iframe', provider: 'pornhub', label: 'Pornhub', src: `https://www.pornhub.com/embed/${key}`, thumb: '', href };
+    const short = /^\/shorties\//.test(u.pathname); // krótkie, pionowe filmy
+    return { kind: 'iframe', provider: 'pornhub', short, label: short ? 'Pornhub Shorts' : 'Pornhub', src: `https://www.pornhub.com/embed/${key}`, thumb: '', href };
   }
   if (DIRECT_VIDEO.test(u.pathname)) {
     return { kind: 'video', provider: 'file', label: u.hostname, src: u.href, thumb: '', href };
@@ -665,10 +668,14 @@ function makePlayerNode(video, className, { startSec = 0, ambient = false } = {}
 
 // Karta pod wiadomością: miniatura + „Odtwórz tutaj” (w wiadomości) albo „Mały odtwarzacz” (pływające okienko).
 function makeVideoEmbed(video, afterChange) {
-  const card = el('div', `vembed vembed--${video.provider}`);
+  let cur = video; // shorty można podmieniać na kolejne losowe, więc karta trzyma aktualny film
+  const history = [];
+  const card = el('div', 'vembed');
   const stage = el('div', 'vembed__stage');
   const header = el('div', 'vembed__bar');
-  header.appendChild(iconNode('span', 'vembed__label', 'play', video.label));
+  const label = iconNode('span', 'vembed__label', 'play', '');
+  const labelText = label.appendChild(document.createTextNode(''));
+  header.appendChild(label);
   const actions = el('div', 'vembed__actions');
 
   const popBtn = iconNode('button', 'vembed__btn', 'popout', 'Mały odtwarzacz');
@@ -676,16 +683,21 @@ function makeVideoEmbed(video, afterChange) {
   popBtn.title = 'Oglądaj w pływającym oknie – zostaje przy zmianie kanału';
   popBtn.addEventListener('click', () => {
     showStage(false);
-    openMiniPlayer(video);
+    openMiniPlayer(cur);
   });
   const partyBtn = iconNode('button', 'vembed__btn', 'users');
   partyBtn.type = 'button';
   partyBtn.title = 'Oglądajmy razem – zaproś kanał, wspólny start 3-2-1';
   partyBtn.setAttribute('aria-label', partyBtn.title);
-  partyBtn.addEventListener('click', () => openPartyChooser(partyBtn, video));
+  partyBtn.addEventListener('click', () => openPartyChooser(partyBtn, cur));
   const favBtn = iconNode('button', 'vembed__btn', 'star');
   favBtn.type = 'button';
-  bindFavButton(favBtn, () => video);
+  bindFavButton(favBtn, () => cur);
+  const shuffleBtn = iconNode('button', 'vembed__btn', 'shuffle');
+  shuffleBtn.type = 'button';
+  shuffleBtn.title = 'Losowy short (albo przewiń w dół po prawej stronie filmu)';
+  shuffleBtn.setAttribute('aria-label', shuffleBtn.title);
+  shuffleBtn.addEventListener('click', () => swap(1));
   const stopBtn = iconNode('button', 'vembed__btn hidden', 'close', 'Zatrzymaj');
   stopBtn.type = 'button';
   stopBtn.title = 'Zatrzymaj i schowaj odtwarzacz';
@@ -694,31 +706,56 @@ function makeVideoEmbed(video, afterChange) {
     afterChange();
   });
   const openBtn = iconNode('a', 'vembed__btn', 'external');
-  openBtn.href = video.href;
   openBtn.target = '_blank';
   openBtn.rel = 'noopener noreferrer';
   openBtn.title = 'Otwórz w nowej karcie';
-  actions.append(stopBtn, favBtn, partyBtn, popBtn, openBtn);
+  actions.append(stopBtn, shuffleBtn, favBtn, partyBtn, popBtn, openBtn);
   header.appendChild(actions);
+
+  // Odświeża wszystko, co zależy od aktualnego filmu (też po podmianie na kolejnego shorta).
+  const sync = () => {
+    card.className = `vembed vembed--${cur.provider}${cur.short ? ' vembed--short' : ''}`;
+    labelText.textContent = ` ${cur.label}`;
+    openBtn.href = cur.href;
+    shuffleBtn.hidden = !cur.short;
+    document.dispatchEvent(new CustomEvent('favs-changed')); // gwiazdka pokazuje stan nowego filmu
+  };
+  // Kolejny losowy short z kanału i ulubionych (dir > 0) albo poprzedni z tej karty (dir < 0).
+  const swap = (dir) => {
+    if (!cur.short) return;
+    if (dir < 0) {
+      const back = history.pop();
+      if (!back) return toast('To pierwszy short na tej karcie.', true);
+      cur = back;
+    } else {
+      const pick = randomShort(cur);
+      if (!pick) return toast(NO_MORE_SHORTS, true);
+      history.push(cur);
+      cur = pick;
+    }
+    sync();
+    showStage(true); // bez afterChange: czat nie może się przewinąć i zabrać karty spod palca
+  };
 
   const showStage = (playing) => {
     stage.replaceChildren();
     stopBtn.classList.toggle('hidden', !playing);
     if (playing) {
-      stage.appendChild(makePlayerNode(video, 'vembed__player'));
+      stage.appendChild(makePlayerNode(cur, 'vembed__player'));
+      if (cur.short) attachShortsScroll(stage, { onNext: () => swap(1), onPrev: () => swap(-1) });
       closeMiniPlayer();
     } else {
       const poster = el('button', 'vembed__poster');
       poster.type = 'button';
-      poster.setAttribute('aria-label', `Odtwórz wideo (${video.label})`);
-      if (video.thumb) {
+      poster.setAttribute('aria-label', `Odtwórz wideo (${cur.label})`);
+      if (cur.thumb) {
         const img = el('img', 'vembed__thumb');
         img.loading = 'lazy';
         img.referrerPolicy = 'no-referrer';
         img.alt = '';
         img.addEventListener('load', afterChange);
         img.addEventListener('error', () => img.remove());
-        img.src = video.thumb;
+        img.src = cur.thumb;
         poster.appendChild(img);
       }
       poster.appendChild(iconNode('span', 'vembed__play', 'play'));
@@ -729,9 +766,80 @@ function makeVideoEmbed(video, afterChange) {
       stage.appendChild(poster);
     }
   };
+  sync();
   showStage(false);
   card.append(header, stage);
   return card;
+}
+
+// ---------- Shorty: przewijanie do kolejnego losowego ----------
+// Krótkie, pionowe filmy (Pornhub /shorties/, YouTube /shorts/) mają własny układ i „przewijanie jak w telefonie”:
+// przewiń w dół (kółkiem albo palcem) po prawej stronie filmu, żeby zobaczyć kolejnego losowego shorta.
+// Pula to shorty z linków na kanale oraz z ulubionych – serwisy nie udostępniają listy do losowania z zewnątrz.
+const NO_MORE_SHORTS = 'Nie ma innych shortów – wklej więcej linków /shorties/ na kanale albo dodaj je do ulubionych.';
+const shortsSeen = new Set();
+
+function shortsPool() {
+  const pool = new Map();
+  for (const v of [...channelVideos(), ...favVideos()]) if (v.short && !pool.has(v.src)) pool.set(v.src, v);
+  return Array.from(pool.values());
+}
+
+// Losuje shorta innego niż bieżący; dopóki są nieoglądane, nie powtarza się, potem zaczyna od nowa.
+function randomShort(current) {
+  if (current) shortsSeen.add(current.src);
+  const pool = shortsPool().filter((v) => !current || v.src !== current.src);
+  if (!pool.length) return null;
+  let fresh = pool.filter((v) => !shortsSeen.has(v.src));
+  if (!fresh.length) {
+    shortsSeen.clear();
+    if (current) shortsSeen.add(current.src);
+    fresh = pool;
+  }
+  const pick = fresh[Math.floor(Math.random() * fresh.length)];
+  shortsSeen.add(pick.src);
+  return pick;
+}
+
+// Pasek po prawej stronie filmu przechwytuje kółko myszy i przesunięcie palcem (ramka z odtwarzaczem połyka je sama).
+function attachShortsScroll(host, { onNext, onPrev }) {
+  const strip = el('div', 'shorts-strip');
+  strip.title = 'Przewiń w dół – kolejny losowy short';
+  strip.appendChild(iconNode('span', 'shorts-strip__hint', 'chevron-down'));
+  let lockedUntil = 0;
+  const fire = (dir) => {
+    const now = Date.now();
+    if (now < lockedUntil) return;
+    lockedUntil = now + 700;
+    if (dir > 0) onNext();
+    else onPrev();
+  };
+  strip.addEventListener(
+    'wheel',
+    (e) => {
+      if (Math.abs(e.deltaY) < 8) return;
+      e.preventDefault();
+      fire(e.deltaY > 0 ? 1 : -1);
+    },
+    { passive: false }
+  );
+  let startY = null;
+  strip.addEventListener('pointerdown', (e) => {
+    startY = e.clientY;
+    strip.setPointerCapture(e.pointerId);
+  });
+  strip.addEventListener('pointerup', (e) => {
+    if (startY === null) return;
+    const dy = e.clientY - startY;
+    startY = null;
+    if (Math.abs(dy) > 40) fire(dy < 0 ? 1 : -1); // palec w górę = przewijanie w dół = następny
+    else if (Math.abs(dy) < 8) fire(1); // samo stuknięcie też przechodzi dalej
+  });
+  strip.addEventListener('pointercancel', () => {
+    startY = null;
+  });
+  host.appendChild(strip);
+  return strip;
 }
 
 // ---------- Ulubione ----------
@@ -1278,6 +1386,9 @@ function openMiniPlayer(video, opts = {}) {
   const fav = mkBtn('star', 'Dodaj do ulubionych (F)', () => {});
   bindFavButton(fav, () => list[index]);
   const marksBtn = mkBtn('bookmark', 'Zapamiętane momenty (M)', () => toggleMarks());
+  const shuffle = mkBtn('shuffle', 'Losowy short (J, albo przewiń w dół po prawej stronie filmu)', () => shortStep(1));
+  shuffle.hidden = true;
+  const shortHistory = [];
   const size = mkBtn('size', 'Zmień rozmiar okna', () => {
     playerPrefs.size = PLAYER_SIZES[(PLAYER_SIZES.indexOf(playerPrefs.size) + 1) % PLAYER_SIZES.length];
     savePlayerPrefs();
@@ -1288,7 +1399,7 @@ function openMiniPlayer(video, opts = {}) {
   const close = mkBtn('close', 'Zamknij odtwarzacz', closeMiniPlayer);
   if (partyMode) prev.hidden = next.hidden = source.hidden = true;
   const btns = el('div', 'miniplayer__btns');
-  btns.append(prev, next, source, fav, marksBtn, size, cinema, collapse, close);
+  btns.append(prev, next, shuffle, source, fav, marksBtn, size, cinema, collapse, close);
   bar.append(title, btns);
 
   const body = el('div', 'miniplayer__body');
@@ -1399,6 +1510,10 @@ function openMiniPlayer(video, opts = {}) {
     marksPanel.classList.add('hidden');
     const node = live ? makePlayerNode(v, 'miniplayer__media', { startSec, ambient: settings.partyGlow === 'image' }) : waitPanel();
     body.replaceChildren(node, feed, marksPanel);
+    const shortMode = Boolean(v.short) && !partyMode;
+    box.classList.toggle('miniplayer--short', Boolean(v.short));
+    shuffle.hidden = !shortMode;
+    if (shortMode && live) attachShortsScroll(body, { onNext: () => shortStep(1), onPrev: () => shortStep(-1) });
     startSec = 0;
     updateTitle();
     prev.disabled = index === 0;
@@ -1406,6 +1521,25 @@ function openMiniPlayer(video, opts = {}) {
     if (!partyMode) prev.hidden = next.hidden = list.length < 2 && mode === 'channel';
     box.classList.toggle('miniplayer--waiting', !live);
     startGlowSampling();
+  }
+  // Shorty: przewijanie do losowego następnego (dir > 0) albo z powrotem do poprzedniego w tej sesji.
+  function shortStep(dir) {
+    const current = list[index];
+    if (partyMode || !current || !current.short) return;
+    if (dir < 0) {
+      const back = shortHistory.pop();
+      if (!back) return toast('To pierwszy short w tej sesji.', true);
+      list = [back];
+    } else {
+      const pick = randomShort(current);
+      if (!pick) return toast(NO_MORE_SHORTS, true);
+      shortHistory.push(current);
+      list = [pick];
+    }
+    index = 0;
+    mode = 'channel';
+    live = true;
+    show();
   }
   function go(step) {
     const target = index + step;
@@ -1511,7 +1645,7 @@ function openMiniPlayer(video, opts = {}) {
     return true;
   };
   // Dla skrótów klawiszowych.
-  box._api = { go, cinema: () => setCinema(!box.classList.contains('miniplayer--cinema')), fav: () => fav.click(), marks: toggleMarks };
+  box._api = { go, shortStep, cinema: () => setCinema(!box.classList.contains('miniplayer--cinema')), fav: () => fav.click(), marks: toggleMarks };
 
   // Tryb „razem”: odliczanie 3-2-1 nad czekającym odtwarzaczem, potem start u wszystkich naraz.
   box._partyCountdown = (ms) => {
@@ -1629,6 +1763,8 @@ document.addEventListener('keydown', (e) => {
   else if (key === 'c') api.cinema();
   else if (key === 'f') api.fav();
   else if (key === 'm') api.marks();
+  else if (key === 'j') api.shortStep(1);
+  else if (key === 'k') api.shortStep(-1);
 });
 
 // Pierwsze 2 różne linki do wideo z tekstu wiadomości.
