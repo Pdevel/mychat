@@ -3721,15 +3721,6 @@ textarea.field {
   background: rgba(0, 0, 0, 0.82);
   animation: fade 0.2s ease-out;
 }
-.vembed--pornhub {
-  border-left-color: #ff9000;
-}
-.vembed--pornhub .vembed__label .icon {
-  color: #ff9000;
-}
-.miniplayer[data-provider='pornhub'] .miniplayer__title .icon {
-  color: #ff9000;
-}
 @media (max-width: 720px) {
   .miniplayer--s { --mp-w: 190px; }
   .miniplayer--m { --mp-w: 250px; }
@@ -3936,9 +3927,6 @@ textarea.field {
 .miniplayer--cinema {
   box-shadow: 0 0 140px 20px var(--glow, rgba(88, 101, 242, 0.5));
   animation: glow 5s ease-in-out infinite;
-}
-.miniplayer--cinema[data-provider='pornhub'] {
-  --glow: rgba(255, 144, 0, 0.45);
 }
 .miniplayer--cinema[data-provider='youtube'] {
   --glow: rgba(255, 60, 60, 0.4);

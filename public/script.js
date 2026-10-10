@@ -95,7 +95,7 @@ if (profile.avatar && profile.avatar.startsWith('data:')) {
 }
 
 // Wersje do sprawdzenia, czy telefon pobrał nową stronę i czy serwer jest po wdrożeniu.
-const CLIENT_VERSION = '2026-10-10h';
+const CLIENT_VERSION = '2026-10-10i';
 let serverInfo = null;
 function renderVersionInfo() {
   const server = serverInfo ? `serwer: ${serverInfo.version}${serverInfo.party ? '' : ' (STARSZY – brak seansów, wdróż ponownie)'}` : 'serwer: sprawdzam…';
@@ -600,20 +600,13 @@ function parseVideoLink(href) {
     const src = `https://player.vimeo.com/video/${m[1]}?autoplay=1${hash && /^[0-9a-f]+$/.test(hash) ? `&h=${hash}` : ''}`;
     return { kind: 'iframe', provider: 'vimeo', label: 'Vimeo', src, thumb: '', href };
   }
-  if (/(^|\.)pornhub\.(com|org|net)$/.test(host)) {
-    // Strona wideo (view_video.php?viewkey=…) nie wchodzi w ramkę – serwis ma osobny adres do osadzania.
-    const key = u.searchParams.get('viewkey') || (u.pathname.match(/^\/(?:embed|shorties)\/([^/?#]+)/) || [])[1];
-    if (!key || !/^[A-Za-z0-9]{6,24}$/.test(key)) return null;
-    const short = /^\/shorties\//.test(u.pathname); // krótkie, pionowe filmy
-    return { kind: 'iframe', provider: 'pornhub', short, label: short ? 'Pornhub Shorts' : 'Pornhub', src: `https://www.pornhub.com/embed/${key}`, thumb: '', href };
-  }
   if (DIRECT_VIDEO.test(u.pathname)) {
     return { kind: 'video', provider: 'file', label: u.hostname, src: u.href, thumb: '', href };
   }
   return null;
 }
 
-// Adres filmu od podanej sekundy (YouTube, Vimeo i pliki wideo; osadzony odtwarzacz Pornhub tego nie wspiera).
+// Adres filmu od podanej sekundy (YouTube, Vimeo i pliki wideo).
 function videoSrcAt(video, sec) {
   const at = Math.floor(sec);
   if (!(at > 0)) return video.src;
@@ -628,7 +621,6 @@ function videoSrcAt(video, sec) {
     return video.src;
   }
 }
-const supportsStart = (video) => video.provider !== 'pornhub';
 
 // Element odtwarzacza: iframe (YouTube/Vimeo) albo <video> z własnymi kontrolkami.
 // `ambient`: próbujemy wczytać plik z CORS, żeby dało się odczytać kolory obrazu do poświaty (bez CORS wracamy do zwykłego).
@@ -656,7 +648,7 @@ function makePlayerNode(video, className, { startSec = 0, ambient = false } = {}
     return v;
   }
   const frame = el('iframe', className);
-  const at = startSec > 0 && supportsStart(video) ? { ...video, src: videoSrcAt(video, startSec) } : video;
+  const at = startSec > 0 ? { ...video, src: videoSrcAt(video, startSec) } : video;
   frame.src = at.src;
   frame.title = `${video.label} – odtwarzacz`;
   frame.allow = 'autoplay; encrypted-media; picture-in-picture; fullscreen';
@@ -1462,7 +1454,6 @@ function openMiniPlayer(video, opts = {}) {
       const jump = el('button', 'miniplayer__markjump', `${formatClock(m.sec)}${m.label ? ` · ${m.label}` : ''}`);
       jump.type = 'button';
       jump.addEventListener('click', () => {
-        if (!supportsStart(v)) return toast(`Ten odtwarzacz nie pozwala skoczyć – przewiń ręcznie do ${formatClock(m.sec)}.`, true);
         live = true;
         startSec = m.sec;
         show();
