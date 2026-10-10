@@ -95,7 +95,7 @@ if (profile.avatar && profile.avatar.startsWith('data:')) {
 }
 
 // Wersje do sprawdzenia, czy telefon pobrał nową stronę i czy serwer jest po wdrożeniu.
-const CLIENT_VERSION = '2026-10-10n';
+const CLIENT_VERSION = '2026-10-10o';
 let serverInfo = null;
 function renderVersionInfo() {
   const server = serverInfo ? `serwer: ${serverInfo.version}${serverInfo.party ? '' : ' (STARSZY – brak seansów, wdróż ponownie)'}` : 'serwer: sprawdzam…';
@@ -198,9 +198,22 @@ function styleNick(node, nick, style, fallbackColor) {
   node.style.fontWeight = font && font.weight ? String(font.weight) : '';
 }
 
+// Kolor najwyższej roli, która ma kolor, w bieżącej grupie (null, gdy osoba nie ma takiej roli albo lista członków
+// jeszcze nie przyszła). Wygrywa z kolorem nicku z profilu, tak jak kolor roli na Discordzie; czcionka zostaje własna.
+function roleColorOf(accountId) {
+  const group = groupByChannel(currentChannel);
+  if (!accountId || !group || !group.roles || !group.roles.length || groupMembersFor !== group.id) return null;
+  const member = groupMembers.find((m) => m.id === accountId);
+  if (!member || !member.roles || !member.roles.length) return null;
+  const top = group.roles.find((r) => r.color && member.roles.includes(r.id));
+  return top ? top.color : null;
+}
+
 function applyNickStyle(node, nick, accountId) {
   const style = (accountId && nickStyles.get(accountId)) || nickStylesByNick.get(nick) || null;
   styleNick(node, nick, style, colorFor(nick));
+  const roleColor = roleColorOf(accountId);
+  if (roleColor) node.style.color = roleColor;
   node.classList.add('nick-styled');
   node.dataset.nick = nick;
   if (accountId) node.dataset.account = accountId;
@@ -2669,12 +2682,7 @@ function renderMembers(list, { group = null, sections = null, roles = [] } = {})
 
       const text = el('div', 'member__text');
       const name = el('span', 'member__name', u.nick);
-      applyNickStyle(name, u.nick, u.id);
-      if (roleColor && !u.nickColor) {
-        // kolor roli (jak na Discordzie), chyba że osoba ustawiła własny kolor nicku
-        name.classList.remove('nick-styled');
-        name.style.color = roleColor;
-      }
+      applyNickStyle(name, u.nick, u.id); // kolor roli nakłada się tu sam (patrz roleColorOf)
       if (u.isOwner) {
         const crown = iconNode('span', 'member__crown', 'crown');
         crown.title = 'Twórca grupy';
