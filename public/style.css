@@ -4745,3 +4745,13 @@ body.media-hidden .filecard {
     transition: none;
   }
 }
+
+/* Edytor roli: odstępy między sekcjami (Kolor, Wyświetlanie, Uprawnienia) */
+.settings .gset__spaced {
+  margin-top: 22px;
+}
+.gset__hoist {
+  align-items: flex-start;
+  font-size: 14px;
+  line-height: 1.4;
+}

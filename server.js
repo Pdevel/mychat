@@ -789,7 +789,8 @@ function groupInfo(group, accountId) {
     perms: Array.from(perms),
     rank: rank === Infinity ? 9999 : rank,
     everyone: group.everyone.slice(),
-    roles: group.roles.map((r) => ({ id: r.id, name: r.name, color: r.color || null, perms: r.perms.slice(), memberCount: counts.get(r.id) || 0 })),
+    // hoist: starsze role (bez tego pola) nadal pokazują się jako osobne sekcje, tak jak do tej pory
+    roles: group.roles.map((r) => ({ id: r.id, name: r.name, color: r.color || null, hoist: r.hoist !== false, perms: r.perms.slice(), memberCount: counts.get(r.id) || 0 })),
     ...(perms.has('invite') ? { code: formatCode(group.code) } : {}),
   };
 }
@@ -1496,7 +1497,7 @@ io.on('connection', (socket) => {
     let id;
     do id = crypto.randomBytes(3).toString('hex');
     while (roleIndex(group, id) !== -1);
-    group.roles.push({ id, name, color: cleanColor(payload.color), perms }); // nowa rola trafia na sam dół hierarchii
+    group.roles.push({ id, name, color: cleanColor(payload.color), perms, hoist: Boolean(payload.hoist) }); // nowa rola trafia na sam dół hierarchii
     await refreshGroup(group);
     reply({ ok: true, roleId: id });
   });
@@ -1523,6 +1524,7 @@ io.on('connection', (socket) => {
         role.name = name;
       }
       if (payload.color !== undefined) role.color = cleanColor(payload.color);
+      if (payload.hoist !== undefined) role.hoist = Boolean(payload.hoist); // pokazuj członków tej roli osobno od reszty online
       if (payload.perms !== undefined) {
         const perms = cleanPerms(payload.perms);
         if (!grantable(group, account.id, role.perms, perms)) return reply({ ok: false, error: 'Nie możesz zmieniać uprawnień, których sam nie masz.' });

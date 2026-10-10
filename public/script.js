@@ -95,7 +95,7 @@ if (profile.avatar && profile.avatar.startsWith('data:')) {
 }
 
 // Wersje do sprawdzenia, czy telefon pobrał nową stronę i czy serwer jest po wdrożeniu.
-const CLIENT_VERSION = '2026-10-10m';
+const CLIENT_VERSION = '2026-10-10n';
 let serverInfo = null;
 function renderVersionInfo() {
   const server = serverInfo ? `serwer: ${serverInfo.version}${serverInfo.party ? '' : ' (STARSZY – brak seansów, wdróż ponownie)'}` : 'serwer: sprawdzam…';
@@ -2615,16 +2615,27 @@ function renderMembersPanel() {
     .map((m) => ({ ...m, ...(online.get(m.id) || { status: 'offline' }), isOwner: m.isOwner, offline: !online.has(m.id), topRole: topRoleOf(m) }))
     .sort((a, b) => Number(a.offline) - Number(b.offline) || a.nick.localeCompare(b.nick, 'pl'));
 
-  // Sekcje jak na Discordzie: twórca, potem role od najwyższej, na końcu osoby bez roli.
+  // Sekcje jak na Discordzie: twórca, role z włączonym „oddzielnie od użytkowników online” (od najwyższej, tylko osoby
+  // online), potem pozostali online, a na końcu wszyscy offline.
   const sections = [];
   const owners = list.filter((u) => u.isOwner);
   if (owners.length) sections.push({ title: 'TWÓRCA', items: owners });
+  const topHoistOf = (m) => {
+    const idx = (m.roles || []).map((id) => roles.findIndex((r) => r.id === id)).filter((i) => i !== -1 && roles[i].hoist);
+    return idx.length ? Math.min(...idx) : -1;
+  };
+  const others = list.filter((u) => !u.isOwner);
+  const placed = new Set();
   roles.forEach((role, i) => {
-    const items = list.filter((u) => !u.isOwner && u.topRole === i);
+    if (!role.hoist) return;
+    const items = others.filter((u) => !u.offline && topHoistOf(u) === i);
+    items.forEach((u) => placed.add(u.id));
     if (items.length) sections.push({ title: role.name.toUpperCase(), color: role.color, items });
   });
-  const rest = list.filter((u) => !u.isOwner && u.topRole === -1);
-  if (rest.length) sections.push({ title: roles.length || owners.length ? 'CZŁONKOWIE' : '', items: rest });
+  const onlineRest = others.filter((u) => !u.offline && !placed.has(u.id));
+  if (onlineRest.length) sections.push({ title: 'ONLINE', items: onlineRest });
+  const offline = others.filter((u) => u.offline);
+  if (offline.length) sections.push({ title: 'OFFLINE', items: offline });
   renderMembers(list, { group, sections, roles });
 }
 
@@ -6029,6 +6040,7 @@ function gsetRoles(g, body) {
   nameInput.disabled = !editable || isEveryone;
   let colorInput = null;
   let noColor = null;
+  let hoistInput = null;
   if (!isEveryone) {
     editor.appendChild(el('div', 'section-title', 'Nazwa roli'));
     editor.appendChild(nameInput);
@@ -6047,6 +6059,15 @@ function gsetRoles(g, body) {
     colorInput.addEventListener('input', () => (noColor.checked = false));
     colorRow.append(colorInput, noColorLabel);
     editor.appendChild(colorRow);
+
+    // Jak na Discordzie: osoby z tą rolą mogą mieć własną sekcję w panelu członków, osobno od reszty online.
+    const hoistLabel = el('label', 'switch gset__hoist');
+    hoistInput = document.createElement('input');
+    hoistInput.type = 'checkbox';
+    hoistInput.checked = role.hoist !== false;
+    hoistInput.disabled = !editable;
+    hoistLabel.append(hoistInput, el('span', 'switch__track'), el('span', '', 'Wyświetlaj użytkowników z tą rolą oddzielnie od użytkowników online'));
+    editor.append(el('div', 'section-title gset__spaced', 'Wyświetlanie'), hoistLabel);
   } else {
     editor.appendChild(el('div', 'groups__hint', 'Uprawnienia, które dostaje każdy członek grupy.'));
   }
@@ -6064,6 +6085,7 @@ function gsetRoles(g, body) {
         if (!isEveryone) {
           payload.name = nameInput.value;
           payload.color = noColor.checked ? null : colorInput.value;
+          payload.hoist = hoistInput.checked;
         }
         groupAction('group:role:update', payload, () => toast('Zapisano rolę', true));
       }, { title: 'Zapisz rolę' })
