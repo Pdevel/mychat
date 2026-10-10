@@ -557,13 +557,32 @@ function broadcastUsers() {
 // Nie ma kanałów wspólnych dla wszystkich – na początku trzeba dołączyć do grupy albo założyć własną.
 
 // ---------- Wspólne oglądanie ----------
-// Na kanale może trwać jedno „oglądanie razem”: ktoś zaprasza z linkiem do filmu, chętni dołączają, a gospodarz
-// odpala odliczanie 3-2-1 – wszyscy dołączeni startują jednocześnie. Stan jest tylko w pamięci serwera.
-const PARTY_EMOJI = ['🔥', '😍', '👏', '😂', '❤️', '😮'];
-const parties = new Map(); // kanał -> { id, href, hostId, hostNick, viewers: Map(accountId -> nick), started }
+// Na kanale może trwać jedno publiczne „oglądanie razem” (zaproszenie widzi cały kanał) oraz prywatne seanse dla dwóch
+// osób (widzą je tylko zaproszeni). Gospodarz odpala odliczanie 3-2-1 – wszyscy dołączeni startują jednocześnie.
+// Uczestnicy dokładają filmy do kolejki i na nie głosują, a reakcje lecą na żywo. Stan jest tylko w pamięci serwera.
+const PARTY_MAX_QUEUE = 8;
+const PARTY_COUNTDOWN_MS = 4000;
+const REACTION_RE = /^[\p{Extended_Pictographic}‍️]{1,8}$/u;
+const LINK_RE = /^https?:\/\/\S{4,490}$/i;
+const parties = new Map(); // id -> { id, channel, href, hostId, hostNick, viewers: Map(accountId -> nick), allowed: Set|null, started, queue, firstStart, reactions }
 
-function publicParty(channel) {
-  const p = parties.get(channel);
+const partyVisibleTo = (p, accountId) => !p.allowed || p.allowed.has(accountId);
+
+// Seans widoczny dla połączenia: prywatny, na który jest zaproszone, albo publiczny seans kanału.
+function partyFor(socket) {
+  const user = users.get(socket.id);
+  const channel = socket.data.channel;
+  if (!user || !channel) return null;
+  let open = null;
+  for (const p of parties.values()) {
+    if (p.channel !== channel || !partyVisibleTo(p, user.accountId)) continue;
+    if (p.allowed) return p;
+    open = p;
+  }
+  return open;
+}
+
+function publicParty(p) {
   if (!p) return null;
   return {
     id: p.id,
@@ -572,37 +591,53 @@ function publicParty(channel) {
     host: p.hostNick,
     viewers: Array.from(p.viewers, ([id, nick]) => ({ id, nick })),
     started: p.started,
+    private: Boolean(p.allowed),
+    queue: p.queue.map((q) => ({ id: q.id, href: q.href, by: q.by, voters: Array.from(q.voters) })),
   };
 }
 
-function broadcastParty(channel) {
-  io.to(`ch:${channel}`).emit('party:update', { channel, party: publicParty(channel) });
+// Każde połączenie na kanale dostaje swój widok (prywatne seanse widzą tylko zaproszeni).
+function pushParties(channel) {
+  const room = io.sockets.adapter.rooms.get(`ch:${channel}`);
+  if (!room) return;
+  for (const sid of room) {
+    const target = io.sockets.sockets.get(sid);
+    if (target) target.emit('party:update', { channel, party: publicParty(partyFor(target)) });
+  }
+}
+
+function emitToViewers(p, event, payload) {
+  for (const [sid] of users) {
+    const target = io.sockets.sockets.get(sid);
+    if (target && target.data.party === p.id) target.emit(event, payload);
+  }
 }
 
 // Zdejmuje to połączenie z oglądania; gdy wychodzi gospodarz, jego rolę przejmuje następna osoba.
 function leaveParty(socket) {
-  const channel = socket.data.party;
+  const id = socket.data.party;
   socket.data.party = null;
   const user = users.get(socket.id);
-  const p = channel && parties.get(channel);
+  const p = id && parties.get(id);
   if (!p || !user || !p.viewers.delete(user.accountId)) return;
-  if (!p.viewers.size) parties.delete(channel);
+  if (!p.viewers.size) parties.delete(id);
   else if (p.hostId === user.accountId) {
-    const [id, nick] = p.viewers.entries().next().value;
-    p.hostId = id;
-    p.hostNick = nick;
+    const [hostId, hostNick] = p.viewers.entries().next().value;
+    p.hostId = hostId;
+    p.hostNick = hostNick;
   }
-  broadcastParty(channel);
+  pushParties(p.channel);
 }
 
 // Przenosi połączenie do kanału (opuszcza poprzedni pokój, wchodzi do nowego). `null` = żaden.
 function enterChannel(socket, channelId) {
-  if (socket.data.party && socket.data.party !== channelId) leaveParty(socket);
+  const joined = socket.data.party && parties.get(socket.data.party);
+  if (joined && joined.channel !== channelId) leaveParty(socket);
   if (socket.data.channel) socket.leave(`ch:${socket.data.channel}`);
   socket.data.channel = channelId || null;
   if (channelId) {
     socket.join(`ch:${channelId}`);
-    socket.emit('party:update', { channel: channelId, party: publicParty(channelId) });
+    socket.emit('party:update', { channel: channelId, party: publicParty(partyFor(socket)) });
   }
 }
 
@@ -1847,6 +1882,20 @@ io.on('connection', (socket) => {
     reply({ ok: true });
   });
 
+  // Seans, do którego należy to połączenie (gospodarz sterują nim, reszta tylko uczestniczy).
+  const myParty = () => {
+    const p = parties.get(socket.data.party);
+    const user = users.get(socket.id);
+    return p && user && p.viewers.has(user.accountId) ? p : null;
+  };
+  const startCountdown = (p) => {
+    p.started = true;
+    const startAt = Date.now() + PARTY_COUNTDOWN_MS;
+    if (!p.firstStart) p.firstStart = startAt;
+    emitToViewers(p, 'party:countdown', { channel: p.channel, id: p.id, inMs: PARTY_COUNTDOWN_MS });
+    pushParties(p.channel);
+  };
+
   socket.on('party:start', (payload, ack) => {
     const reply = typeof ack === 'function' ? ack : () => {};
     const user = users.get(socket.id);
@@ -1854,23 +1903,40 @@ io.on('connection', (socket) => {
     if (!user || !channel || !mayPost(socket)) return reply({ ok: false, error: NO_POST_ERROR });
     if (rateLimited(socket, 'party', 5, 30000)) return reply({ ok: false, error: 'Zwolnij trochę.' });
     const href = payload && typeof payload.href === 'string' ? payload.href.trim() : '';
-    if (!/^https?:\/\/\S{4,490}$/i.test(href)) return reply({ ok: false, error: 'To nie wygląda na link do filmu.' });
-    const existing = parties.get(channel);
-    if (existing && existing.hostId !== user.accountId) {
-      return reply({ ok: false, error: `${existing.hostNick} już zaprasza do oglądania – dołącz do niego.` });
+    if (!LINK_RE.test(href)) return reply({ ok: false, error: 'To nie wygląda na link do filmu.' });
+    const group = groupOfChannel(channel);
+    let allowed = null;
+    if (payload && payload.invite) {
+      const guest = accountsById.get(String(payload.invite));
+      if (!guest || guest.id === user.accountId || !isGroupMember(group, guest.id)) {
+        return reply({ ok: false, error: 'Nie można zaprosić tej osoby.' });
+      }
+      allowed = new Set([user.accountId, guest.id]);
     }
-    if (socket.data.party && socket.data.party !== channel) leaveParty(socket);
-    parties.set(channel, {
+    if (socket.data.party) leaveParty(socket);
+    if (!allowed) {
+      const other = Array.from(parties.values()).find((p) => p.channel === channel && !p.allowed);
+      if (other) return reply({ ok: false, error: `${other.hostNick} już zaprasza do oglądania – dołącz do niego.` });
+    }
+    const p = {
       id: crypto.randomBytes(6).toString('hex'),
+      channel,
       href,
       hostId: user.accountId,
       hostNick: user.nick,
       viewers: new Map([[user.accountId, user.nick]]),
+      allowed,
       started: false,
-    });
-    socket.data.party = channel;
-    io.to(`ch:${channel}`).emit('system', { text: `${user.nick} zaprasza do wspólnego oglądania.`, time: Date.now(), channel });
-    broadcastParty(channel);
+      queue: [],
+      firstStart: 0,
+      reactions: [],
+    };
+    parties.set(p.id, p);
+    socket.data.party = p.id;
+    if (!allowed) {
+      io.to(`ch:${channel}`).emit('system', { text: `${user.nick} zaprasza do wspólnego oglądania.`, time: Date.now(), channel });
+    }
+    pushParties(channel);
     reply({ ok: true });
   });
 
@@ -1879,13 +1945,14 @@ io.on('connection', (socket) => {
     const user = users.get(socket.id);
     const channel = socket.data.channel;
     const group = groupOfChannel(channel);
-    const p = channel && parties.get(channel);
+    const p = parties.get(payload && payload.id);
     if (!user || !group || !isGroupMember(group, user.accountId)) return reply({ ok: false });
-    if (!p) return reply({ ok: false, error: 'Oglądanie już się skończyło.' });
+    if (!p || p.channel !== channel || !partyVisibleTo(p, user.accountId)) return reply({ ok: false, error: 'Oglądanie już się skończyło.' });
+    if (socket.data.party && socket.data.party !== p.id) leaveParty(socket);
     p.viewers.set(user.accountId, user.nick);
-    socket.data.party = channel;
-    broadcastParty(channel);
-    reply({ ok: true, party: publicParty(channel) });
+    socket.data.party = p.id;
+    pushParties(channel);
+    reply({ ok: true, party: publicParty(p) });
   });
 
   socket.on('party:leave', () => leaveParty(socket));
@@ -1893,22 +1960,96 @@ io.on('connection', (socket) => {
   // Tylko gospodarz: odliczanie 3-2-1. Serwer podaje czas do startu, więc zegary klientów nie muszą się zgadzać.
   socket.on('party:go', () => {
     const user = users.get(socket.id);
-    const channel = socket.data.channel;
-    const p = channel && parties.get(channel);
-    if (!user || !p || p.hostId !== user.accountId) return;
-    if (rateLimited(socket, 'partygo', 6, 60000)) return;
-    p.started = true;
-    io.to(`ch:${channel}`).emit('party:countdown', { channel, id: p.id, inMs: 4000 });
-    broadcastParty(channel);
+    const p = myParty();
+    if (!user || !p || p.hostId !== user.accountId || rateLimited(socket, 'partygo', 6, 60000)) return;
+    startCountdown(p);
   });
 
   socket.on('party:react', (emoji) => {
+    const p = myParty();
     const user = users.get(socket.id);
-    const channel = socket.data.channel;
-    const p = channel && parties.get(channel);
-    if (!user || !p || !p.viewers.has(user.accountId) || !PARTY_EMOJI.includes(emoji)) return;
-    if (rateLimited(socket, 'preact', 20, 5000)) return;
-    io.to(`ch:${channel}`).emit('party:react', { channel, nick: user.nick, emoji });
+    if (!p || typeof emoji !== 'string' || !REACTION_RE.test(emoji) || rateLimited(socket, 'preact', 20, 5000)) return;
+    if (p.firstStart && p.reactions.length < 3000) p.reactions.push({ t: Date.now(), emoji });
+    emitToViewers(p, 'party:react', { channel: p.channel, nick: user.nick, emoji });
+  });
+
+  // Kolejka: uczestnicy dokładają filmy i głosują; gospodarz uruchamia zwycięzcę.
+  socket.on('party:queue:add', (payload, ack) => {
+    const reply = typeof ack === 'function' ? ack : () => {};
+    const p = myParty();
+    const user = users.get(socket.id);
+    const href = payload && typeof payload.href === 'string' ? payload.href.trim() : '';
+    if (!p) return reply({ ok: false, error: 'Najpierw dołącz do oglądania.' });
+    if (!LINK_RE.test(href)) return reply({ ok: false, error: 'To nie wygląda na link do filmu.' });
+    if (rateLimited(socket, 'pqueue', 6, 30000)) return reply({ ok: false, error: 'Zwolnij trochę.' });
+    if (p.queue.length >= PARTY_MAX_QUEUE) return reply({ ok: false, error: 'Kolejka jest pełna.' });
+    if (p.href === href || p.queue.some((q) => q.href === href)) return reply({ ok: false, error: 'Ten film już jest w kolejce.' });
+    p.queue.push({ id: crypto.randomBytes(4).toString('hex'), href, by: user.nick, byId: user.accountId, voters: new Set([user.accountId]) });
+    pushParties(p.channel);
+    reply({ ok: true });
+  });
+
+  socket.on('party:queue:vote', (id) => {
+    const p = myParty();
+    const user = users.get(socket.id);
+    const item = p && p.queue.find((q) => q.id === id);
+    if (!item || rateLimited(socket, 'pvote', 20, 10000)) return;
+    if (!item.voters.delete(user.accountId)) item.voters.add(user.accountId);
+    pushParties(p.channel);
+  });
+
+  socket.on('party:queue:remove', (id) => {
+    const p = myParty();
+    const user = users.get(socket.id);
+    const at = p ? p.queue.findIndex((q) => q.id === id) : -1;
+    if (at < 0 || (p.hostId !== user.accountId && p.queue[at].byId !== user.accountId)) return;
+    p.queue.splice(at, 1);
+    pushParties(p.channel);
+  });
+
+  socket.on('party:next', (payload, ack) => {
+    const reply = typeof ack === 'function' ? ack : () => {};
+    const user = users.get(socket.id);
+    const p = myParty();
+    if (!p || p.hostId !== user.accountId) return reply({ ok: false, error: 'Tylko gospodarz może włączyć następny film.' });
+    if (!p.queue.length) return reply({ ok: false, error: 'Kolejka jest pusta.' });
+    if (rateLimited(socket, 'partygo', 6, 60000)) return reply({ ok: false, error: 'Zwolnij trochę.' });
+    let best = 0; // najwięcej głosów, przy remisie – ten, który był pierwszy
+    p.queue.forEach((q, i) => {
+      if (q.voters.size > p.queue[best].voters.size) best = i;
+    });
+    const [winner] = p.queue.splice(best, 1);
+    p.href = winner.href;
+    startCountdown(p);
+    reply({ ok: true });
+  });
+
+  // Podsumowanie po seansie: najgorętsze 30-sekundowe odcinki według liczby reakcji.
+  socket.on('party:stats', (payload, ack) => {
+    const reply = typeof ack === 'function' ? ack : () => {};
+    const p = myParty();
+    if (!p) return reply({ ok: false });
+    const BUCKET = 30000;
+    const buckets = new Map();
+    const totals = {};
+    for (const r of p.reactions) {
+      const at = Math.floor((r.t - p.firstStart) / BUCKET);
+      if (at < 0) continue;
+      const b = buckets.get(at) || { count: 0, emoji: {} };
+      b.count += 1;
+      b.emoji[r.emoji] = (b.emoji[r.emoji] || 0) + 1;
+      buckets.set(at, b);
+      totals[r.emoji] = (totals[r.emoji] || 0) + 1;
+    }
+    const top = Array.from(buckets, ([at, b]) => ({
+      fromSec: at * 30,
+      toSec: at * 30 + 30,
+      count: b.count,
+      emoji: Object.entries(b.emoji).sort((x, y) => y[1] - x[1])[0][0],
+    }))
+      .sort((x, y) => y.count - x.count)
+      .slice(0, 3);
+    reply({ ok: true, total: p.reactions.length, top, totals });
   });
 
   socket.on('typing', (isTyping) => {

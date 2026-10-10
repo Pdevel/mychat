@@ -382,6 +382,36 @@
               <p class="settings-note">Dźwięk jest dołączany tylko przy udostępnianiu <b>karty przeglądarki</b>. Przy udostępnianiu całego ekranu jest pomijany, bo zawierałby głosy z rozmowy i wywołał echo (każdy słyszałby siebie z opóźnieniem).</p>
               <p id="screen-quality-note" class="settings-note">Zmiany działają od razu, także w trakcie udostępniania. Obraz idzie osobno do każdego widza, więc przy wielu osobach i wolnym łączu wysyłania wybierz niższą jakość – inaczej może zacinać się też dźwięk.</p>
 
+              <div class="section-title section-title--spaced">ODTWARZACZ I SEANSE</div>
+              <label class="field-label" for="party-glow">Poświata trybu kinowego</label>
+              <select id="party-glow" class="field">
+                <option value="image">Według obrazu (gdzie się da)</option>
+                <option value="steady">Stała, w kolorze serwisu</option>
+                <option value="off">Wyłączona</option>
+              </select>
+              <label class="field-label" for="party-emoji">Moje reakcje podczas seansu (do 8 emotek)</label>
+              <input id="party-emoji" class="field" type="text" maxlength="40" autocomplete="off" />
+              <label class="switch">
+                <input type="checkbox" id="party-sounds-toggle" />
+                <span class="switch__track"></span>
+                <span>Dźwięki seansu (odliczanie, start, reakcje)</span>
+              </label>
+              <label class="switch">
+                <input type="checkbox" id="party-voice-toggle" />
+                <span class="switch__track"></span>
+                <span>Przy wspólnym seansie dołączaj do kanału głosowego i wyciszaj dźwięki aplikacji</span>
+              </label>
+              <label class="switch">
+                <input type="checkbox" id="keep-awake-toggle" />
+                <span class="switch__track"></span>
+                <span>Nie wygaszaj ekranu, gdy gra film</span>
+              </label>
+              <label class="switch">
+                <input type="checkbox" id="discreet-toggle" />
+                <span class="switch__track"></span>
+                <span>Tryb dyskretny (neutralna karta, klawisz H ukrywa multimedia, ukrywanie przy zmianie karty)</span>
+              </label>
+
               <div class="section-title section-title--spaced">ARCHIWUM LOKALNE</div>
               <label class="switch">
                 <input type="checkbox" id="archive-toggle" />

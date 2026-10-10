@@ -62,6 +62,9 @@ const THEMES = [
   { id: 'forest', name: 'Las', colors: ['#121b16', '#19261f', '#1f2f26'] },
   { id: 'sunset', name: 'Zachód słońca', colors: ['#1d1424', '#2a1b33', '#33213e'] },
   { id: 'red', name: 'Czerwony', colors: ['#260b0f', '#3b1218', '#4a1a21'], accent: '#ed4245' },
+  { id: 'amber', name: 'Bursztyn', colors: ['#1a1208', '#271a0b', '#302210'], accent: '#ff9f1a' },
+  { id: 'burgundy', name: 'Bordo', colors: ['#1e0a14', '#2e0f1f', '#381427'], accent: '#e0457b' },
+  { id: 'violet', name: 'Fiolet', colors: ['#130d24', '#1d1435', '#251a42'], accent: '#a07bff' },
 ];
 const DEFAULT_ACCENT = '#5865f2';
 const ACCENTS = ['#5865f2', '#3ba55d', '#eb459e', '#ed4245', '#faa61a', '#1abc9c', '#9b59b6'];
@@ -75,6 +78,12 @@ let settings = store.get('mychat.settings', {
   screenAudio: 'on', // dźwięk karty przy udostępnianiu ekranu: 'on' | 'off'
   archive: true, // zapisuj wiadomości na tym urządzeniu (nie znikają po okresie przechowywania na serwerze)
   archiveFiles: false, // zapisuj też zawartość plików (zajmuje więcej miejsca)
+  partyGlow: 'image', // poświata trybu kinowego: 'image' (według obrazu, gdzie się da) | 'steady' | 'off'
+  partySounds: false, // dźwięki seansu: tykanie odliczania, start, reakcje
+  partyVoice: false, // przy wspólnym seansie dołącz do kanału głosowego i wycisz dźwięki aplikacji
+  keepAwake: true, // nie wygaszaj ekranu, gdy gra film w odtwarzaczu
+  discreet: false, // tryb dyskretny: neutralna karta, ukrywanie multimediów klawiszem H i przy zmianie karty
+  partyEmoji: '🔥😍👏😂❤️😮', // własne reakcje na żywo (do 8)
 });
 // avatar = adres obrazu z serwera; avatarData = mała lokalna kopia (pozwala odtworzyć avatar po zresetowaniu serwera)
 let profile = store.get('mychat.profile', { nick: '', avatar: null, avatarData: null });
@@ -290,6 +299,12 @@ function renderSettingsOptions() {
   $('screen-mode').value = settings.screenMode;
   $('screen-audio').value = settings.screenAudio;
   $('archive-toggle').checked = settings.archive;
+  $('party-glow').value = settings.partyGlow;
+  $('party-emoji').value = settings.partyEmoji;
+  $('party-sounds-toggle').checked = settings.partySounds;
+  $('party-voice-toggle').checked = settings.partyVoice;
+  $('keep-awake-toggle').checked = settings.keepAwake;
+  $('discreet-toggle').checked = settings.discreet;
   $('archive-files-toggle').checked = settings.archiveFiles;
   $('archive-files-toggle').disabled = !settings.archive;
 }
@@ -579,19 +594,51 @@ function parseVideoLink(href) {
   return null;
 }
 
+// Adres filmu od podanej sekundy (YouTube, Vimeo i pliki wideo; osadzony odtwarzacz Pornhub tego nie wspiera).
+function videoSrcAt(video, sec) {
+  const at = Math.floor(sec);
+  if (!(at > 0)) return video.src;
+  try {
+    const u = new URL(video.src);
+    if (video.provider === 'youtube') u.searchParams.set('start', String(at));
+    else if (video.provider === 'vimeo') u.hash = `t=${at}s`;
+    else if (video.provider === 'file') u.hash = `t=${at}`;
+    else return video.src;
+    return u.href;
+  } catch {
+    return video.src;
+  }
+}
+const supportsStart = (video) => video.provider !== 'pornhub';
+
 // Element odtwarzacza: iframe (YouTube/Vimeo) albo <video> z własnymi kontrolkami.
-function makePlayerNode(video, className) {
+// `ambient`: próbujemy wczytać plik z CORS, żeby dało się odczytać kolory obrazu do poświaty (bez CORS wracamy do zwykłego).
+function makePlayerNode(video, className, { startSec = 0, ambient = false } = {}) {
   if (video.kind === 'video') {
     const v = el('video', className);
     v.controls = true;
     v.autoplay = true;
     v.preload = 'metadata';
     v.referrerPolicy = 'no-referrer';
-    v.src = video.src;
+    const src = videoSrcAt(video, startSec);
+    if (ambient) {
+      v.crossOrigin = 'anonymous';
+      v.addEventListener(
+        'error',
+        () => {
+          if (!v.crossOrigin) return;
+          v.removeAttribute('crossorigin'); // serwer nie wysyła CORS – gramy bez odczytu kolorów
+          v.src = src;
+        },
+        { once: true }
+      );
+    }
+    v.src = src;
     return v;
   }
   const frame = el('iframe', className);
-  frame.src = video.src;
+  const at = startSec > 0 && supportsStart(video) ? { ...video, src: videoSrcAt(video, startSec) } : video;
+  frame.src = at.src;
   frame.title = `${video.label} – odtwarzacz`;
   frame.allow = 'autoplay; encrypted-media; picture-in-picture; fullscreen';
   frame.allowFullscreen = true;
@@ -619,7 +666,7 @@ function makeVideoEmbed(video, afterChange) {
   partyBtn.type = 'button';
   partyBtn.title = 'Oglądajmy razem – zaproś kanał, wspólny start 3-2-1';
   partyBtn.setAttribute('aria-label', partyBtn.title);
-  partyBtn.addEventListener('click', () => startParty(video));
+  partyBtn.addEventListener('click', () => openPartyChooser(partyBtn, video));
   const favBtn = iconNode('button', 'vembed__btn', 'star');
   favBtn.type = 'button';
   bindFavButton(favBtn, () => video);
@@ -704,23 +751,238 @@ function bindFavButton(btn, getVideo) {
   sync();
 }
 
+// ---------- Zapamiętane momenty ----------
+// Znaczniki czasu w filmach (np. „12:30 – ten fragment”), do 20 na film. Odtwarzacze YouTube, Vimeo i pliki wideo
+// potrafią wystartować od zapamiętanej sekundy; dla pozostałych zostaje podpowiedź, gdzie przewinąć.
+function marksOf(video) {
+  const all = favStore.marks || {};
+  return Array.isArray(all[video.src]) ? all[video.src] : [];
+}
+function saveMarks(video, list) {
+  const all = favStore.marks || {};
+  all[video.src] = list.slice(0, 20);
+  if (!all[video.src].length) delete all[video.src];
+  const keys = Object.keys(all);
+  for (const k of keys.slice(0, Math.max(0, keys.length - 200))) delete all[k]; // najstarsze wypadają
+  favStore.marks = all;
+  store.set('mychat.favs', favStore);
+}
+function parseClock(text) {
+  const parts = String(text).trim().split(':').map((x) => Number(x));
+  if (!parts.length || parts.length > 3 || parts.some((n) => !Number.isFinite(n) || n < 0)) return null;
+  return parts.reduce((total, n) => total * 60 + n, 0);
+}
+function formatClock(sec) {
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const ss = String(Math.floor(sec % 60)).padStart(2, '0');
+  return h ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`;
+}
+
+// ---------- Tryb dyskretny (opcjonalny) ----------
+// Neutralny tytuł i ikona karty, klawisz H (albo zmiana karty przeglądarki) chowa multimedia i odtwarzacze.
+const appTitle = (text) => (settings.discreet ? text.replace('MyChat', 'Notatki') : text);
+const NEUTRAL_ICON =
+  "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23999' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='5' y='3' width='14' height='18' rx='2'/%3E%3Cpath d='M9 8h6M9 12h6M9 16h4'/%3E%3C/svg%3E";
+function applyDiscreet() {
+  document.title = appTitle(unread ? `(${unread}) MyChat` : 'MyChat');
+  let link = document.querySelector('link[rel="icon"][data-discreet]');
+  if (settings.discreet && !link) {
+    link = document.createElement('link');
+    link.rel = 'icon';
+    link.dataset.discreet = '1';
+    link.href = NEUTRAL_ICON;
+    document.head.appendChild(link);
+  } else if (!settings.discreet && link) {
+    link.remove();
+  }
+  if (!settings.discreet) setMediaHidden(false);
+}
+function setMediaHidden(hidden) {
+  document.body.classList.toggle('media-hidden', hidden);
+  if (hidden) closeMiniPlayer();
+  let pill = $('media-reveal');
+  if (hidden && !pill) {
+    pill = el('button', 'media-reveal', '· · ·');
+    pill.id = 'media-reveal';
+    pill.type = 'button';
+    pill.title = 'Pokaż ukryte multimedia (H)';
+    pill.addEventListener('click', () => setMediaHidden(false));
+    document.body.appendChild(pill);
+  } else if (!hidden && pill) {
+    pill.remove();
+  }
+}
+document.addEventListener('keydown', (e) => {
+  if (!settings.discreet || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.key.toLowerCase() !== 'h' || e.target.closest('input, textarea, select, [contenteditable]')) return;
+  setMediaHidden(!document.body.classList.contains('media-hidden'));
+});
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden && settings.discreet) setMediaHidden(true);
+});
+applyDiscreet();
+
 // ---------- Oglądajmy razem ----------
-// Serwer pilnuje stanu (jedno oglądanie na kanał): zaproszenie, lista osób, odliczanie 3-2-1 i reakcje na żywo.
-const partyByChannel = new Map(); // kanał -> stan z serwera albo null
+// Serwer pilnuje stanu: publiczne zaproszenie dla kanału albo prywatny seans dla dwóch osób, lista uczestników,
+// kolejka z głosowaniem, odliczanie 3-2-1 i reakcje na żywo. Klient dostaje „swój” widok seansu na kanale.
+const partyByChannel = new Map(); // kanał -> widok seansu z serwera albo null
 const currentParty = () => partyByChannel.get(currentChannel) || null;
 const iAmViewer = (p = currentParty()) => Boolean(p && myAccountId && p.viewers.some((v) => v.id === myAccountId));
-const PARTY_EMOJI = ['🔥', '😍', '👏', '😂', '❤️', '😮'];
 const inPartyPlayer = () => Boolean(miniPlayer && miniPlayer.classList.contains('miniplayer--party'));
+const DEFAULT_REACTIONS = ['🔥', '😍', '👏', '😂', '❤️', '😮'];
 
-function startParty(video) {
-  socket.emit('party:start', { href: video.href }, (res) => {
+// Własne reakcje z ustawień (do 8 emotek, rozdzielane na „znaki” użytkownika, nie na bajty).
+function reactionSet() {
+  const raw = String(settings.partyEmoji || '');
+  const graphemes = window.Intl && Intl.Segmenter ? Array.from(new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(raw), (x) => x.segment) : Array.from(raw);
+  const list = graphemes.filter((g) => /\p{Extended_Pictographic}/u.test(g)).slice(0, 8);
+  return list.length ? list : DEFAULT_REACTIONS;
+}
+
+// Krótkie dźwięki seansu (tik odliczania, start, reakcja) – tylko gdy włączone w ustawieniach.
+function partyTone(kind) {
+  if (!settings.partySounds) return;
+  try {
+    const ctx = getAudioCtx();
+    const t = ctx.currentTime;
+    const [freq, len, vol] = kind === 'tick' ? [520, 0.09, 0.08] : kind === 'go' ? [880, 0.35, 0.12] : [740, 0.07, 0.04];
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.value = freq;
+    gain.gain.setValueAtTime(0.0001, t);
+    gain.gain.exponentialRampToValueAtTime(vol, t + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + len);
+    osc.connect(gain).connect(ctx.destination);
+    osc.start(t);
+    osc.stop(t + len + 0.02);
+  } catch {
+    /* brak audio – pomijamy */
+  }
+}
+
+// Spokojne tło dźwiękowe do trybu kinowego: dwie nastrojone sinusoidy z wolnym falowaniem głośności.
+let ambientPad = null;
+function toggleAmbientPad(on) {
+  if (!on) {
+    if (ambientPad) {
+      const { gain, nodes, ctx } = ambientPad;
+      gain.gain.cancelScheduledValues(ctx.currentTime);
+      gain.gain.linearRampToValueAtTime(0.0001, ctx.currentTime + 0.6);
+      setTimeout(() => nodes.forEach((n) => n.stop()), 700);
+      ambientPad = null;
+    }
+    return;
+  }
+  if (ambientPad) return;
+  try {
+    const ctx = getAudioCtx();
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+    gain.gain.linearRampToValueAtTime(0.05, ctx.currentTime + 2);
+    gain.connect(ctx.destination);
+    const nodes = [110, 164.8, 220.5].map((freq, i) => {
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      g.gain.value = 0.35 - i * 0.08;
+      osc.connect(g).connect(gain);
+      osc.start();
+      return osc;
+    });
+    const lfo = ctx.createOscillator();
+    const lfoGain = ctx.createGain();
+    lfo.frequency.value = 0.12;
+    lfoGain.gain.value = 0.02;
+    lfo.connect(lfoGain).connect(gain.gain);
+    lfo.start();
+    nodes.push(lfo);
+    ambientPad = { ctx, gain, nodes };
+  } catch {
+    /* brak audio – pomijamy */
+  }
+}
+
+// Ekran nie gaśnie, gdy gra film (Wake Lock API – działa w nowych przeglądarkach).
+let wakeLock = null;
+async function holdScreenAwake(on) {
+  try {
+    if (!on) {
+      await wakeLock?.release();
+      wakeLock = null;
+    } else if (navigator.wakeLock && !wakeLock) {
+      wakeLock = await navigator.wakeLock.request('screen');
+      wakeLock.addEventListener('release', () => {
+        wakeLock = null;
+      });
+    }
+  } catch {
+    /* przeglądarka odmówiła – nic się nie dzieje */
+  }
+}
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && miniPlayer && settings.keepAwake) holdScreenAwake(true);
+});
+
+// Seans z czatem głosowym: dołączamy do kanału głosowego grupy i wyciszamy dźwięki aplikacji, żeby nie przeszkadzały.
+let autoVoice = false;
+function partyVoiceOn() {
+  if (!settings.partyVoice) return;
+  appSoundsMuted = true;
+  if (!voice.active && !voice.joining && myCurrentGroup()) {
+    autoVoice = true;
+    joinVoice();
+  }
+}
+function partyVoiceOff() {
+  appSoundsMuted = false;
+  if (autoVoice) {
+    autoVoice = false;
+    leaveVoice();
+  }
+}
+
+function startParty(video, { invite } = {}) {
+  socket.emit('party:start', { href: video.href, invite }, (res) => {
     if (!res || !res.ok) return toast((res && res.error) || 'Nie udało się zaprosić do oglądania.');
     openMiniPlayer(video, { party: true });
   });
 }
 
-function joinParty() {
-  socket.emit('party:join', {}, (res) => {
+// Wybór, kto ma oglądać: cały kanał albo jedna osoba (prywatny seans dla dwóch).
+function openPartyChooser(anchor, video) {
+  document.querySelector('.partychooser')?.remove();
+  const others = onlineUsers.filter((u) => u.id !== myAccountId);
+  if (!others.length) return startParty(video);
+  const box = el('div', 'partychooser');
+  const add = (label, hint, onClick) => {
+    const b = el('button', 'partychooser__item');
+    b.type = 'button';
+    b.append(el('span', '', label), el('small', '', hint));
+    b.addEventListener('click', () => {
+      box.remove();
+      onClick();
+    });
+    box.appendChild(b);
+  };
+  add('Cały kanał', 'Zaproszenie widzą wszyscy', () => startParty(video));
+  others.slice(0, 12).forEach((u) => add(`Tylko ${u.nick}`, 'Prywatny seans dla dwóch osób', () => startParty(video, { invite: u.id })));
+  document.body.appendChild(box);
+  const r = anchor.getBoundingClientRect();
+  box.style.top = `${Math.min(r.bottom + 6, window.innerHeight - box.offsetHeight - 8)}px`;
+  box.style.left = `${Math.max(8, Math.min(r.right - box.offsetWidth, window.innerWidth - box.offsetWidth - 8))}px`;
+  const away = (e) => {
+    if (box.contains(e.target)) return;
+    box.remove();
+    document.removeEventListener('pointerdown', away, true);
+  };
+  setTimeout(() => document.addEventListener('pointerdown', away, true), 0);
+}
+
+function joinParty(id) {
+  socket.emit('party:join', { id }, (res) => {
     if (!res || !res.ok) return toast((res && res.error) || 'Nie udało się dołączyć.');
     const video = parseVideoLink(res.party.href);
     if (video) openMiniPlayer(video, { party: true, immediate: res.party.started });
@@ -732,6 +994,34 @@ function leaveParty() {
   if (inPartyPlayer()) closeMiniPlayer();
 }
 
+// Podsumowanie po seansie: najgorętsze momenty według liczby reakcji.
+function showPartyStats() {
+  socket.emit('party:stats', {}, (res) => {
+    if (!res || !res.ok) return toast('Brak danych do podsumowania.');
+    document.querySelector('.partystats')?.remove();
+    const card = el('div', 'partystats');
+    card.appendChild(el('h3', '', 'Podsumowanie seansu'));
+    if (!res.total) card.appendChild(el('p', '', 'Nikt jeszcze nie zareagował – po starcie filmu pojawią się tu najgorętsze momenty.'));
+    else {
+      card.appendChild(el('p', '', `Reakcji łącznie: ${res.total}`));
+      const list = el('ol', 'partystats__top');
+      for (const t of res.top) list.appendChild(el('li', '', `${formatClock(t.fromSec)}–${formatClock(t.toSec)} od startu · ${t.emoji} ${t.count}`));
+      card.append(el('div', 'partystats__label', 'Najgorętsze momenty'), list);
+      const totals = Object.entries(res.totals).sort((a, b) => b[1] - a[1]).map(([e, n]) => `${e} ${n}`).join('   ');
+      card.appendChild(el('p', 'partystats__totals', totals));
+    }
+    const close = el('button', 'btn-secondary btn-sm', 'Zamknij');
+    close.type = 'button';
+    close.addEventListener('click', () => card.remove());
+    card.appendChild(close);
+    document.body.appendChild(card);
+  });
+}
+
+// Szkic pola „dodaj do kolejki” przetrwa odświeżenie paska (po każdej zmianie stanu serwer wysyła nowy widok).
+let queueOpen = false;
+let queueDraft = '';
+
 function renderPartyBar() {
   const bar = $('party-bar');
   const p = currentParty();
@@ -739,10 +1029,16 @@ function renderPartyBar() {
     bar.classList.add('hidden');
     return bar.replaceChildren();
   }
+  const refocus = document.activeElement && document.activeElement.classList.contains('partybar__add') && bar.contains(document.activeElement);
   const video = parseVideoLink(p.href);
+  const viewer = iAmViewer(p);
+  const isHost = p.hostId === myAccountId;
+
   const info = el('div', 'partybar__info');
   const host = el('b', '', p.host);
-  info.append(host, document.createTextNode(` zaprasza do wspólnego oglądania${video ? ` · ${video.label}` : ''}`));
+  const label = video ? ` · ${video.label}` : '';
+  if (p.private && viewer) info.textContent = `Prywatny seans${label}`;
+  else info.append(host, document.createTextNode(p.private ? ` zaprasza Cię na prywatny seans${label}` : ` zaprasza do wspólnego oglądania${label}`));
   info.appendChild(el('div', 'partybar__who', `Oglądają (${p.viewers.length}): ${p.viewers.map((v) => v.nick).join(', ')}`));
 
   const buttons = el('div', 'partybar__actions');
@@ -752,21 +1048,94 @@ function renderPartyBar() {
     b.addEventListener('click', onClick);
     return b;
   };
-  if (!iAmViewer(p)) {
-    if (video) buttons.appendChild(mk('btn-primary btn-sm', 'Dołącz', joinParty));
+  if (!viewer) {
+    if (video) buttons.appendChild(mk('btn-primary btn-sm', 'Dołącz', () => joinParty(p.id)));
   } else {
     if (video && !inPartyPlayer()) {
       buttons.appendChild(mk('btn-secondary btn-sm', 'Otwórz odtwarzacz', () => openMiniPlayer(video, { party: true, immediate: p.started })));
     }
-    if (p.hostId === myAccountId) buttons.appendChild(mk('btn-primary btn-sm', 'Start 3·2·1', () => socket.emit('party:go')));
+    if (isHost) buttons.appendChild(mk('btn-primary btn-sm', 'Start 3·2·1', () => socket.emit('party:go')));
+    if (p.started) buttons.appendChild(mk('btn-secondary btn-sm', 'Podsumowanie', showPartyStats));
     buttons.appendChild(mk('btn-secondary btn-sm', 'Wyjdź', leaveParty));
   }
-  bar.replaceChildren(iconNode('span', 'partybar__icon', 'users'), info, buttons);
+  const top = el('div', 'partybar__top');
+  top.append(iconNode('span', 'partybar__icon', p.private ? 'user' : 'users'), info, buttons);
+  bar.replaceChildren(top);
+
+  if (viewer) {
+    // Kolejka: dokładasz linki, głosujesz, a gospodarz włącza zwycięzcę.
+    const q = el('details', 'partybar__queue');
+    q.open = queueOpen;
+    q.addEventListener('toggle', () => {
+      queueOpen = q.open;
+    });
+    q.appendChild(el('summary', '', `Kolejka (${p.queue.length}) – co oglądamy dalej`));
+    const list = el('div', 'partybar__qlist');
+    const ranked = p.queue.map((item, i) => ({ item, i })).sort((a, b) => b.item.voters.length - a.item.voters.length || a.i - b.i);
+    for (const { item } of ranked) {
+      const v = parseVideoLink(item.href);
+      const row = el('div', 'partybar__qrow');
+      const voted = item.voters.includes(myAccountId);
+      const vote = iconNode('button', `partybar__vote${voted ? ' is-voted' : ''}`, 'chevron-up', String(item.voters.length));
+      vote.type = 'button';
+      vote.title = voted ? 'Cofnij głos' : 'Zagłosuj na ten film';
+      vote.addEventListener('click', () => socket.emit('party:queue:vote', item.id));
+      const label = el('span', 'partybar__qtext', `${v ? v.label : 'Link'} · dodał(a) ${item.by}`);
+      label.title = item.href;
+      row.append(vote, label);
+      if (isHost || item.by === p.viewers.find((x) => x.id === myAccountId)?.nick) {
+        const del = iconNode('button', 'partybar__qdel', 'close');
+        del.type = 'button';
+        del.title = 'Usuń z kolejki';
+        del.addEventListener('click', () => socket.emit('party:queue:remove', item.id));
+        row.appendChild(del);
+      }
+      list.appendChild(row);
+    }
+    if (!p.queue.length) list.appendChild(el('div', 'partybar__qempty', 'Kolejka jest pusta – dodaj link poniżej.'));
+    const form = el('form', 'partybar__qform');
+    const input = el('input', 'partybar__add');
+    input.type = 'url';
+    input.placeholder = 'Wklej link do filmu…';
+    input.value = queueDraft;
+    input.addEventListener('input', () => {
+      queueDraft = input.value;
+    });
+    const addBtn = iconNode('button', 'btn-secondary btn-sm', 'plus', 'Dodaj');
+    addBtn.type = 'submit';
+    form.append(input, addBtn);
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const href = input.value.trim();
+      if (!href) return;
+      if (!parseVideoLink(href)) return toast('Ten link nie jest obsługiwanym filmem.');
+      socket.emit('party:queue:add', { href }, (res) => {
+        if (!res || !res.ok) return toast((res && res.error) || 'Nie udało się dodać.');
+        queueDraft = '';
+        input.value = '';
+      });
+    });
+    q.append(list, form);
+    if (isHost) {
+      const next = mk('btn-primary btn-sm', 'Następny film (wygrywa najwięcej głosów)', () =>
+        socket.emit('party:next', {}, (res) => res && !res.ok && toast(res.error))
+      );
+      next.disabled = !p.queue.length;
+      q.appendChild(next);
+    }
+    bar.appendChild(q);
+  }
   bar.classList.remove('hidden');
+  if (refocus) bar.querySelector('.partybar__add')?.focus();
 }
 
 socket.on('party:update', ({ channel, party: p }) => {
+  const before = partyByChannel.get(channel);
   partyByChannel.set(channel, p || null);
+  if (p && p.private && (!before || before.id !== p.id) && !iAmViewer(p)) {
+    toast(`${p.host} zaprasza Cię na prywatny seans.`, true);
+    beep([660, 990]);
+  }
   if (inPartyPlayer() && miniPlayer._partyChannel === channel && !iAmViewer(p)) closeMiniPlayer();
   if (channel === currentChannel) renderPartyBar();
   if (miniPlayer && miniPlayer._refreshParty) miniPlayer._refreshParty();
@@ -777,24 +1146,32 @@ socket.on('party:countdown', ({ channel, id, inMs }) => {
   miniPlayer._partyCountdown(inMs);
 });
 socket.on('party:react', ({ channel, nick, emoji }) => {
-  if (inPartyPlayer() && miniPlayer._partyChannel === channel) miniPlayer._burst(emoji, nick);
+  if (inPartyPlayer() && miniPlayer._partyChannel === channel) {
+    miniPlayer._burst(emoji, nick);
+    partyTone('react');
+  }
 });
 
 // Pływający odtwarzacz: jedno okno na całą aplikację. Przeciągasz je za pasek – po puszczeniu przyciąga się do
-// najbliższego rogu. Ma trzy rozmiary, tryb kinowy (duży, na środku, z czatem na tle filmu), listę odtwarzania
-// (filmy z kanału albo ulubione), skróty klawiszowe i tryb „razem” (wspólny start i reakcje na żywo).
-// Rozmiar i róg są pamiętane na urządzeniu.
+// najbliższego rogu. Ma trzy rozmiary, tryb kinowy (duży, na środku, z czatem na tle filmu, poświatą, ściemnianiem
+// i tłem dźwiękowym), listę odtwarzania (filmy z kanału albo ulubione), zapamiętane momenty, skróty klawiszowe
+// i tryb „razem” (wspólny start, reakcje na żywo). Rozmiar, róg i poziom ściemnienia są pamiętane na urządzeniu.
 let miniPlayer = null;
-const playerPrefs = store.get('mychat.player', { size: 'm', corner: 'br' });
+const playerPrefs = store.get('mychat.player', { size: 'm', corner: 'br', dim: 82 });
 const PLAYER_SIZES = ['s', 'm', 'l'];
 const savePlayerPrefs = () => store.set('mychat.player', playerPrefs);
 
 function closeMiniPlayer() {
   if (!miniPlayer) return;
+  const wasParty = miniPlayer.classList.contains('miniplayer--party');
   clearInterval(miniPlayer._countTimer);
+  clearInterval(miniPlayer._glowTimer);
   miniPlayer._backdrop?.remove();
   miniPlayer.remove(); // usunięcie iframe/video zatrzymuje dźwięk
   miniPlayer = null;
+  toggleAmbientPad(false);
+  holdScreenAwake(false);
+  if (wasParty) partyVoiceOff();
 }
 
 // Wszystkie różne filmy z linków w wiadomościach widocznych na kanale, w kolejności rozmowy.
@@ -824,6 +1201,7 @@ function pushCinemaFeed(nick, text) {
 
 function openMiniPlayer(video, opts = {}) {
   closeMiniPlayer();
+  setMediaHidden(false);
   const partyMode = Boolean(opts.party);
   let mode = 'channel'; // źródło listy: 'channel' albo 'favs'
   let list = channelVideos();
@@ -833,11 +1211,14 @@ function openMiniPlayer(video, opts = {}) {
     index = 0;
   }
   let live = !partyMode || Boolean(opts.immediate); // w trybie „razem” film startuje dopiero po odliczaniu
+  let startSec = 0; // od której sekundy startuje film (z zapamiętanego momentu)
 
   const box = el('div', 'miniplayer');
+  box.dataset.glow = settings.partyGlow;
   if (partyMode) {
     box.classList.add('miniplayer--party');
     box._partyChannel = currentChannel;
+    partyVoiceOn();
   }
   const applyLayout = () => {
     if (!PLAYER_SIZES.includes(playerPrefs.size)) playerPrefs.size = 'm';
@@ -864,6 +1245,7 @@ function openMiniPlayer(video, opts = {}) {
   const source = mkBtn('list', 'Lista: filmy z kanału / ulubione', () => switchSource());
   const fav = mkBtn('star', 'Dodaj do ulubionych (F)', () => {});
   bindFavButton(fav, () => list[index]);
+  const marksBtn = mkBtn('bookmark', 'Zapamiętane momenty (M)', () => toggleMarks());
   const size = mkBtn('size', 'Zmień rozmiar okna', () => {
     playerPrefs.size = PLAYER_SIZES[(PLAYER_SIZES.indexOf(playerPrefs.size) + 1) % PLAYER_SIZES.length];
     savePlayerPrefs();
@@ -873,14 +1255,33 @@ function openMiniPlayer(video, opts = {}) {
   const collapse = mkBtn('minus', 'Zwiń / rozwiń', () => box.classList.toggle('miniplayer--collapsed'));
   const close = mkBtn('close', 'Zamknij odtwarzacz', closeMiniPlayer);
   if (partyMode) prev.hidden = next.hidden = source.hidden = true;
-  bar.append(title, prev, next, source, fav, size, cinema, collapse, close);
+  bar.append(title, prev, next, source, fav, marksBtn, size, cinema, collapse, close);
 
   const body = el('div', 'miniplayer__body');
   const feed = el('div', 'miniplayer__feed');
+  const marksPanel = el('div', 'miniplayer__marks hidden');
   box._feed = feed;
   box.append(bar, body);
 
-  // Pole „napisz do czatu” widoczne tylko w trybie kinowym.
+  // Pasek narzędzi trybu kinowego: ściemnianie, tło dźwiękowe i pole „napisz do czatu”.
+  const tools = el('div', 'miniplayer__tools');
+  const dim = el('input', 'miniplayer__dim');
+  dim.type = 'range';
+  dim.min = '20';
+  dim.max = '100';
+  dim.value = String(playerPrefs.dim ?? 82);
+  dim.title = 'Jak ciemno wokół filmu';
+  dim.setAttribute('aria-label', 'Jak ciemno wokół filmu');
+  dim.addEventListener('input', () => {
+    playerPrefs.dim = Number(dim.value);
+    savePlayerPrefs();
+    if (box._backdrop) box._backdrop.style.background = `rgba(0, 0, 0, ${playerPrefs.dim / 100})`;
+  });
+  const music = mkBtn('music', 'Spokojne tło dźwiękowe', () => {
+    const on = !music.classList.contains('is-on');
+    music.classList.toggle('is-on', on);
+    toggleAmbientPad(on);
+  });
   const say = el('form', 'miniplayer__say');
   const sayInput = el('input');
   sayInput.type = 'text';
@@ -895,11 +1296,12 @@ function openMiniPlayer(video, opts = {}) {
     socket.emit('message', { text });
     sayInput.value = '';
   });
-  box.appendChild(say);
+  tools.append(dim, music, say);
+  box.appendChild(tools);
 
   if (partyMode) {
     const reactions = el('div', 'miniplayer__reactions');
-    for (const emoji of PARTY_EMOJI) {
+    for (const emoji of reactionSet()) {
       const b = el('button', '', emoji);
       b.type = 'button';
       b.title = 'Wyślij reakcję do oglądających';
@@ -914,7 +1316,7 @@ function openMiniPlayer(video, opts = {}) {
     let text = v.label;
     if (partyMode) {
       const p = partyByChannel.get(box._partyChannel);
-      text += p ? ` · razem (${p.viewers.length})` : '';
+      text += p ? ` · ${p.private ? 'prywatnie' : 'razem'} (${p.viewers.length})` : '';
     } else if (list.length > 1) {
       text += ` · ${mode === 'favs' ? '★ ' : ''}${index + 1}/${list.length}`;
     }
@@ -928,15 +1330,48 @@ function openMiniPlayer(video, opts = {}) {
     return w;
   }
 
+  // Poświata według obrazu: dla plików wideo (gdy serwer pozwala odczytać piksele) próbkujemy średni kolor.
+  function startGlowSampling() {
+    clearInterval(box._glowTimer);
+    box.style.removeProperty('--glow');
+    if (settings.partyGlow !== 'image' || list[index].kind !== 'video') return;
+    const v = body.querySelector('video');
+    if (!v) return;
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = 8;
+    const ctx2d = canvas.getContext('2d', { willReadFrequently: true });
+    box._glowTimer = setInterval(() => {
+      if (v.paused || v.readyState < 2) return;
+      try {
+        ctx2d.drawImage(v, 0, 0, 8, 8);
+        const d = ctx2d.getImageData(0, 0, 8, 8).data;
+        let r = 0, g = 0, bl = 0;
+        for (let i = 0; i < d.length; i += 4) {
+          r += d[i];
+          g += d[i + 1];
+          bl += d[i + 2];
+        }
+        const n = d.length / 4;
+        box.style.setProperty('--glow', `rgba(${Math.round(r / n)}, ${Math.round(g / n)}, ${Math.round(bl / n)}, 0.55)`);
+      } catch {
+        clearInterval(box._glowTimer); // wideo bez CORS – zostaje poświata w kolorze serwisu
+      }
+    }, 400);
+  }
+
   function show() {
     const v = list[index];
     box.dataset.provider = v.provider;
-    body.replaceChildren(live ? makePlayerNode(v, 'miniplayer__media') : waitPanel(), feed);
+    marksPanel.classList.add('hidden');
+    const node = live ? makePlayerNode(v, 'miniplayer__media', { startSec, ambient: settings.partyGlow === 'image' }) : waitPanel();
+    body.replaceChildren(node, feed, marksPanel);
+    startSec = 0;
     updateTitle();
     prev.disabled = index === 0;
     next.disabled = index === list.length - 1;
     if (!partyMode) prev.hidden = next.hidden = list.length < 2 && mode === 'channel';
     box.classList.toggle('miniplayer--waiting', !live);
+    startGlowSampling();
   }
   function go(step) {
     const target = index + step;
@@ -950,9 +1385,10 @@ function openMiniPlayer(video, opts = {}) {
     if (mode === 'channel') {
       const favs = favVideos();
       if (!favs.length) return toast('Nie masz jeszcze ulubionych – dodaj film gwiazdką.', true);
+      const current = list[index];
       mode = 'favs';
       list = favs;
-      index = Math.max(0, favs.findIndex((v) => v.src === list[index]?.src));
+      index = Math.max(0, favs.findIndex((v) => v.src === current.src));
     } else {
       mode = 'channel';
       const current = list[index];
@@ -966,17 +1402,73 @@ function openMiniPlayer(video, opts = {}) {
     toast(mode === 'favs' ? 'Lista: ulubione.' : 'Lista: filmy z kanału.', true);
     show();
   }
+
+  // Zapamiętane momenty: lista z możliwością skoku i dodania nowego (dla plików wideo czas bierzemy z odtwarzacza).
+  function renderMarks() {
+    const v = list[index];
+    const marks = marksOf(v);
+    marksPanel.replaceChildren(el('div', 'miniplayer__markshead', 'Zapamiętane momenty'));
+    if (!marks.length) marksPanel.appendChild(el('div', 'miniplayer__marksempty', 'Brak – dodaj pierwszy, gdy trafisz na ulubiony fragment.'));
+    marks.forEach((m, i) => {
+      const row = el('div', 'miniplayer__markrow');
+      const jump = el('button', 'miniplayer__markjump', `${formatClock(m.sec)}${m.label ? ` · ${m.label}` : ''}`);
+      jump.type = 'button';
+      jump.addEventListener('click', () => {
+        if (!supportsStart(v)) return toast(`Ten odtwarzacz nie pozwala skoczyć – przewiń ręcznie do ${formatClock(m.sec)}.`, true);
+        live = true;
+        startSec = m.sec;
+        show();
+      });
+      const del = iconNode('button', 'miniplayer__markdel', 'close');
+      del.type = 'button';
+      del.title = 'Usuń moment';
+      del.addEventListener('click', () => {
+        marks.splice(i, 1);
+        saveMarks(v, marks);
+        renderMarks();
+      });
+      row.append(jump, del);
+      marksPanel.appendChild(row);
+    });
+    const add = iconNode('button', 'btn-secondary btn-sm', 'plus', 'Zapamiętaj moment');
+    add.type = 'button';
+    add.addEventListener('click', () => {
+      const media = body.querySelector('video');
+      const guess = media && Number.isFinite(media.currentTime) ? formatClock(media.currentTime) : '';
+      const raw = prompt('Czas w filmie (np. 12:30 albo 1:02:03):', guess);
+      if (raw === null) return;
+      const sec = parseClock(raw);
+      if (sec === null) return toast('Nie rozumiem tego czasu – wpisz np. 12:30.');
+      const label = (prompt('Opis (opcjonalnie):', '') || '').trim().slice(0, 40);
+      const next2 = [{ sec, label }, ...marks.filter((m) => m.sec !== sec)].sort((a, b) => a.sec - b.sec);
+      saveMarks(v, next2);
+      renderMarks();
+    });
+    marksPanel.appendChild(add);
+  }
+  function toggleMarks() {
+    if (marksPanel.classList.contains('hidden')) {
+      renderMarks();
+      marksPanel.classList.remove('hidden');
+    } else marksPanel.classList.add('hidden');
+  }
+
   function setCinema(on) {
     box.classList.toggle('miniplayer--cinema', on);
     if (on && !box._backdrop) {
       box._backdrop = el('div', 'miniplayer-backdrop');
+      box._backdrop.style.background = `rgba(0, 0, 0, ${(playerPrefs.dim ?? 82) / 100})`;
       box._backdrop.addEventListener('click', () => setCinema(false));
       document.body.insertBefore(box._backdrop, box);
     } else if (!on && box._backdrop) {
       box._backdrop.remove();
       box._backdrop = null;
     }
-    if (!on) feed.replaceChildren();
+    if (!on) {
+      feed.replaceChildren();
+      music.classList.remove('is-on');
+      toggleAmbientPad(false);
+    }
     box.classList.remove('miniplayer--collapsed');
   }
   box._exitCinema = () => {
@@ -985,7 +1477,7 @@ function openMiniPlayer(video, opts = {}) {
     return true;
   };
   // Dla skrótów klawiszowych.
-  box._api = { go, cinema: () => setCinema(!box.classList.contains('miniplayer--cinema')), fav: () => fav.click() };
+  box._api = { go, cinema: () => setCinema(!box.classList.contains('miniplayer--cinema')), fav: () => fav.click(), marks: toggleMarks };
 
   // Tryb „razem”: odliczanie 3-2-1 nad czekającym odtwarzaczem, potem start u wszystkich naraz.
   box._partyCountdown = (ms) => {
@@ -1002,6 +1494,7 @@ function openMiniPlayer(video, opts = {}) {
         clearInterval(box._countTimer);
         live = true;
         show();
+        partyTone('go');
         return;
       }
       const n = String(Math.ceil(left / 1000));
@@ -1010,14 +1503,24 @@ function openMiniPlayer(video, opts = {}) {
         count.classList.remove('pop');
         void count.offsetWidth; // restart animacji
         count.classList.add('pop');
+        partyTone('tick');
       }
     };
     box._countTimer = setInterval(tick, 100);
     tick();
   };
   box._refreshParty = () => {
+    const p = partyByChannel.get(box._partyChannel);
+    const parsed = p && parseVideoLink(p.href);
+    if (parsed && parsed.src !== list[index].src) {
+      list = [parsed]; // gospodarz włączył następny film z kolejki
+      index = 0;
+      live = false;
+      show();
+      return;
+    }
     updateTitle();
-    if (!live && !box.querySelector('.miniplayer__count')) body.replaceChildren(waitPanel(), feed);
+    if (!live && !box.querySelector('.miniplayer__count')) body.replaceChildren(waitPanel(), feed, marksPanel);
   };
   // Reakcje na żywo unoszą się nad filmem.
   box._burst = (emoji, nick) => {
@@ -1031,11 +1534,23 @@ function openMiniPlayer(video, opts = {}) {
   show();
   document.body.appendChild(box);
   miniPlayer = box;
+  if (settings.keepAwake) holdScreenAwake(true);
   if (partyMode) renderPartyBar();
 
   // Przeciąganie za pasek tytułu (mysz i dotyk); po puszczeniu okno przyciąga się do najbliższego rogu.
+  // W trybie kinowym pasek obsługuje przesunięcie palcem w bok: następny / poprzedni film.
   bar.addEventListener('pointerdown', (e) => {
-    if (e.target.closest('button') || box.classList.contains('miniplayer--cinema')) return;
+    if (e.target.closest('button')) return;
+    if (box.classList.contains('miniplayer--cinema')) {
+      const startX = e.clientX;
+      const done = (ev) => {
+        bar.removeEventListener('pointerup', done);
+        const dx = ev.clientX - startX;
+        if (Math.abs(dx) > 60) go(dx < 0 ? 1 : -1);
+      };
+      bar.addEventListener('pointerup', done);
+      return;
+    }
     const rect = box.getBoundingClientRect();
     const dx = e.clientX - rect.left;
     const dy = e.clientY - rect.top;
@@ -1068,7 +1583,7 @@ function openMiniPlayer(video, opts = {}) {
   });
 }
 
-// Esc wychodzi z trybu kinowego; N / P / C / F sterują odtwarzaczem, gdy nie piszesz w żadnym polu.
+// Esc wychodzi z trybu kinowego; N / P / C / F / M sterują odtwarzaczem, gdy nie piszesz w żadnym polu.
 document.addEventListener('keydown', (e) => {
   if (!miniPlayer) return;
   if (e.key === 'Escape' && miniPlayer._exitCinema()) return e.stopPropagation();
@@ -1079,6 +1594,7 @@ document.addEventListener('keydown', (e) => {
   else if (key === 'p') api.go(-1);
   else if (key === 'c') api.cinema();
   else if (key === 'f') api.fav();
+  else if (key === 'm') api.marks();
 });
 
 // Pierwsze 2 różne linki do wideo z tekstu wiadomości.
@@ -1825,7 +2341,7 @@ function addMessage(m, { historic = false } = {}) {
     beep(mentioned ? [880, 1175] : undefined);
     if (document.hidden) {
       unread += 1;
-      document.title = `(${unread}) MyChat`;
+      document.title = appTitle(`(${unread}) MyChat`);
     }
   }
 }
@@ -2403,6 +2919,7 @@ $('profile-save').addEventListener('click', () => {
 });
 
 // ---------- Dźwięk ----------
+let appSoundsMuted = false; // wyciszone na czas seansu z czatem głosowym
 let audioCtx;
 function getAudioCtx() {
   audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
@@ -2411,7 +2928,7 @@ function getAudioCtx() {
 }
 
 function beep(freqs = [660, 880]) {
-  if (!settings.sound) return;
+  if (!settings.sound || appSoundsMuted) return;
   try {
     getAudioCtx();
     const t = audioCtx.currentTime;
@@ -3565,6 +4082,23 @@ $('settings-close').addEventListener('click', closeSettings);
 settingsModal.addEventListener('click', (e) => {
   if (e.target === settingsModal) closeSettings();
 });
+const saveSetting = (key, value) => {
+  settings[key] = value;
+  store.set('mychat.settings', settings);
+};
+$('party-glow').addEventListener('change', (e) => saveSetting('partyGlow', e.target.value));
+$('party-emoji').addEventListener('change', (e) => {
+  saveSetting('partyEmoji', e.target.value);
+  e.target.value = reactionSet().join(''); // pokazujemy to, co faktycznie zostanie użyte
+});
+$('party-sounds-toggle').addEventListener('change', (e) => saveSetting('partySounds', e.target.checked));
+$('party-voice-toggle').addEventListener('change', (e) => saveSetting('partyVoice', e.target.checked));
+$('keep-awake-toggle').addEventListener('change', (e) => saveSetting('keepAwake', e.target.checked));
+$('discreet-toggle').addEventListener('change', (e) => {
+  saveSetting('discreet', e.target.checked);
+  applyDiscreet();
+  if (e.target.checked) toast('Tryb dyskretny: klawisz H ukrywa multimedia, a przy zmianie karty ukrywają się same.', true);
+});
 $('sound-toggle').addEventListener('change', (e) => {
   settings.sound = e.target.checked;
   store.set('mychat.settings', settings);
@@ -3691,7 +4225,7 @@ document.addEventListener('keydown', (e) => {
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) {
     unread = 0;
-    document.title = 'MyChat';
+    document.title = appTitle('MyChat');
   }
 });
 

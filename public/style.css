@@ -81,6 +81,54 @@
   --shadow: rgba(0, 0, 0, 0.45);
 }
 
+[data-theme='amber'] {
+  --bg-tertiary: #1a1208;
+  --bg-secondary: #271a0b;
+  --bg-primary: #302210;
+  --bg-input: #412d14;
+  --bg-panel: #21160a;
+  --bg-hover: rgba(255, 190, 110, 0.12);
+  --bg-active: rgba(255, 190, 110, 0.26);
+  --bg-msg-hover: rgba(255, 255, 255, 0.03);
+  --text: #f3e3cc;
+  --text-strong: #fff6e8;
+  --text-muted: #c4a47c;
+  --scroll: #120c05;
+  --shadow: rgba(0, 0, 0, 0.45);
+}
+
+[data-theme='burgundy'] {
+  --bg-tertiary: #1e0a14;
+  --bg-secondary: #2e0f1f;
+  --bg-primary: #381427;
+  --bg-input: #4b1b34;
+  --bg-panel: #260c19;
+  --bg-hover: rgba(255, 140, 190, 0.12);
+  --bg-active: rgba(255, 140, 190, 0.26);
+  --bg-msg-hover: rgba(255, 255, 255, 0.03);
+  --text: #f2dbe5;
+  --text-strong: #fff1f7;
+  --text-muted: #c797ad;
+  --scroll: #14060d;
+  --shadow: rgba(0, 0, 0, 0.45);
+}
+
+[data-theme='violet'] {
+  --bg-tertiary: #130d24;
+  --bg-secondary: #1d1435;
+  --bg-primary: #251a42;
+  --bg-input: #33245a;
+  --bg-panel: #181030;
+  --bg-hover: rgba(180, 150, 255, 0.12);
+  --bg-active: rgba(180, 150, 255, 0.26);
+  --bg-msg-hover: rgba(255, 255, 255, 0.03);
+  --text: #e4def7;
+  --text-strong: #f6f3ff;
+  --text-muted: #a99dcd;
+  --scroll: #0c0818;
+  --shadow: rgba(0, 0, 0, 0.45);
+}
+
 [data-theme='sunset'] {
   --bg-tertiary: #1d1424;
   --bg-secondary: #2a1b33;
@@ -3901,4 +3949,317 @@ textarea.field {
 }
 @media (prefers-reduced-motion: reduce) {
   .miniplayer--cinema { animation: none; }
+}
+
+/* ============ Seanse: pasek, kolejka, wybór osoby, podsumowanie ============ */
+.partybar {
+  display: block;
+}
+.partybar__top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+@media (max-width: 720px) {
+  .partybar__top {
+    flex-wrap: wrap;
+  }
+}
+.partybar__queue {
+  margin-top: 8px;
+}
+.partybar__queue summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.partybar__qlist {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 160px;
+  margin: 6px 0;
+  overflow-y: auto;
+}
+.partybar__qrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  background: var(--bg-hover);
+}
+.partybar__vote {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 9px;
+  border: 0;
+  border-radius: 12px;
+  background: var(--bg-active);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.partybar__vote.is-voted {
+  background: var(--accent);
+  color: #fff;
+}
+.partybar__qtext {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.partybar__qdel {
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.partybar__qdel:hover {
+  color: var(--red);
+  background: var(--bg-hover);
+}
+.partybar__qempty {
+  padding: 2px 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.partybar__qform {
+  display: flex;
+  gap: 6px;
+  margin: 4px 0 6px;
+}
+.partybar__add {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--bg-input);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+}
+.partychooser {
+  position: fixed;
+  z-index: 61;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 220px;
+  max-width: calc(100vw - 16px);
+  padding: 6px;
+  border-radius: 8px;
+  background: var(--bg-panel);
+  box-shadow: 0 8px 28px var(--shadow);
+  animation: card-in 0.18s ease-out;
+}
+.partychooser__item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.partychooser__item:hover {
+  background: var(--bg-hover);
+}
+.partychooser__item small {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.partystats {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  z-index: 62;
+  width: min(340px, calc(100vw - 24px));
+  padding: 18px;
+  border-radius: 10px;
+  background: var(--bg-primary);
+  box-shadow: 0 10px 40px var(--shadow);
+  transform: translate(-50%, -50%);
+  animation: card-in 0.25s ease-out;
+}
+.partystats h3 {
+  margin: 0 0 8px;
+  color: var(--text-strong);
+}
+.partystats p {
+  margin: 4px 0;
+  font-size: 14px;
+}
+.partystats__label {
+  margin-top: 10px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+.partystats__top {
+  margin: 6px 0;
+  padding-left: 20px;
+  font-size: 14px;
+}
+.partystats__totals {
+  font-size: 18px;
+  letter-spacing: 1px;
+}
+.partystats .btn-sm {
+  margin-top: 8px;
+}
+
+/* ============ Odtwarzacz: narzędzia kinowe, zapamiętane momenty, poświata ============ */
+.miniplayer__bar {
+  flex-wrap: wrap;
+}
+.miniplayer__title {
+  flex: 1 1 90px;
+  min-width: 90px;
+}
+.miniplayer--s .miniplayer__btn[title^='Poprzedni'],
+.miniplayer--s .miniplayer__btn[title^='Następny'],
+.miniplayer--s .miniplayer__btn[title^='Lista'],
+.miniplayer--s .miniplayer__btn[title^='Zapamiętane'] {
+  display: none;
+}
+.miniplayer__btn.is-on {
+  color: var(--accent);
+}
+.miniplayer__tools {
+  display: none;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  background: var(--bg-tertiary);
+}
+.miniplayer--cinema .miniplayer__tools {
+  display: flex;
+}
+.miniplayer__tools .miniplayer__say {
+  display: block;
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  background: transparent;
+}
+.miniplayer__dim {
+  width: 84px;
+  flex-shrink: 0;
+  accent-color: var(--accent);
+}
+.miniplayer__marks {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px;
+  overflow-y: auto;
+  background: rgba(0, 0, 0, 0.9);
+  color: #fff;
+  font-size: 13px;
+}
+.miniplayer__marks.hidden {
+  display: none;
+}
+.miniplayer__markshead {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: #aab;
+}
+.miniplayer__marksempty {
+  color: #99a;
+}
+.miniplayer__markrow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.miniplayer__markjump {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.miniplayer__markjump:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+.miniplayer__markdel {
+  width: 22px;
+  height: 22px;
+  border: 0;
+  background: transparent;
+  color: #bbc;
+  cursor: pointer;
+}
+.miniplayer[data-glow='off'] {
+  box-shadow: 0 8px 28px var(--shadow);
+  animation: none;
+}
+.miniplayer--cinema[data-glow='off'] {
+  box-shadow: 0 8px 28px var(--shadow);
+}
+.miniplayer--cinema[data-glow='steady'] {
+  animation: none;
+  box-shadow: 0 0 140px 20px var(--glow, rgba(88, 101, 242, 0.5));
+}
+.miniplayer--cinema {
+  transition: box-shadow 0.4s;
+}
+@media (pointer: coarse) {
+  .miniplayer--cinema .miniplayer__btn {
+    width: 40px;
+    height: 40px;
+  }
+  .miniplayer--cinema .miniplayer__reactions button {
+    padding: 6px 10px;
+    font-size: 22px;
+  }
+}
+
+/* ============ Tryb dyskretny ============ */
+body.media-hidden .vembed,
+body.media-hidden img.media,
+body.media-hidden video.media,
+body.media-hidden .filecard {
+  visibility: hidden;
+}
+.media-reveal {
+  position: fixed;
+  left: 8px;
+  bottom: 8px;
+  z-index: 80;
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 12px;
+  background: var(--bg-hover);
+  color: var(--text-muted);
+  opacity: 0.3;
+  cursor: pointer;
+}
+.media-reveal:hover {
+  opacity: 0.9;
 }
