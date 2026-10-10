@@ -95,7 +95,7 @@ if (profile.avatar && profile.avatar.startsWith('data:')) {
 }
 
 // Wersje do sprawdzenia, czy telefon pobrał nową stronę i czy serwer jest po wdrożeniu.
-const CLIENT_VERSION = '2026-10-10j';
+const CLIENT_VERSION = '2026-10-10k';
 let serverInfo = null;
 function renderVersionInfo() {
   const server = serverInfo ? `serwer: ${serverInfo.version}${serverInfo.party ? '' : ' (STARSZY – brak seansów, wdróż ponownie)'}` : 'serwer: sprawdzam…';
@@ -1045,10 +1045,7 @@ function showPartyStats() {
       const totals = Object.entries(res.totals).sort((a, b) => b[1] - a[1]).map(([e, n]) => `${e} ${n}`).join('   ');
       card.appendChild(el('p', 'partystats__totals', totals));
     }
-    const close = el('button', 'btn-secondary btn-sm', 'Zamknij');
-    close.type = 'button';
-    close.addEventListener('click', () => card.remove());
-    card.appendChild(close);
+    card.appendChild(iconButton('close', 'Zamknij', () => card.remove()));
     document.body.appendChild(card);
   });
 }
@@ -1077,21 +1074,23 @@ function renderPartyBar() {
   info.appendChild(el('div', 'partybar__who', `Oglądają (${p.viewers.length}): ${p.viewers.map((v) => v.nick).join(', ')}`));
 
   const buttons = el('div', 'partybar__actions');
-  const mk = (cls, text, onClick) => {
-    const b = el('button', cls, text);
+  const mk = (cls, name, label, onClick, text = '') => {
+    const b = iconNode('button', `${cls} btn-iconly`, name, text);
     b.type = 'button';
+    b.title = label;
+    b.setAttribute('aria-label', label);
     b.addEventListener('click', onClick);
     return b;
   };
   if (!viewer) {
-    if (video) buttons.appendChild(mk('btn-primary btn-sm', 'Dołącz', () => joinParty(p.id)));
+    if (video) buttons.appendChild(mk('btn-primary btn-sm', 'login', 'Dołącz do seansu', () => joinParty(p.id)));
   } else {
     if (video && !inPartyPlayer()) {
-      buttons.appendChild(mk('btn-secondary btn-sm', 'Otwórz odtwarzacz', () => openMiniPlayer(video, { party: true, immediate: p.started })));
+      buttons.appendChild(mk('btn-secondary btn-sm', 'popout', 'Otwórz odtwarzacz', () => openMiniPlayer(video, { party: true, immediate: p.started })));
     }
-    if (isHost) buttons.appendChild(mk('btn-primary btn-sm', 'Start 3·2·1', () => socket.emit('party:go')));
-    if (p.started) buttons.appendChild(mk('btn-secondary btn-sm', 'Podsumowanie', showPartyStats));
-    buttons.appendChild(mk('btn-secondary btn-sm', 'Wyjdź', leaveParty));
+    if (isHost) buttons.appendChild(mk('btn-primary btn-sm', 'play', 'Start – odliczanie 3·2·1 dla wszystkich', () => socket.emit('party:go'), '3·2·1'));
+    if (p.started) buttons.appendChild(mk('btn-secondary btn-sm', 'chart', 'Podsumowanie seansu', showPartyStats));
+    buttons.appendChild(mk('btn-secondary btn-sm', 'logout', 'Wyjdź z seansu', leaveParty));
   }
   const top = el('div', 'partybar__top');
   top.append(iconNode('span', 'partybar__icon', p.private ? 'user' : 'users'), info, buttons);
@@ -1136,8 +1135,10 @@ function renderPartyBar() {
     input.addEventListener('input', () => {
       queueDraft = input.value;
     });
-    const addBtn = iconNode('button', 'btn-secondary btn-sm', 'plus', 'Dodaj');
+    const addBtn = iconNode('button', 'btn-secondary btn-sm btn-iconly', 'plus');
     addBtn.type = 'submit';
+    addBtn.title = 'Dodaj do kolejki';
+    addBtn.setAttribute('aria-label', addBtn.title);
     form.append(input, addBtn);
     form.addEventListener('submit', (e) => {
       e.preventDefault();
@@ -1152,7 +1153,7 @@ function renderPartyBar() {
     });
     q.append(list, form);
     if (isHost) {
-      const next = mk('btn-primary btn-sm', 'Następny film (wygrywa najwięcej głosów)', () =>
+      const next = mk('btn-primary btn-sm', 'skip-next', 'Następny film (wygrywa najwięcej głosów)', () =>
         socket.emit('party:next', {}, (res) => res && !res.ok && toast(res.error))
       );
       next.disabled = !p.queue.length;
@@ -1469,8 +1470,10 @@ function openMiniPlayer(video, opts = {}) {
       row.append(jump, del);
       marksPanel.appendChild(row);
     });
-    const add = iconNode('button', 'btn-secondary btn-sm', 'plus', 'Zapamiętaj moment');
+    const add = iconNode('button', 'btn-secondary btn-sm btn-iconly', 'plus');
     add.type = 'button';
+    add.title = 'Zapamiętaj moment';
+    add.setAttribute('aria-label', add.title);
     add.addEventListener('click', () => {
       const media = body.querySelector('video');
       const guess = media && Number.isFinite(media.currentTime) ? formatClock(media.currentTime) : '';
@@ -2728,8 +2731,10 @@ function renderProfileCard(root, p, { isMe = false, onEdit = null } = {}) {
   body.appendChild(box);
 
   if (isMe && onEdit) {
-    const edit = el('button', 'btn-secondary btn-sm pcard__edit', 'Edytuj profil');
+    const edit = iconNode('button', 'btn-secondary btn-sm btn-iconly pcard__edit', 'pencil');
     edit.type = 'button';
+    edit.title = 'Edytuj profil';
+    edit.setAttribute('aria-label', edit.title);
     edit.addEventListener('click', onEdit);
     body.appendChild(edit);
   }
@@ -3348,8 +3353,10 @@ function fillEmojiPicker(container, onPick, { quick = false } = {}) {
     tabStd.classList.remove('is-active');
     if (!customEmoji.length) {
       const empty = el('div', 'epicker__empty', 'Serwer nie ma jeszcze własnych emoji. ');
-      const add = el('button', 'btn-secondary btn-sm', 'Dodaj pierwsze');
+      const add = iconNode('button', 'btn-secondary btn-sm btn-iconly', 'plus');
       add.type = 'button';
+      add.title = 'Dodaj pierwsze emoji';
+      add.setAttribute('aria-label', add.title);
       add.addEventListener('click', () => {
         closePopups();
         openSettings('emoji');
@@ -5732,6 +5739,12 @@ const PERM_LABELS = {
 const PERM_ORDER = ['admin', 'send', 'manageMessages', 'manageChannels', 'manageRoles', 'kick', 'invite', 'manageGroup'];
 
 const gsetModal = $('gset-modal');
+const GSET_PANES = {
+  overview: { title: 'Przegląd grupy', lead: 'Nazwa, obrazek i kod dostępu, którym zaprosisz nowe osoby.' },
+  channels: { title: 'Kanały', lead: 'Kanały tekstowe tej grupy – każdy ma osobną historię.' },
+  members: { title: 'Członkowie', lead: 'Osoby w grupie. Ikona etykiety nadaje im role, a druga ikona wyrzuca z grupy.' },
+  roles: { title: 'Role', lead: 'Role dają uprawnienia i kolor. Nadajesz je w zakładce Członkowie.' },
+};
 const gset = { groupId: null, tab: 'overview', roleId: 'everyone', openMember: null, members: [], membersFor: null };
 
 const gsetGroup = () => groups.find((g) => g.id === gset.groupId) || null;
@@ -5811,7 +5824,7 @@ function gsetButton(label, cls, onClick, { disabled = false, title = '' } = {}) 
 
 function gsetOverview(g, body) {
   // Obrazek grupy: widać go na pasku po lewej, w liście grup i nad kanałami (zmienia ten, kto może zmieniać nazwę grupy).
-  const iconSec = gsetSection('OBRAZEK GRUPY');
+  const iconSec = gsetSection('Obrazek grupy');
   const iconRow = el('div', 'gset__iconrow');
   const preview = el('div', 'group-card__icon gset__icon');
   applyGroupIcon(preview, g);
@@ -5844,7 +5857,7 @@ function gsetOverview(g, body) {
   iconSec.appendChild(el('div', 'groups__hint', 'Zwykłe obrazy są kadrowane do kwadratu; animowany GIF może mieć do 600 KB.'));
   body.appendChild(iconSec);
 
-  const nameSec = gsetSection('NAZWA GRUPY');
+  const nameSec = gsetSection('Nazwa grupy');
   const row = el('div', 'groups__row');
   const input = el('input', 'field');
   input.value = g.name;
@@ -5860,7 +5873,7 @@ function gsetOverview(g, body) {
   nameSec.appendChild(row);
   body.appendChild(nameSec);
 
-  const permSec = gsetSection('TWOJE UPRAWNIENIA');
+  const permSec = gsetSection('Twoje uprawnienia');
   const mine = g.isOwner ? ['Twórca grupy – masz wszystkie uprawnienia'] : PERM_ORDER.filter((p) => g.perms.includes(p)).map((p) => PERM_LABELS[p][0]);
   const chips = el('div', 'gset__chips');
   (mine.length ? mine : ['brak specjalnych uprawnień']).forEach((t) => chips.appendChild(el('span', 'gset__chip', t)));
@@ -5868,7 +5881,7 @@ function gsetOverview(g, body) {
   body.appendChild(permSec);
 
   if (g.code) {
-    const codeSec = gsetSection('JEDNORAZOWY KOD DOSTĘPU');
+    const codeSec = gsetSection('Jednorazowy kod dostępu');
     const box = el('div', 'group-card__code');
     box.appendChild(el('span', 'group-card__code-value', g.code));
     box.append(
@@ -5885,14 +5898,23 @@ function gsetOverview(g, body) {
     body.appendChild(codeSec);
   }
 
-  const leaveSec = gsetSection('');
+  const leaveSec = gsetSection(g.isOwner ? 'Usuń grupę' : 'Opuść grupę');
+  leaveSec.appendChild(
+    el(
+      'p',
+      'settings-note',
+      g.isOwner
+        ? 'Wszyscy członkowie zostaną usunięci, a cała historia czatu przepadnie. Tego nie da się cofnąć.'
+        : 'Aby wrócić, będziesz potrzebować nowego kodu od twórcy grupy.'
+    )
+  );
   leaveSec.appendChild(leaveOrDeleteButton(g));
   body.appendChild(leaveSec);
 }
 
 function gsetChannels(g, body) {
   const canManage = g.perms.includes('manageChannels');
-  const listSec = gsetSection(`KANAŁY TEKSTOWE — ${g.channels.length}`);
+  const listSec = gsetSection(`Kanały tekstowe — ${g.channels.length}`);
   g.channels.forEach((c) => {
     const row = el('div', 'gset__row');
     row.appendChild(el('span', 'hash', '#'));
@@ -5924,7 +5946,7 @@ function gsetChannels(g, body) {
   body.appendChild(listSec);
 
   if (canManage) {
-    const addSec = gsetSection('NOWY KANAŁ');
+    const addSec = gsetSection('Nowy kanał');
     const row = el('form', 'groups__row');
     const input = el('input', 'field');
     input.id = 'gset-new-channel';
@@ -6008,7 +6030,7 @@ function gsetRoles(g, body) {
   let colorInput = null;
   let noColor = null;
   if (!isEveryone) {
-    editor.appendChild(el('div', 'section-title', 'NAZWA ROLI'));
+    editor.appendChild(el('div', 'section-title', 'Nazwa roli'));
     editor.appendChild(nameInput);
     editor.appendChild(el('div', 'section-title gset__spaced', 'KOLOR'));
     const colorRow = el('div', 'gset__colorrow');
@@ -6028,7 +6050,7 @@ function gsetRoles(g, body) {
   } else {
     editor.appendChild(el('div', 'groups__hint', 'Uprawnienia, które dostaje każdy członek grupy.'));
   }
-  editor.appendChild(el('div', 'section-title gset__spaced', 'UPRAWNIENIA'));
+  editor.appendChild(el('div', 'section-title gset__spaced', 'Uprawnienia'));
   const perms = permCheckboxes(g, role.perms, { editable, allowAdmin: !isEveryone });
   editor.appendChild(perms);
 
@@ -6077,7 +6099,7 @@ function gsetMembers(g, body) {
   const members = gset.members
     .slice()
     .sort((a, b) => memberRank(g, a) - memberRank(g, b) || a.nick.localeCompare(b.nick, 'pl'));
-  const sec = gsetSection(`CZŁONKOWIE — ${members.length}`);
+  const sec = gsetSection(`Członkowie — ${members.length}`);
   if (canRoles) sec.appendChild(el('div', 'groups__hint', 'Ikona etykiety przy osobie otwiera listę ról do nadania. Role tworzysz w zakładce „Role”.'));
   members.forEach((m) => {
     const rank = memberRank(g, m);
@@ -6174,8 +6196,11 @@ function renderGroupSettings() {
   const active = document.activeElement;
   if (body.contains(active) && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA') && active.type !== 'checkbox') return;
 
-  setIcon($('gset-title'), 'gear', g.name);
+  $('gset-title').textContent = g.name; // nazwa grupy nad menu, jak nazwa serwera na Discordzie
   document.querySelectorAll('.gset__tab').forEach((t) => t.classList.toggle('is-active', t.dataset.tab === gset.tab));
+  const paneInfo = GSET_PANES[gset.tab] || GSET_PANES.overview;
+  $('gset-pane-title').textContent = paneInfo.title;
+  $('gset-pane-lead').textContent = paneInfo.lead;
   const scroll = body.scrollTop;
   const fresh = el('div', 'gset__content');
   if (gset.tab === 'channels') gsetChannels(g, fresh);

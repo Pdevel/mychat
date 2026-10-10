@@ -4483,3 +4483,208 @@ body.media-hidden .filecard {
   display: flex;
   gap: 6px;
 }
+
+/* ============ Ustawienia w stylu Discorda: pełny ekran, menu z działami po lewej, treść po środku ============ */
+.btn-cta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+.btn-cta .icon {
+  width: 18px;
+  height: 18px;
+}
+.btn-iconly > span {
+  display: grid;
+  place-items: center;
+}
+
+.modal:has(> .settings) {
+  padding: 0;
+  background: var(--bg-primary);
+}
+.settings {
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  border-radius: 0;
+  box-shadow: none;
+  background: var(--bg-primary);
+  animation: fade 0.2s ease-out;
+}
+.settings__nav {
+  align-items: flex-end;
+  width: max(280px, calc(50% - 400px));
+  padding: 56px 12px 24px;
+  background: var(--bg-primary);
+  gap: 2px;
+}
+.settings__nav > * {
+  width: 218px;
+  flex-shrink: 0;
+}
+.settings__nav-title {
+  display: block;
+  padding: 6px 10px 6px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.settings__nav-sep {
+  height: 1px;
+  margin: 8px 10px;
+  background: var(--bg-active);
+}
+.settings__tab,
+.settings .gset__tab {
+  padding: 7px 10px;
+  font-size: 15px;
+  font-weight: 500;
+  border-radius: 6px;
+}
+.settings .gset__tab:hover,
+.settings__tab:hover {
+  color: var(--text-strong);
+  background: var(--bg-hover);
+}
+.settings .gset__tab.is-active,
+.settings__tab.is-active {
+  color: var(--text-strong);
+  background: var(--bg-active);
+}
+.settings__main {
+  flex: 1 1 auto;
+  max-width: 1020px;
+}
+.settings__panes {
+  max-width: 740px;
+  padding: 56px 40px 90px 40px;
+}
+.settings__title {
+  margin: 0 0 6px;
+  font-size: 20px;
+  font-weight: 700;
+}
+.settings__lead {
+  margin: 0 0 22px;
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--text-strong);
+}
+.settings__lead:empty {
+  display: none;
+}
+.settings .section-title,
+.gset .section-title {
+  margin: 0 0 8px;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0;
+  color: var(--text-strong);
+}
+.settings .section-title--spaced {
+  padding-top: 24px;
+  margin-top: 24px;
+  border-top: 1px solid var(--bg-active);
+}
+.settings .gset__section {
+  margin: 0;
+  padding: 24px 0;
+  border-top: 1px solid var(--bg-active);
+}
+.settings .gset__section:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+.settings .field,
+.settings .rename-row input,
+.settings input[type='text'],
+.settings input[type='url'] {
+  height: 40px;
+  padding: 0 12px;
+  border: 1px solid var(--bg-active);
+  border-radius: 8px;
+  background: var(--bg-tertiary);
+  color: var(--text);
+}
+.settings textarea.field {
+  height: auto;
+  padding: 10px 12px;
+}
+.settings .field:focus,
+.settings input[type='text']:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+.settings .settings-note {
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+.settings__preview {
+  width: 320px;
+  padding: 56px 100px 24px 0; /* z prawej zostaje miejsce na okrągły przycisk zamknięcia */
+}
+.settings__footer {
+  background: var(--bg-secondary);
+}
+
+/* przycisk zamknięcia jak na Discordzie: okrągły z podpisem ESC */
+@media (min-width: 801px) {
+  .settings__tab-icon {
+    display: none;
+  }
+  .settings .modal__close {
+    top: 56px;
+    right: 28px;
+    width: 38px;
+    height: 38px;
+    border: 2px solid var(--text-muted);
+    border-radius: 50%;
+    color: var(--text-muted);
+    background: transparent;
+  }
+  .settings .modal__close::after {
+    content: 'ESC';
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text-muted);
+  }
+  .settings .modal__close:hover {
+    color: var(--text-strong);
+    border-color: var(--text-strong);
+    background: var(--bg-hover);
+  }
+}
+@media (max-width: 800px) {
+  .settings__nav {
+    width: auto;
+    align-items: center;
+    padding: 12px 10px 8px 10px;
+  }
+  .settings__nav > * {
+    width: auto;
+  }
+  .settings__nav-title,
+  .settings__nav-sep {
+    display: none;
+  }
+  .settings__panes {
+    max-width: none;
+    padding: 16px;
+  }
+  .settings__preview {
+    width: 100%;
+    padding: 16px 16px 0;
+  }
+}
