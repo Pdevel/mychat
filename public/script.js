@@ -75,6 +75,9 @@ let settings = store.get('mychat.settings', {
   screenAudio: 'on', // dźwięk karty przy udostępnianiu ekranu: 'on' | 'off'
   archive: true, // zapisuj wiadomości na tym urządzeniu (nie znikają po okresie przechowywania na serwerze)
   archiveFiles: false, // zapisuj też zawartość plików (zajmuje więcej miejsca)
+  adultConfirmed: false, // potwierdzono pełnoletność – odtwarzacze 18+ nie pytają ponownie
+  adultAutoClose: true, // odtwarzacze 18+ zamykają się, gdy karta przeglądarki trafi w tło
+  adultHide: false, // nie pokazuj kart wideo 18+ (zostaje sam link)
 });
 // avatar = adres obrazu z serwera; avatarData = mała lokalna kopia (pozwala odtworzyć avatar po zresetowaniu serwera)
 let profile = store.get('mychat.profile', { nick: '', avatar: null, avatarData: null });
@@ -290,6 +293,9 @@ function renderSettingsOptions() {
   $('screen-mode').value = settings.screenMode;
   $('screen-audio').value = settings.screenAudio;
   $('archive-toggle').checked = settings.archive;
+  $('adult-autoclose-toggle').checked = settings.adultAutoClose;
+  $('adult-hide-toggle').checked = settings.adultHide;
+  $('adult-forget').disabled = !settings.adultConfirmed;
   $('archive-files-toggle').checked = settings.archiveFiles;
   $('archive-files-toggle').disabled = !settings.archive;
 }
@@ -570,7 +576,7 @@ function parseVideoLink(href) {
     // Strona wideo (view_video.php?viewkey=…) nie wchodzi w ramkę – serwis ma osobny adres do osadzania.
     const key = u.searchParams.get('viewkey') || (u.pathname.match(/^\/embed\/([^/?#]+)/) || [])[1];
     if (!key || !/^[A-Za-z0-9]{6,24}$/.test(key)) return null;
-    return { kind: 'iframe', label: 'Pornhub', src: `https://www.pornhub.com/embed/${key}`, thumb: '', href };
+    return { kind: 'iframe', label: 'Pornhub', src: `https://www.pornhub.com/embed/${key}`, thumb: '', href, adult: true };
   }
   if (DIRECT_VIDEO.test(u.pathname)) {
     return { kind: 'video', label: u.hostname, src: u.href, thumb: '', href };
@@ -600,30 +606,52 @@ function makePlayerNode(video, className) {
 }
 
 // Karta pod wiadomością: miniatura + „Odtwórz tutaj” (w wiadomości) albo „Mały odtwarzacz” (pływające okienko).
+// Treści 18+: przed pierwszym odtworzeniem pytamy o pełnoletność (odpowiedź zapamiętana na urządzeniu).
+function confirmAdult(video) {
+  if (!video.adult || settings.adultConfirmed) return true;
+  if (!confirm('Ta treść jest przeznaczona wyłącznie dla osób pełnoletnich. Czy masz ukończone 18 lat?')) return false;
+  settings.adultConfirmed = true;
+  store.set('mychat.settings', settings);
+  return true;
+}
+
 function makeVideoEmbed(video, afterChange) {
-  const card = el('div', 'vembed');
+  if (video.adult && settings.adultHide) return null;
+  const card = el('div', 'vembed' + (video.adult ? ' vembed--adult' : ''));
+  if (video.adult) card.dataset.adult = '1';
   const stage = el('div', 'vembed__stage');
   const header = el('div', 'vembed__bar');
-  header.appendChild(iconNode('span', 'vembed__label', 'play', video.label));
+  const label = iconNode('span', 'vembed__label', 'play', video.label);
+  if (video.adult) label.appendChild(el('span', 'vembed__badge', '18+'));
+  header.appendChild(label);
   const actions = el('div', 'vembed__actions');
 
   const popBtn = iconNode('button', 'vembed__btn', 'popout', 'Mały odtwarzacz');
   popBtn.type = 'button';
   popBtn.title = 'Oglądaj w pływającym oknie – zostaje przy zmianie kanału';
   popBtn.addEventListener('click', () => {
+    if (!confirmAdult(video)) return;
     showStage(false);
     openMiniPlayer(video);
+  });
+  const stopBtn = iconNode('button', 'vembed__btn hidden', 'close', 'Zatrzymaj');
+  stopBtn.type = 'button';
+  stopBtn.title = 'Zatrzymaj i schowaj odtwarzacz';
+  stopBtn.addEventListener('click', () => {
+    showStage(false);
+    afterChange();
   });
   const openBtn = iconNode('a', 'vembed__btn', 'external');
   openBtn.href = video.href;
   openBtn.target = '_blank';
   openBtn.rel = 'noopener noreferrer';
   openBtn.title = 'Otwórz w nowej karcie';
-  actions.append(popBtn, openBtn);
+  actions.append(stopBtn, popBtn, openBtn);
   header.appendChild(actions);
 
   const showStage = (playing) => {
     stage.replaceChildren();
+    stopBtn.classList.toggle('hidden', !playing);
     if (playing) {
       stage.appendChild(makePlayerNode(video, 'vembed__player'));
       closeMiniPlayer();
@@ -642,7 +670,12 @@ function makeVideoEmbed(video, afterChange) {
         poster.appendChild(img);
       }
       poster.appendChild(iconNode('span', 'vembed__play', 'play'));
+      if (video.adult && !settings.adultConfirmed) {
+        poster.classList.add('vembed__poster--adult');
+        poster.appendChild(el('span', 'vembed__gate', '18+ · treść dla dorosłych – kliknij, aby potwierdzić wiek'));
+      }
       poster.addEventListener('click', () => {
+        if (!confirmAdult(video)) return;
         showStage(true);
         afterChange();
       });
@@ -650,6 +683,7 @@ function makeVideoEmbed(video, afterChange) {
     }
   };
   showStage(false);
+  card._reset = () => showStage(false); // „awaryjne” wyłączenie odtwarzacza (patrz hideAdultPlayers)
   card.append(header, stage);
   return card;
 }
@@ -666,6 +700,7 @@ function closeMiniPlayer() {
 function openMiniPlayer(video) {
   closeMiniPlayer();
   const box = el('div', 'miniplayer');
+  if (video.adult) box.dataset.adult = '1';
   const bar = el('div', 'miniplayer__bar');
   bar.appendChild(iconNode('span', 'miniplayer__title', 'play', video.label));
   const collapse = iconNode('button', 'miniplayer__btn', 'minus');
@@ -710,6 +745,36 @@ function openMiniPlayer(video) {
     bar.addEventListener('pointercancel', stop);
   });
 }
+
+// Awaryjne zamknięcie odtwarzaczy 18+: dwa razy Esc albo ukrycie karty przeglądarki (jeśli włączone w ustawieniach).
+function hideAdultPlayers() {
+  let closed = false;
+  if (miniPlayer && miniPlayer.dataset.adult) {
+    closeMiniPlayer();
+    closed = true;
+  }
+  document.querySelectorAll('.vembed[data-adult]').forEach((card) => {
+    if (!card.querySelector('.vembed__player')) return;
+    card._reset?.();
+    closed = true;
+  });
+  return closed;
+}
+
+let lastEscape = 0;
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  const now = Date.now();
+  if (now - lastEscape < 600) {
+    lastEscape = 0;
+    if (hideAdultPlayers()) toast('Odtwarzacze 18+ zostały zamknięte.', true);
+  } else {
+    lastEscape = now;
+  }
+});
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden && settings.adultAutoClose) hideAdultPlayers();
+});
 
 // Pierwsze 2 różne linki do wideo z tekstu wiadomości.
 function videosInText(text) {
@@ -1439,7 +1504,10 @@ function addMessage(m, { historic = false } = {}) {
     body._mentions = m.mentions || [];
     body.appendChild(renderRichText(m.text, jumbo, body._mentions));
     wrap.appendChild(body);
-    for (const video of videosInText(m.text)) wrap.appendChild(makeVideoEmbed(video, afterMediaLoad));
+    for (const video of videosInText(m.text)) {
+      const card = makeVideoEmbed(video, afterMediaLoad);
+      if (card) wrap.appendChild(card);
+    }
   }
 
   wrap._reactions = m.reactions || {};
@@ -3192,6 +3260,22 @@ $('userpanel').addEventListener('click', openSettings);
 $('settings-close').addEventListener('click', closeSettings);
 settingsModal.addEventListener('click', (e) => {
   if (e.target === settingsModal) closeSettings();
+});
+$('adult-autoclose-toggle').addEventListener('change', (e) => {
+  settings.adultAutoClose = e.target.checked;
+  store.set('mychat.settings', settings);
+});
+$('adult-hide-toggle').addEventListener('change', (e) => {
+  settings.adultHide = e.target.checked;
+  store.set('mychat.settings', settings);
+  toast('Zmiana obejmie nowo wyświetlane wiadomości (odśwież stronę, aby zastosować do wszystkich).', true);
+});
+$('adult-forget').addEventListener('click', () => {
+  settings.adultConfirmed = false;
+  store.set('mychat.settings', settings);
+  hideAdultPlayers();
+  $('adult-forget').disabled = true;
+  toast('Potwierdzenie wieku cofnięte – przy następnym odtwarzaniu 18+ zapytamy ponownie.', true);
 });
 $('sound-toggle').addEventListener('change', (e) => {
   settings.sound = e.target.checked;

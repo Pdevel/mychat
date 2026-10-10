@@ -3626,3 +3626,36 @@ textarea.field {
     overflow-y: hidden; /* siatka emoji przewija się sama, zakładki zostają na górze */
   }
 }
+
+/* ============ Treści 18+ ============ */
+.vembed__badge {
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--red);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 16px;
+}
+.vembed--adult {
+  border-left-color: var(--red);
+}
+.vembed__poster--adult {
+  gap: 10px;
+  align-content: center;
+  background: repeating-linear-gradient(135deg, #1a1a1d 0 14px, #222226 14px 28px);
+}
+.vembed__poster--adult .vembed__play {
+  display: none;
+}
+.vembed__gate {
+  max-width: 85%;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.4;
+  text-align: center;
+}
+.vembed__btn.hidden {
+  display: none;
+}
