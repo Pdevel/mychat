@@ -3697,3 +3697,208 @@ textarea.field {
   .miniplayer__bar { gap: 0; }
   .miniplayer__btn { width: 24px; }
 }
+
+/* ============ Oglądajmy razem, ulubione, czat w trybie kinowym ============ */
+.vembed__btn.hidden {
+  display: none;
+}
+.vembed__btn.is-fav .icon,
+.miniplayer__btn.is-fav .icon {
+  fill: currentColor;
+  color: #f0b232;
+}
+.partybar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+  padding: 8px 14px;
+  background: color-mix(in srgb, var(--accent) 16%, var(--bg-secondary));
+  border-bottom: 1px solid var(--bg-tertiary);
+  font-size: 13px;
+  animation: msg-in 0.28s ease-out;
+}
+.partybar__icon {
+  display: grid;
+  place-items: center;
+  color: var(--accent);
+  font-size: 20px;
+}
+.partybar__info {
+  flex: 1;
+  min-width: 0;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.partybar__who {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.partybar__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+@media (max-width: 720px) {
+  .partybar {
+    flex-wrap: wrap;
+  }
+  .partybar__actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+}
+
+.miniplayer__body {
+  position: relative;
+  overflow: hidden;
+}
+.miniplayer__wait {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px;
+  background: radial-gradient(circle at 50% 40%, color-mix(in srgb, var(--accent) 35%, #000), #000 75%);
+  color: #fff;
+  font-size: 13px;
+  text-align: center;
+}
+.miniplayer__waiticon {
+  font-size: 28px;
+  opacity: 0.9;
+}
+.miniplayer__count {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.88);
+  color: #fff;
+  font-size: 72px;
+  font-weight: 800;
+  pointer-events: none;
+}
+.miniplayer__count.pop {
+  animation: count-pop 0.9s ease-out;
+}
+@keyframes count-pop {
+  0% { transform: scale(1.8); opacity: 0; }
+  25% { transform: scale(1); opacity: 1; }
+  100% { transform: scale(0.9); opacity: 0.6; }
+}
+.miniplayer__reactions {
+  display: flex;
+  justify-content: space-around;
+  padding: 4px 6px;
+  background: var(--bg-tertiary);
+}
+.miniplayer__reactions button {
+  padding: 2px 6px;
+  font-size: 18px;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: transform 0.12s, background 0.12s;
+}
+.miniplayer__reactions button:hover {
+  background: var(--bg-hover);
+  transform: scale(1.3);
+}
+.party-burst {
+  position: absolute;
+  bottom: 6px;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  pointer-events: none;
+  animation: burst-up 2.2s ease-out forwards;
+}
+.party-burst__emoji {
+  font-size: 30px;
+}
+.party-burst__nick {
+  padding: 0 5px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  font-size: 10px;
+}
+@keyframes burst-up {
+  0% { transform: translateY(0) scale(0.6); opacity: 0; }
+  15% { transform: translateY(-12px) scale(1.1); opacity: 1; }
+  100% { transform: translateY(-150px) scale(1); opacity: 0; }
+}
+
+.miniplayer__feed {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: none;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 12px;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.65));
+  pointer-events: none;
+}
+.miniplayer--cinema .miniplayer__feed {
+  display: flex;
+}
+.miniplayer__feedline {
+  align-self: flex-start;
+  max-width: 100%;
+  padding: 2px 8px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+  animation: msg-in 0.25s ease-out;
+}
+.miniplayer__feedline b {
+  color: #9db4ff;
+}
+.miniplayer__say {
+  display: none;
+  padding: 6px 8px;
+  background: var(--bg-tertiary);
+}
+.miniplayer--cinema .miniplayer__say {
+  display: block;
+}
+.miniplayer__say input {
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--bg-input);
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  outline: none;
+}
+.miniplayer--cinema {
+  box-shadow: 0 0 140px 20px var(--glow, rgba(88, 101, 242, 0.5));
+  animation: glow 5s ease-in-out infinite;
+}
+.miniplayer--cinema[data-provider='pornhub'] {
+  --glow: rgba(255, 144, 0, 0.45);
+}
+.miniplayer--cinema[data-provider='youtube'] {
+  --glow: rgba(255, 60, 60, 0.4);
+}
+@keyframes glow {
+  0%, 100% { box-shadow: 0 0 110px 14px var(--glow, rgba(88, 101, 242, 0.5)); }
+  50% { box-shadow: 0 0 170px 36px var(--glow, rgba(88, 101, 242, 0.5)); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .miniplayer--cinema { animation: none; }
+}

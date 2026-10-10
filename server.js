@@ -556,11 +556,54 @@ function broadcastUsers() {
 // które oglądają dany kanał (pokój `ch:<id>`); reszta członków grupy dostaje lekkie powiadomienie `activity`.
 // Nie ma kanałów wspólnych dla wszystkich – na początku trzeba dołączyć do grupy albo założyć własną.
 
+// ---------- Wspólne oglądanie ----------
+// Na kanale może trwać jedno „oglądanie razem”: ktoś zaprasza z linkiem do filmu, chętni dołączają, a gospodarz
+// odpala odliczanie 3-2-1 – wszyscy dołączeni startują jednocześnie. Stan jest tylko w pamięci serwera.
+const PARTY_EMOJI = ['🔥', '😍', '👏', '😂', '❤️', '😮'];
+const parties = new Map(); // kanał -> { id, href, hostId, hostNick, viewers: Map(accountId -> nick), started }
+
+function publicParty(channel) {
+  const p = parties.get(channel);
+  if (!p) return null;
+  return {
+    id: p.id,
+    href: p.href,
+    hostId: p.hostId,
+    host: p.hostNick,
+    viewers: Array.from(p.viewers, ([id, nick]) => ({ id, nick })),
+    started: p.started,
+  };
+}
+
+function broadcastParty(channel) {
+  io.to(`ch:${channel}`).emit('party:update', { channel, party: publicParty(channel) });
+}
+
+// Zdejmuje to połączenie z oglądania; gdy wychodzi gospodarz, jego rolę przejmuje następna osoba.
+function leaveParty(socket) {
+  const channel = socket.data.party;
+  socket.data.party = null;
+  const user = users.get(socket.id);
+  const p = channel && parties.get(channel);
+  if (!p || !user || !p.viewers.delete(user.accountId)) return;
+  if (!p.viewers.size) parties.delete(channel);
+  else if (p.hostId === user.accountId) {
+    const [id, nick] = p.viewers.entries().next().value;
+    p.hostId = id;
+    p.hostNick = nick;
+  }
+  broadcastParty(channel);
+}
+
 // Przenosi połączenie do kanału (opuszcza poprzedni pokój, wchodzi do nowego). `null` = żaden.
 function enterChannel(socket, channelId) {
+  if (socket.data.party && socket.data.party !== channelId) leaveParty(socket);
   if (socket.data.channel) socket.leave(`ch:${socket.data.channel}`);
   socket.data.channel = channelId || null;
-  if (channelId) socket.join(`ch:${channelId}`);
+  if (channelId) {
+    socket.join(`ch:${channelId}`);
+    socket.emit('party:update', { channel: channelId, party: publicParty(channelId) });
+  }
 }
 
 // ---------- Grupy prywatne ----------
@@ -1804,6 +1847,70 @@ io.on('connection', (socket) => {
     reply({ ok: true });
   });
 
+  socket.on('party:start', (payload, ack) => {
+    const reply = typeof ack === 'function' ? ack : () => {};
+    const user = users.get(socket.id);
+    const channel = socket.data.channel;
+    if (!user || !channel || !mayPost(socket)) return reply({ ok: false, error: NO_POST_ERROR });
+    if (rateLimited(socket, 'party', 5, 30000)) return reply({ ok: false, error: 'Zwolnij trochę.' });
+    const href = payload && typeof payload.href === 'string' ? payload.href.trim() : '';
+    if (!/^https?:\/\/\S{4,490}$/i.test(href)) return reply({ ok: false, error: 'To nie wygląda na link do filmu.' });
+    const existing = parties.get(channel);
+    if (existing && existing.hostId !== user.accountId) {
+      return reply({ ok: false, error: `${existing.hostNick} już zaprasza do oglądania – dołącz do niego.` });
+    }
+    if (socket.data.party && socket.data.party !== channel) leaveParty(socket);
+    parties.set(channel, {
+      id: crypto.randomBytes(6).toString('hex'),
+      href,
+      hostId: user.accountId,
+      hostNick: user.nick,
+      viewers: new Map([[user.accountId, user.nick]]),
+      started: false,
+    });
+    socket.data.party = channel;
+    io.to(`ch:${channel}`).emit('system', { text: `${user.nick} zaprasza do wspólnego oglądania.`, time: Date.now(), channel });
+    broadcastParty(channel);
+    reply({ ok: true });
+  });
+
+  socket.on('party:join', (payload, ack) => {
+    const reply = typeof ack === 'function' ? ack : () => {};
+    const user = users.get(socket.id);
+    const channel = socket.data.channel;
+    const group = groupOfChannel(channel);
+    const p = channel && parties.get(channel);
+    if (!user || !group || !isGroupMember(group, user.accountId)) return reply({ ok: false });
+    if (!p) return reply({ ok: false, error: 'Oglądanie już się skończyło.' });
+    p.viewers.set(user.accountId, user.nick);
+    socket.data.party = channel;
+    broadcastParty(channel);
+    reply({ ok: true, party: publicParty(channel) });
+  });
+
+  socket.on('party:leave', () => leaveParty(socket));
+
+  // Tylko gospodarz: odliczanie 3-2-1. Serwer podaje czas do startu, więc zegary klientów nie muszą się zgadzać.
+  socket.on('party:go', () => {
+    const user = users.get(socket.id);
+    const channel = socket.data.channel;
+    const p = channel && parties.get(channel);
+    if (!user || !p || p.hostId !== user.accountId) return;
+    if (rateLimited(socket, 'partygo', 6, 60000)) return;
+    p.started = true;
+    io.to(`ch:${channel}`).emit('party:countdown', { channel, id: p.id, inMs: 4000 });
+    broadcastParty(channel);
+  });
+
+  socket.on('party:react', (emoji) => {
+    const user = users.get(socket.id);
+    const channel = socket.data.channel;
+    const p = channel && parties.get(channel);
+    if (!user || !p || !p.viewers.has(user.accountId) || !PARTY_EMOJI.includes(emoji)) return;
+    if (rateLimited(socket, 'preact', 20, 5000)) return;
+    io.to(`ch:${channel}`).emit('party:react', { channel, nick: user.nick, emoji });
+  });
+
   socket.on('typing', (isTyping) => {
     const user = users.get(socket.id);
     if (!user) return;
@@ -1813,6 +1920,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', () => {
+    leaveParty(socket);
     const voiceEntry = voice.get(socket.id);
     voice.delete(socket.id);
     const user = users.get(socket.id);

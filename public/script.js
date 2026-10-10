@@ -615,16 +615,32 @@ function makeVideoEmbed(video, afterChange) {
     showStage(false);
     openMiniPlayer(video);
   });
+  const partyBtn = iconNode('button', 'vembed__btn', 'users');
+  partyBtn.type = 'button';
+  partyBtn.title = 'Oglądajmy razem – zaproś kanał, wspólny start 3-2-1';
+  partyBtn.setAttribute('aria-label', partyBtn.title);
+  partyBtn.addEventListener('click', () => startParty(video));
+  const favBtn = iconNode('button', 'vembed__btn', 'star');
+  favBtn.type = 'button';
+  bindFavButton(favBtn, () => video);
+  const stopBtn = iconNode('button', 'vembed__btn hidden', 'close', 'Zatrzymaj');
+  stopBtn.type = 'button';
+  stopBtn.title = 'Zatrzymaj i schowaj odtwarzacz';
+  stopBtn.addEventListener('click', () => {
+    showStage(false);
+    afterChange();
+  });
   const openBtn = iconNode('a', 'vembed__btn', 'external');
   openBtn.href = video.href;
   openBtn.target = '_blank';
   openBtn.rel = 'noopener noreferrer';
   openBtn.title = 'Otwórz w nowej karcie';
-  actions.append(popBtn, openBtn);
+  actions.append(stopBtn, favBtn, partyBtn, popBtn, openBtn);
   header.appendChild(actions);
 
   const showStage = (playing) => {
     stage.replaceChildren();
+    stopBtn.classList.toggle('hidden', !playing);
     if (playing) {
       stage.appendChild(makePlayerNode(video, 'vembed__player'));
       closeMiniPlayer();
@@ -655,9 +671,119 @@ function makeVideoEmbed(video, afterChange) {
   return card;
 }
 
+// ---------- Ulubione ----------
+// Filmy zapisane gwiazdką – lista tylko na tym urządzeniu (do 50 pozycji), dostępna jako osobna playlista w odtwarzaczu.
+const favStore = store.get('mychat.favs', { list: [] });
+const favList = () => (Array.isArray(favStore.list) ? favStore.list : []);
+const isFav = (video) => favList().some((f) => f.src === video.src);
+function toggleFav(video) {
+  const list = favList();
+  const at = list.findIndex((f) => f.src === video.src);
+  if (at >= 0) list.splice(at, 1);
+  else list.unshift({ href: video.href, src: video.src });
+  favStore.list = list.slice(0, 50);
+  store.set('mychat.favs', favStore);
+  document.dispatchEvent(new CustomEvent('favs-changed'));
+  return at < 0;
+}
+const favVideos = () => favList().map((f) => parseVideoLink(f.href)).filter(Boolean);
+
+// Gwiazdka (przycisk) odświeżająca się, gdy ulubione zmienią się gdziekolwiek.
+function bindFavButton(btn, getVideo) {
+  const sync = () => {
+    const on = isFav(getVideo());
+    btn.classList.toggle('is-fav', on);
+    btn.title = on ? 'Usuń z ulubionych' : 'Dodaj do ulubionych';
+    btn.setAttribute('aria-pressed', String(on));
+  };
+  btn.addEventListener('click', () => {
+    const added = toggleFav(getVideo());
+    toast(added ? 'Dodano do ulubionych.' : 'Usunięto z ulubionych.', true);
+  });
+  document.addEventListener('favs-changed', () => btn.isConnected && sync());
+  sync();
+}
+
+// ---------- Oglądajmy razem ----------
+// Serwer pilnuje stanu (jedno oglądanie na kanał): zaproszenie, lista osób, odliczanie 3-2-1 i reakcje na żywo.
+const partyByChannel = new Map(); // kanał -> stan z serwera albo null
+const currentParty = () => partyByChannel.get(currentChannel) || null;
+const iAmViewer = (p = currentParty()) => Boolean(p && myAccountId && p.viewers.some((v) => v.id === myAccountId));
+const PARTY_EMOJI = ['🔥', '😍', '👏', '😂', '❤️', '😮'];
+const inPartyPlayer = () => Boolean(miniPlayer && miniPlayer.classList.contains('miniplayer--party'));
+
+function startParty(video) {
+  socket.emit('party:start', { href: video.href }, (res) => {
+    if (!res || !res.ok) return toast((res && res.error) || 'Nie udało się zaprosić do oglądania.');
+    openMiniPlayer(video, { party: true });
+  });
+}
+
+function joinParty() {
+  socket.emit('party:join', {}, (res) => {
+    if (!res || !res.ok) return toast((res && res.error) || 'Nie udało się dołączyć.');
+    const video = parseVideoLink(res.party.href);
+    if (video) openMiniPlayer(video, { party: true, immediate: res.party.started });
+  });
+}
+
+function leaveParty() {
+  socket.emit('party:leave');
+  if (inPartyPlayer()) closeMiniPlayer();
+}
+
+function renderPartyBar() {
+  const bar = $('party-bar');
+  const p = currentParty();
+  if (!p) {
+    bar.classList.add('hidden');
+    return bar.replaceChildren();
+  }
+  const video = parseVideoLink(p.href);
+  const info = el('div', 'partybar__info');
+  const host = el('b', '', p.host);
+  info.append(host, document.createTextNode(` zaprasza do wspólnego oglądania${video ? ` · ${video.label}` : ''}`));
+  info.appendChild(el('div', 'partybar__who', `Oglądają (${p.viewers.length}): ${p.viewers.map((v) => v.nick).join(', ')}`));
+
+  const buttons = el('div', 'partybar__actions');
+  const mk = (cls, text, onClick) => {
+    const b = el('button', cls, text);
+    b.type = 'button';
+    b.addEventListener('click', onClick);
+    return b;
+  };
+  if (!iAmViewer(p)) {
+    if (video) buttons.appendChild(mk('btn-primary btn-sm', 'Dołącz', joinParty));
+  } else {
+    if (video && !inPartyPlayer()) {
+      buttons.appendChild(mk('btn-secondary btn-sm', 'Otwórz odtwarzacz', () => openMiniPlayer(video, { party: true, immediate: p.started })));
+    }
+    if (p.hostId === myAccountId) buttons.appendChild(mk('btn-primary btn-sm', 'Start 3·2·1', () => socket.emit('party:go')));
+    buttons.appendChild(mk('btn-secondary btn-sm', 'Wyjdź', leaveParty));
+  }
+  bar.replaceChildren(iconNode('span', 'partybar__icon', 'users'), info, buttons);
+  bar.classList.remove('hidden');
+}
+
+socket.on('party:update', ({ channel, party: p }) => {
+  partyByChannel.set(channel, p || null);
+  if (inPartyPlayer() && miniPlayer._partyChannel === channel && !iAmViewer(p)) closeMiniPlayer();
+  if (channel === currentChannel) renderPartyBar();
+  if (miniPlayer && miniPlayer._refreshParty) miniPlayer._refreshParty();
+});
+socket.on('party:countdown', ({ channel, id, inMs }) => {
+  const p = partyByChannel.get(channel);
+  if (!p || p.id !== id || !iAmViewer(p) || !inPartyPlayer() || miniPlayer._partyChannel !== channel) return;
+  miniPlayer._partyCountdown(inMs);
+});
+socket.on('party:react', ({ channel, nick, emoji }) => {
+  if (inPartyPlayer() && miniPlayer._partyChannel === channel) miniPlayer._burst(emoji, nick);
+});
+
 // Pływający odtwarzacz: jedno okno na całą aplikację. Przeciągasz je za pasek – po puszczeniu przyciąga się do
-// najbliższego rogu. Ma trzy rozmiary, tryb kinowy (duży, na środku) oraz listę odtwarzania: wszystkie filmy
-// z linków na bieżącym kanale (poprzedni / następny). Rozmiar i róg są pamiętane na urządzeniu.
+// najbliższego rogu. Ma trzy rozmiary, tryb kinowy (duży, na środku, z czatem na tle filmu), listę odtwarzania
+// (filmy z kanału albo ulubione), skróty klawiszowe i tryb „razem” (wspólny start i reakcje na żywo).
+// Rozmiar i róg są pamiętane na urządzeniu.
 let miniPlayer = null;
 const playerPrefs = store.get('mychat.player', { size: 'm', corner: 'br' });
 const PLAYER_SIZES = ['s', 'm', 'l'];
@@ -665,6 +791,7 @@ const savePlayerPrefs = () => store.set('mychat.player', playerPrefs);
 
 function closeMiniPlayer() {
   if (!miniPlayer) return;
+  clearInterval(miniPlayer._countTimer);
   miniPlayer._backdrop?.remove();
   miniPlayer.remove(); // usunięcie iframe/video zatrzymuje dźwięk
   miniPlayer = null;
@@ -684,17 +811,34 @@ function channelVideos() {
   return list;
 }
 
-function openMiniPlayer(video) {
+// Czat na tle filmu w trybie kinowym: ostatnie wiadomości znikają po chwili.
+function pushCinemaFeed(nick, text) {
+  const feed = miniPlayer && miniPlayer.classList.contains('miniplayer--cinema') && miniPlayer._feed;
+  if (!feed) return;
+  const line = el('div', 'miniplayer__feedline');
+  line.append(el('b', '', nick), document.createTextNode(` ${String(text).slice(0, 140)}`));
+  feed.appendChild(line);
+  while (feed.children.length > 4) feed.firstChild.remove();
+  setTimeout(() => line.remove(), 9000);
+}
+
+function openMiniPlayer(video, opts = {}) {
   closeMiniPlayer();
+  const partyMode = Boolean(opts.party);
+  let mode = 'channel'; // źródło listy: 'channel' albo 'favs'
   let list = channelVideos();
   let index = list.findIndex((v) => v.src === video.src);
-  if (index < 0) {
+  if (partyMode || index < 0) {
     list = [video];
     index = 0;
   }
+  let live = !partyMode || Boolean(opts.immediate); // w trybie „razem” film startuje dopiero po odliczaniu
 
   const box = el('div', 'miniplayer');
-  box.dataset.provider = video.provider;
+  if (partyMode) {
+    box.classList.add('miniplayer--party');
+    box._partyChannel = currentChannel;
+  }
   const applyLayout = () => {
     if (!PLAYER_SIZES.includes(playerPrefs.size)) playerPrefs.size = 'm';
     if (!/^(t|b)(l|r)$/.test(playerPrefs.corner)) playerPrefs.corner = 'br';
@@ -715,35 +859,111 @@ function openMiniPlayer(video) {
     b.addEventListener('click', onClick);
     return b;
   };
-  const prev = mkBtn('skip-back', 'Poprzedni film z kanału', () => go(-1));
-  const next = mkBtn('skip-next', 'Następny film z kanału', () => go(1));
+  const prev = mkBtn('skip-back', 'Poprzedni film (P)', () => go(-1));
+  const next = mkBtn('skip-next', 'Następny film (N)', () => go(1));
+  const source = mkBtn('list', 'Lista: filmy z kanału / ulubione', () => switchSource());
+  const fav = mkBtn('star', 'Dodaj do ulubionych (F)', () => {});
+  bindFavButton(fav, () => list[index]);
   const size = mkBtn('size', 'Zmień rozmiar okna', () => {
     playerPrefs.size = PLAYER_SIZES[(PLAYER_SIZES.indexOf(playerPrefs.size) + 1) % PLAYER_SIZES.length];
     savePlayerPrefs();
     applyLayout();
   });
-  const cinema = mkBtn('cinema', 'Tryb kinowy (Esc – wyjście)', () => setCinema(!box.classList.contains('miniplayer--cinema')));
+  const cinema = mkBtn('cinema', 'Tryb kinowy (C, Esc – wyjście)', () => setCinema(!box.classList.contains('miniplayer--cinema')));
   const collapse = mkBtn('minus', 'Zwiń / rozwiń', () => box.classList.toggle('miniplayer--collapsed'));
   const close = mkBtn('close', 'Zamknij odtwarzacz', closeMiniPlayer);
-  bar.append(title, prev, next, size, cinema, collapse, close);
+  if (partyMode) prev.hidden = next.hidden = source.hidden = true;
+  bar.append(title, prev, next, source, fav, size, cinema, collapse, close);
 
   const body = el('div', 'miniplayer__body');
+  const feed = el('div', 'miniplayer__feed');
+  box._feed = feed;
   box.append(bar, body);
+
+  // Pole „napisz do czatu” widoczne tylko w trybie kinowym.
+  const say = el('form', 'miniplayer__say');
+  const sayInput = el('input');
+  sayInput.type = 'text';
+  sayInput.maxLength = 500;
+  sayInput.placeholder = 'Napisz do czatu…';
+  sayInput.autocomplete = 'off';
+  say.appendChild(sayInput);
+  say.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const text = sayInput.value.trim();
+    if (!text) return;
+    socket.emit('message', { text });
+    sayInput.value = '';
+  });
+  box.appendChild(say);
+
+  if (partyMode) {
+    const reactions = el('div', 'miniplayer__reactions');
+    for (const emoji of PARTY_EMOJI) {
+      const b = el('button', '', emoji);
+      b.type = 'button';
+      b.title = 'Wyślij reakcję do oglądających';
+      b.addEventListener('click', () => socket.emit('party:react', emoji));
+      reactions.appendChild(b);
+    }
+    box.appendChild(reactions);
+  }
+
+  function updateTitle() {
+    const v = list[index];
+    let text = v.label;
+    if (partyMode) {
+      const p = partyByChannel.get(box._partyChannel);
+      text += p ? ` · razem (${p.viewers.length})` : '';
+    } else if (list.length > 1) {
+      text += ` · ${mode === 'favs' ? '★ ' : ''}${index + 1}/${list.length}`;
+    }
+    titleText.textContent = text;
+  }
+
+  function waitPanel() {
+    const w = el('div', 'miniplayer__wait');
+    const p = partyByChannel.get(box._partyChannel);
+    w.append(iconNode('span', 'miniplayer__waiticon', 'hourglass'), document.createTextNode(`Czekamy na start${p ? ` od ${p.host}` : ''}…`));
+    return w;
+  }
 
   function show() {
     const v = list[index];
     box.dataset.provider = v.provider;
-    body.replaceChildren(makePlayerNode(v, 'miniplayer__media'));
-    titleText.textContent = list.length > 1 ? `${v.label} · ${index + 1}/${list.length}` : v.label;
+    body.replaceChildren(live ? makePlayerNode(v, 'miniplayer__media') : waitPanel(), feed);
+    updateTitle();
     prev.disabled = index === 0;
     next.disabled = index === list.length - 1;
-    prev.hidden = next.hidden = list.length < 2;
+    if (!partyMode) prev.hidden = next.hidden = list.length < 2 && mode === 'channel';
+    box.classList.toggle('miniplayer--waiting', !live);
   }
   function go(step) {
     const target = index + step;
-    if (target < 0 || target >= list.length) return;
+    if (partyMode || target < 0 || target >= list.length) return;
     index = target;
     box.classList.remove('miniplayer--collapsed');
+    show();
+  }
+  function switchSource() {
+    if (partyMode) return;
+    if (mode === 'channel') {
+      const favs = favVideos();
+      if (!favs.length) return toast('Nie masz jeszcze ulubionych – dodaj film gwiazdką.', true);
+      mode = 'favs';
+      list = favs;
+      index = Math.max(0, favs.findIndex((v) => v.src === list[index]?.src));
+    } else {
+      mode = 'channel';
+      const current = list[index];
+      list = channelVideos();
+      index = list.findIndex((v) => v.src === current.src);
+      if (index < 0) {
+        list = [current, ...list];
+        index = 0;
+      }
+    }
+    toast(mode === 'favs' ? 'Lista: ulubione.' : 'Lista: filmy z kanału.', true);
     show();
   }
   function setCinema(on) {
@@ -756,6 +976,7 @@ function openMiniPlayer(video) {
       box._backdrop.remove();
       box._backdrop = null;
     }
+    if (!on) feed.replaceChildren();
     box.classList.remove('miniplayer--collapsed');
   }
   box._exitCinema = () => {
@@ -763,10 +984,54 @@ function openMiniPlayer(video) {
     setCinema(false);
     return true;
   };
+  // Dla skrótów klawiszowych.
+  box._api = { go, cinema: () => setCinema(!box.classList.contains('miniplayer--cinema')), fav: () => fav.click() };
+
+  // Tryb „razem”: odliczanie 3-2-1 nad czekającym odtwarzaczem, potem start u wszystkich naraz.
+  box._partyCountdown = (ms) => {
+    clearInterval(box._countTimer);
+    live = false;
+    show();
+    box.classList.remove('miniplayer--collapsed');
+    const count = el('div', 'miniplayer__count');
+    body.appendChild(count);
+    const endAt = Date.now() + ms;
+    const tick = () => {
+      const left = endAt - Date.now();
+      if (left <= 0) {
+        clearInterval(box._countTimer);
+        live = true;
+        show();
+        return;
+      }
+      const n = String(Math.ceil(left / 1000));
+      if (count.textContent !== n) {
+        count.textContent = n;
+        count.classList.remove('pop');
+        void count.offsetWidth; // restart animacji
+        count.classList.add('pop');
+      }
+    };
+    box._countTimer = setInterval(tick, 100);
+    tick();
+  };
+  box._refreshParty = () => {
+    updateTitle();
+    if (!live && !box.querySelector('.miniplayer__count')) body.replaceChildren(waitPanel(), feed);
+  };
+  // Reakcje na żywo unoszą się nad filmem.
+  box._burst = (emoji, nick) => {
+    const b = el('div', 'party-burst');
+    b.append(el('span', 'party-burst__emoji', emoji), el('span', 'party-burst__nick', nick));
+    b.style.left = `${8 + Math.random() * 70}%`;
+    b.addEventListener('animationend', () => b.remove());
+    body.appendChild(b);
+  };
 
   show();
   document.body.appendChild(box);
   miniPlayer = box;
+  if (partyMode) renderPartyBar();
 
   // Przeciąganie za pasek tytułu (mysz i dotyk); po puszczeniu okno przyciąga się do najbliższego rogu.
   bar.addEventListener('pointerdown', (e) => {
@@ -803,9 +1068,17 @@ function openMiniPlayer(video) {
   });
 }
 
-// Esc wychodzi z trybu kinowego.
+// Esc wychodzi z trybu kinowego; N / P / C / F sterują odtwarzaczem, gdy nie piszesz w żadnym polu.
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && miniPlayer?._exitCinema()) e.stopPropagation();
+  if (!miniPlayer) return;
+  if (e.key === 'Escape' && miniPlayer._exitCinema()) return e.stopPropagation();
+  if (e.ctrlKey || e.metaKey || e.altKey || e.target.closest('input, textarea, select, [contenteditable]')) return;
+  const api = miniPlayer._api;
+  const key = e.key.toLowerCase();
+  if (key === 'n') api.go(1);
+  else if (key === 'p') api.go(-1);
+  else if (key === 'c') api.cinema();
+  else if (key === 'f') api.fav();
 });
 
 // Pierwsze 2 różne linki do wideo z tekstu wiadomości.
@@ -1546,6 +1819,7 @@ function addMessage(m, { historic = false } = {}) {
   lastNick = m.nick;
   lastMessageTime = m.time;
   if (stick) scrollToBottom();
+  if (!historic && m.kind !== 'gif' && m.kind !== 'file') pushCinemaFeed(m.nick, m.text);
 
   if (!mine && !historic) {
     beep(mentioned ? [880, 1175] : undefined);
@@ -2233,6 +2507,7 @@ function join(nick) {
     serverSynced = true;
     currentChannel = res.channel || null; // serwer mógł zmienić kanał (np. wyjście z grupy); null = brak grup
     store.set('mychat.channel', { id: currentChannel });
+    renderPartyBar();
     voiceLists.clear();
     groupMembersFor = null;
     historyLoading = Boolean(currentChannel); // zaraz po zalogowaniu serwer wyśle historię kanału
@@ -4430,6 +4705,7 @@ $('channel-select').addEventListener('change', (e) => switchChannel(e.target.val
 // `null` = żaden kanał (brak grup).
 function showChannelView(id) {
   currentChannel = id;
+  renderPartyBar();
   const viewedGroup = groupByChannel(id);
   if (viewedGroup) lastGroupChannel.set(viewedGroup.id, id);
   historyLoading = Boolean(id); // nowe wiadomości czekają, aż przyjdzie historia tego kanału
