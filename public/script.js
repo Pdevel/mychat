@@ -95,7 +95,7 @@ if (profile.avatar && profile.avatar.startsWith('data:')) {
 }
 
 // Wersje do sprawdzenia, czy telefon pobrał nową stronę i czy serwer jest po wdrożeniu.
-const CLIENT_VERSION = '2026-10-10i';
+const CLIENT_VERSION = '2026-10-10j';
 let serverInfo = null;
 function renderVersionInfo() {
   const server = serverInfo ? `serwer: ${serverInfo.version}${serverInfo.party ? '' : ' (STARSZY – brak seansów, wdróż ponownie)'}` : 'serwer: sprawdzam…';
@@ -5654,34 +5654,31 @@ function renderGroupList() {
         const box = el('div', 'group-card__code');
         box.appendChild(el('div', 'group-card__code-label', 'JEDNORAZOWY KOD DOSTĘPU'));
         box.appendChild(el('span', 'group-card__code-value', g.code));
-        const copy = el('button', 'btn-secondary btn-sm', 'Kopiuj');
-        copy.type = 'button';
-        copy.addEventListener('click', () => {
+        const copy = iconButton('copy', 'Kopiuj kod', () => {
           copyText(g.code);
           toast('Kod skopiowany', true);
         });
-        const renew = el('button', 'btn-secondary btn-sm', 'Nowy kod');
-        renew.type = 'button';
-        renew.title = 'Wygeneruj nowy kod – poprzedni przestanie działać';
-        renew.addEventListener('click', () => groupAction('group:code', g.id, () => toast('Wygenerowano nowy kod', true)));
+        const renew = iconButton('refresh', 'Nowy kod – poprzedni przestanie działać', () =>
+          groupAction('group:code', g.id, () => toast('Wygenerowano nowy kod', true))
+        );
         box.append(copy, renew);
         card.appendChild(box);
       }
 
       const actions = el('div', 'group-card__actions');
-      const open = el('button', 'btn-primary btn-sm', g.channel === currentChannel ? 'Otwarta' : 'Otwórz');
-      open.type = 'button';
-      open.disabled = g.channel === currentChannel;
-      open.addEventListener('click', () => {
-        closeGroups();
-        switchChannel(g.channel);
-      });
-      actions.appendChild(open);
-
-      const settingsBtn = iconNode('button', 'btn-secondary btn-sm', 'gear', 'Ustawienia');
-      settingsBtn.type = 'button';
-      settingsBtn.addEventListener('click', () => openGroupSettings(g.id));
-      actions.appendChild(settingsBtn);
+      const isOpen = g.channel === currentChannel;
+      actions.appendChild(
+        iconButton(
+          'chat',
+          isOpen ? 'Ta grupa jest już otwarta' : 'Otwórz grupę',
+          () => {
+            closeGroups();
+            switchChannel(g.channel);
+          },
+          { variant: 'btn-primary', disabled: isOpen }
+        )
+      );
+      actions.appendChild(iconButton('gear', 'Ustawienia grupy', () => openGroupSettings(g.id)));
 
       actions.appendChild(leaveOrDeleteButton(g));
       card.appendChild(actions);
@@ -5690,25 +5687,35 @@ function renderGroupList() {
   );
 }
 
+// Przycisk z samą ikoną (podpowiedź i etykieta dla czytników ekranu w `label`).
+function iconButton(name, label, onClick, { variant = 'btn-secondary', danger = false, disabled = false } = {}) {
+  const b = iconNode('button', `${variant} btn-sm btn-iconly${danger ? ' btn-danger' : ''}`, name);
+  b.type = 'button';
+  b.title = label;
+  b.setAttribute('aria-label', label);
+  b.disabled = disabled;
+  b.addEventListener('click', onClick);
+  return b;
+}
+
 function leaveOrDeleteButton(g) {
   if (g.isOwner) {
-    const del = el('button', 'btn-secondary btn-sm btn-danger', 'Usuń grupę');
-    del.type = 'button';
-    del.addEventListener('click', () => {
-      if (!confirm(`Usunąć grupę „${g.name}”? Wszyscy członkowie zostaną z niej usunięci, a cała historia czatu przepadnie.`)) return;
-      removedByMe.add(g.id);
-      groupAction('group:delete', g.id, () => toast(`Usunięto grupę ${g.name}`, true));
-    });
-    return del;
+    return iconButton(
+      'trash',
+      'Usuń grupę',
+      () => {
+        if (!confirm(`Usunąć grupę „${g.name}”? Wszyscy członkowie zostaną z niej usunięci, a cała historia czatu przepadnie.`)) return;
+        removedByMe.add(g.id);
+        groupAction('group:delete', g.id, () => toast(`Usunięto grupę ${g.name}`, true));
+      },
+      { danger: true }
+    );
   }
-  const leave = el('button', 'btn-secondary btn-sm', 'Opuść');
-  leave.type = 'button';
-  leave.addEventListener('click', () => {
+  return iconButton('logout', 'Opuść grupę', () => {
     if (!confirm(`Opuścić grupę „${g.name}”? Aby wrócić, będziesz potrzebować nowego kodu od twórcy.`)) return;
     removedByMe.add(g.id);
     groupAction('group:leave', g.id, () => toast(`Opuszczono grupę ${g.name}`, true));
   });
-  return leave;
 }
 
 // ---------- Ustawienia grupy: przegląd, kanały, role, członkowie ----------
@@ -5794,7 +5801,10 @@ function gsetButton(label, cls, onClick, { disabled = false, title = '' } = {}) 
   else b.appendChild(label); // ikona (węzeł SVG)
   b.type = 'button';
   b.disabled = disabled;
-  if (title) b.title = title;
+  if (title) {
+    b.title = title;
+    b.setAttribute('aria-label', title);
+  }
   b.addEventListener('click', onClick);
   return b;
 }
@@ -5824,9 +5834,10 @@ function gsetOverview(g, body) {
   iconRow.append(
     preview,
     file,
-    gsetButton('Zmień obrazek', 'btn-secondary btn-sm', () => file.click(), { disabled: !canIcon }),
-    gsetButton('Usuń', 'btn-secondary btn-sm', () => groupAction('group:icon', { groupId: g.id, icon: null }, () => toast('Usunięto obrazek', true)), {
+    gsetButton(icon('image'), 'btn-secondary btn-sm btn-iconly', () => file.click(), { disabled: !canIcon, title: 'Zmień obrazek grupy' }),
+    gsetButton(icon('trash'), 'btn-secondary btn-sm btn-iconly', () => groupAction('group:icon', { groupId: g.id, icon: null }, () => toast('Usunięto obrazek', true)), {
       disabled: !canIcon || !g.icon,
+      title: 'Usuń obrazek grupy',
     })
   );
   iconSec.appendChild(iconRow);
@@ -5841,8 +5852,9 @@ function gsetOverview(g, body) {
   input.disabled = !g.perms.includes('manageGroup');
   row.append(
     input,
-    gsetButton('Zapisz', 'btn-primary btn-sm', () => groupAction('group:rename', { groupId: g.id, name: input.value }, () => toast('Zapisano nazwę', true)), {
+    gsetButton(icon('check'), 'btn-primary btn-sm btn-iconly', () => groupAction('group:rename', { groupId: g.id, name: input.value }, () => toast('Zapisano nazwę', true)), {
       disabled: input.disabled,
+      title: 'Zapisz nazwę',
     })
   );
   nameSec.appendChild(row);
@@ -5860,11 +5872,13 @@ function gsetOverview(g, body) {
     const box = el('div', 'group-card__code');
     box.appendChild(el('span', 'group-card__code-value', g.code));
     box.append(
-      gsetButton('Kopiuj', 'btn-secondary btn-sm', () => {
+      gsetButton(icon('copy'), 'btn-secondary btn-sm btn-iconly', () => {
         copyText(g.code);
         toast('Kod skopiowany', true);
-      }),
-      gsetButton('Nowy kod', 'btn-secondary btn-sm', () => groupAction('group:code', g.id, () => toast('Wygenerowano nowy kod', true)))
+      }, { title: 'Kopiuj kod' }),
+      gsetButton(icon('refresh'), 'btn-secondary btn-sm btn-iconly', () => groupAction('group:code', g.id, () => toast('Wygenerowano nowy kod', true)), {
+        title: 'Nowy kod – poprzedni przestanie działać',
+      })
     );
     codeSec.appendChild(box);
     codeSec.appendChild(el('div', 'groups__hint', 'Po użyciu kod wygasa, a w jego miejsce powstaje następny.'));
@@ -5889,16 +5903,17 @@ function gsetChannels(g, body) {
     row.appendChild(input);
     if (canManage) {
       row.appendChild(
-        gsetButton('Zapisz', 'btn-secondary btn-sm', () =>
-          groupAction('group:channel:rename', { groupId: g.id, channel: c.id, name: input.value }, () => toast('Zapisano nazwę kanału', true))
+        gsetButton(icon('check'), 'btn-secondary btn-sm btn-iconly', () =>
+          groupAction('group:channel:rename', { groupId: g.id, channel: c.id, name: input.value }, () => toast('Zapisano nazwę kanału', true)),
+          { title: 'Zapisz nazwę kanału' }
         )
       );
       if (!c.isDefault) {
         row.appendChild(
-          gsetButton('Usuń', 'btn-secondary btn-sm btn-danger', () => {
+          gsetButton(icon('trash'), 'btn-secondary btn-sm btn-iconly btn-danger', () => {
             if (!confirm(`Usunąć kanał #${c.name}? Wszystkie jego wiadomości i pliki przepadną.`)) return;
             groupAction('group:channel:delete', { groupId: g.id, channel: c.id }, () => toast('Usunięto kanał', true));
-          })
+          }, { title: 'Usuń kanał' })
         );
       }
     } else if (c.isDefault) {
@@ -5915,7 +5930,7 @@ function gsetChannels(g, body) {
     input.id = 'gset-new-channel';
     input.placeholder = 'nazwa-kanału';
     input.maxLength = 24;
-    row.append(input, gsetButton('Dodaj', 'btn-primary btn-sm', () => {}));
+    row.append(input, gsetButton(icon('plus'), 'btn-primary btn-sm btn-iconly', () => {}, { title: 'Dodaj kanał' }));
     row.lastChild.type = 'submit';
     row.addEventListener('submit', (e) => {
       e.preventDefault();
@@ -5968,7 +5983,7 @@ function gsetRoles(g, body) {
   list.appendChild(item('everyone', '@everyone', null, g.memberCount, null));
   if (canManage) {
     list.appendChild(
-      gsetButton('+ Nowa rola', 'btn-secondary btn-sm gset__newrole', () =>
+      gsetButton(textWithIcon('Nowa rola', 'plus'), 'btn-secondary btn-sm gset__newrole', () =>
         groupAction('group:role:create', { groupId: g.id, name: 'nowa rola', perms: [] }, (res) => {
           gset.roleId = res.roleId; // zdarzenie z listą grup mogło przyjść wcześniej – przerysuj z zaznaczoną nową rolą
           renderGroupSettings();
@@ -6020,7 +6035,7 @@ function gsetRoles(g, body) {
   const actions = el('div', 'group-card__actions');
   if (editable) {
     actions.appendChild(
-      gsetButton('Zapisz', 'btn-primary btn-sm', () => {
+      gsetButton(icon('check'), 'btn-primary btn-sm btn-iconly', () => {
         const chosen = Array.from(perms.querySelectorAll('input:checked')).map((b) => b.value);
         // Nieedytowalnych (niedostępnych dla Ciebie) uprawnień nie ruszamy – serwer i tak by je odrzucił.
         const payload = { groupId: g.id, roleId: role.id, perms: chosen };
@@ -6029,18 +6044,18 @@ function gsetRoles(g, body) {
           payload.color = noColor.checked ? null : colorInput.value;
         }
         groupAction('group:role:update', payload, () => toast('Zapisano rolę', true));
-      })
+      }, { title: 'Zapisz rolę' })
     );
     if (!isEveryone) {
       actions.appendChild(
-        gsetButton('Usuń rolę', 'btn-secondary btn-sm btn-danger', () => {
+        gsetButton(icon('trash'), 'btn-secondary btn-sm btn-iconly btn-danger', () => {
           if (!confirm(`Usunąć rolę „${role.name}”? Osoby, które ją mają, stracą jej uprawnienia.`)) return;
           groupAction('group:role:delete', { groupId: g.id, roleId: role.id }, () => {
             gset.roleId = 'everyone';
             renderGroupSettings();
             toast('Usunięto rolę', true);
           });
-        })
+        }, { title: 'Usuń rolę' })
       );
     }
   } else {
@@ -6063,6 +6078,7 @@ function gsetMembers(g, body) {
     .slice()
     .sort((a, b) => memberRank(g, a) - memberRank(g, b) || a.nick.localeCompare(b.nick, 'pl'));
   const sec = gsetSection(`CZŁONKOWIE — ${members.length}`);
+  if (canRoles) sec.appendChild(el('div', 'groups__hint', 'Ikona etykiety przy osobie otwiera listę ról do nadania. Role tworzysz w zakładce „Role”.'));
   members.forEach((m) => {
     const rank = memberRank(g, m);
     const isMe = m.id === myAccountId;
@@ -6087,20 +6103,35 @@ function gsetMembers(g, body) {
 
     const touchable = !m.isOwner && (isMe || g.rank < rank);
     const actions = el('div', 'gset__memberactions');
-    if (canRoles && touchable && g.roles.length) {
-      actions.appendChild(
-        gsetButton(textWithIcon('Role', gset.openMember === m.id ? 'chevron-up' : 'chevron-down'), 'btn-secondary btn-sm', () => {
+    if (canRoles && touchable) {
+      // Ikona etykiety: nadawanie ról. Bez żadnej roli prowadzi do zakładki, w której się je tworzy.
+      const assign = iconButton(
+        'tag',
+        g.roles.length ? `Nadaj rolę: ${m.nick}` : 'Najpierw utwórz rolę (zakładka Role)',
+        () => {
+          if (!g.roles.length) {
+            toast('Nie ma jeszcze żadnej roli – utwórz ją w zakładce „Role”, potem nadasz ją tutaj.', true);
+            gset.tab = 'roles';
+            return renderGroupSettings();
+          }
           gset.openMember = gset.openMember === m.id ? null : m.id;
           renderGroupSettings();
-        })
+        }
       );
+      if (gset.openMember === m.id) assign.classList.add('is-on');
+      actions.appendChild(assign);
     }
     if (canKick && !isMe && !m.isOwner && g.rank < rank) {
       actions.appendChild(
-        gsetButton('Wyrzuć', 'btn-secondary btn-sm btn-danger', () => {
-          if (!confirm(`Wyrzucić ${m.nick} z grupy? Wróci tylko z nowym kodem.`)) return;
-          groupAction('group:kick', { groupId: g.id, accountId: m.id }, () => toast(`Wyrzucono ${m.nick}`, true));
-        })
+        iconButton(
+          'user-minus',
+          `Wyrzuć ${m.nick} z grupy`,
+          () => {
+            if (!confirm(`Wyrzucić ${m.nick} z grupy? Wróci tylko z nowym kodem.`)) return;
+            groupAction('group:kick', { groupId: g.id, accountId: m.id }, () => toast(`Wyrzucono ${m.nick}`, true));
+          },
+          { danger: true }
+        )
       );
     }
     row.appendChild(actions);

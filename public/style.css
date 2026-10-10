@@ -4458,3 +4458,28 @@ body.media-hidden .filecard {
 .gif-cell--broken img {
   opacity: 0.35;
 }
+
+/* ============ Przyciski z samą ikoną (grupy, role, członkowie) ============ */
+.btn-iconly {
+  display: inline-grid;
+  place-items: center;
+  min-width: 36px;
+  height: 34px;
+  padding: 0 8px;
+}
+.btn-iconly .icon {
+  width: 18px;
+  height: 18px;
+}
+.btn-iconly.is-on {
+  background: var(--accent);
+  color: #fff;
+}
+.btn-iconly:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.gset__memberactions {
+  display: flex;
+  gap: 6px;
+}
