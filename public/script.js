@@ -95,7 +95,7 @@ if (profile.avatar && profile.avatar.startsWith('data:')) {
 }
 
 // Wersje do sprawdzenia, czy telefon pobrał nową stronę i czy serwer jest po wdrożeniu.
-const CLIENT_VERSION = '2026-10-10d';
+const CLIENT_VERSION = '2026-10-10e';
 let serverInfo = null;
 function renderVersionInfo() {
   const server = serverInfo ? `serwer: ${serverInfo.version}${serverInfo.party ? '' : ' (STARSZY – brak seansów, wdróż ponownie)'}` : 'serwer: sprawdzam…';
@@ -600,7 +600,7 @@ function parseVideoLink(href) {
   }
   if (/(^|\.)pornhub\.(com|org|net)$/.test(host)) {
     // Strona wideo (view_video.php?viewkey=…) nie wchodzi w ramkę – serwis ma osobny adres do osadzania.
-    const key = u.searchParams.get('viewkey') || (u.pathname.match(/^\/embed\/([^/?#]+)/) || [])[1];
+    const key = u.searchParams.get('viewkey') || (u.pathname.match(/^\/(?:embed|shorties)\/([^/?#]+)/) || [])[1];
     if (!key || !/^[A-Za-z0-9]{6,24}$/.test(key)) return null;
     return { kind: 'iframe', provider: 'pornhub', label: 'Pornhub', src: `https://www.pornhub.com/embed/${key}`, thumb: '', href };
   }
