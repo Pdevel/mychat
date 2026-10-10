@@ -93,6 +93,20 @@ if (profile.avatar && profile.avatar.startsWith('data:')) {
   profile.avatar = null;
 }
 
+// Wersje do sprawdzenia, czy telefon pobrał nową stronę i czy serwer jest po wdrożeniu.
+const CLIENT_VERSION = '2026-10-10b';
+let serverInfo = null;
+function renderVersionInfo() {
+  const server = serverInfo ? `serwer: ${serverInfo.version}${serverInfo.party ? '' : ' (STARSZY – brak seansów, wdróż ponownie)'}` : 'serwer: sprawdzam…';
+  const text = `Wersja strony: ${CLIENT_VERSION} · ${server}`;
+  const note = $('version-note');
+  if (note) note.textContent = text;
+  const login = $('login-version');
+  if (login) login.textContent = text;
+}
+
+renderVersionInfo();
+
 let myNick = null;
 let myAccountId = null;
 
@@ -6173,6 +6187,8 @@ fetch('/api/config')
     if (Array.isArray(cfg.iceServers) && cfg.iceServers.length) iceServers = cfg.iceServers;
     if (cfg.maxVoiceUsers) maxVoiceUsers = cfg.maxVoiceUsers;
     $('persistence-note').hidden = cfg.persistent !== false; // ostrzeżenie tylko, gdy serwer nie ma trwałej bazy
+    serverInfo = { version: cfg.version || 'nieznana', party: Boolean(cfg.features && cfg.features.party) };
+    renderVersionInfo();
     if (cfg.gifAvatarBytes) gifAvatarBytes = cfg.gifAvatarBytes;
     if (cfg.gifBannerBytes) gifBannerBytes = cfg.gifBannerBytes;
     if (cfg.retentionMs) {

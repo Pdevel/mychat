@@ -59,7 +59,14 @@ const MAX_REACTORS_PER_EMOJI = 100;
 
 const app = express();
 app.use(cors());
-app.use(express.static(path.join(__dirname, 'public')));
+// Strona, skrypty i style zawsze są sprawdzane na serwerze (ETag), więc po wdrożeniu telefon nie zostaje na starej wersji.
+app.use(
+  express.static(path.join(__dirname, 'public'), {
+    setHeaders(res, file) {
+      if (/\.(html|js|css)$/.test(file)) res.setHeader('Cache-Control', 'no-cache');
+    },
+  })
+);
 
 // Avatary i banery jako zwykłe obrazy (a nie data-URL w każdej wiadomości socketowej). Adres zawiera
 // wersję (?v=…), więc przeglądarka trzyma obraz w pamięci podręcznej „na zawsze” i pobiera go raz.
@@ -95,6 +102,9 @@ app.get('/api/config', (req, res) => {
     gifAvatarBytes: GIF_AVATAR_BYTES,
     gifBannerBytes: GIF_BANNER_BYTES,
     persistent: DATA_IS_PERSISTENT, // czy konta, historia i emoji przeżyją restart serwera
+    // Numer wdrożenia (Render ustawia RENDER_GIT_COMMIT) i funkcje serwera – do sprawdzenia, co faktycznie działa.
+    version: String(process.env.RENDER_GIT_COMMIT || process.env.SOURCE_VERSION || '').slice(0, 7) || 'lokalna',
+    features: { party: true, partyQueue: true, partyPrivate: true },
   });
 });
 

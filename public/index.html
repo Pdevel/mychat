@@ -12,7 +12,7 @@
     href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Caveat:wght@600&family=Creepster&family=Fredoka:wght@600&family=Lobster&family=Orbitron:wght@700&family=Pacifico&family=Playfair+Display:wght@700&family=Press+Start+2P&family=Roboto+Mono:wght@600&family=Special+Elite&display=swap"
     rel="stylesheet"
   />
-  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="style.css?v=20261010b" />
 </head>
 <body>
   <!-- Ekran logowania -->
@@ -38,6 +38,7 @@
         <input id="nick-input" type="text" maxlength="20" required autofocus />
         <p id="login-error" class="login__error" role="alert"></p>
         <button type="submit" class="btn-primary">Utwórz konto i dołącz</button>
+        <p id="login-version" class="login__hint"></p>
       </div>
     </form>
   </section>
@@ -412,6 +413,8 @@
                 <span>Tryb dyskretny (neutralna karta, klawisz H ukrywa multimedia, ukrywanie przy zmianie karty)</span>
               </label>
 
+              <p id="version-note" class="settings-note"></p>
+
               <div class="section-title section-title--spaced">ARCHIWUM LOKALNE</div>
               <label class="switch">
                 <input type="checkbox" id="archive-toggle" />
@@ -509,7 +512,7 @@
   <div id="toasts" class="toasts" aria-live="assertive"></div>
 
   <script src="/socket.io/socket.io.js"></script>
-  <script src="icons.js"></script>
-  <script src="script.js"></script>
+  <script src="icons.js?v=20261010b"></script>
+  <script src="script.js?v=20261010b"></script>
 </body>
 </html>
