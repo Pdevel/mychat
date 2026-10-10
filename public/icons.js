@@ -39,6 +39,10 @@
     sparkle: '<path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/><path d="M19 16l.8 2.2L22 19l-2.2.8L19 22l-.8-2.2L16 19l2.2-.8z"/>',
     'chevron-up': '<path d="M6 15l6-6 6 6"/>',
     'chevron-down': '<path d="M6 9l6 6 6-6"/>',
+    'skip-back': '<path d="M6 5v14"/><path fill="currentColor" stroke="none" d="M19 6v12L9.5 12z"/>',
+    'skip-next': '<path d="M18 5v14"/><path fill="currentColor" stroke="none" d="M5 6v12l9.5-6z"/>',
+    size: '<path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/>',
+    cinema: '<rect x="2.5" y="6" width="19" height="12" rx="2"/><path d="M7 21h10"/>',
     save: '<path d="M5 3h11l4 4v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M7 3v6h8V3M7 21v-7h10v7"/>',
   };
 

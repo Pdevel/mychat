@@ -553,6 +553,7 @@ function parseVideoLink(href) {
     const query = `autoplay=1&rel=0${start > 0 ? `&start=${start}` : ''}`;
     return {
       kind: 'iframe',
+      provider: 'youtube',
       label: 'YouTube',
       src: `https://www.youtube-nocookie.com/embed/${id}?${query}`,
       thumb: `https://i.ytimg.com/vi/${id}/hqdefault.jpg`,
@@ -564,16 +565,16 @@ function parseVideoLink(href) {
     if (!m) return null;
     const hash = m[2] || u.searchParams.get('h');
     const src = `https://player.vimeo.com/video/${m[1]}?autoplay=1${hash && /^[0-9a-f]+$/.test(hash) ? `&h=${hash}` : ''}`;
-    return { kind: 'iframe', label: 'Vimeo', src, thumb: '', href };
+    return { kind: 'iframe', provider: 'vimeo', label: 'Vimeo', src, thumb: '', href };
   }
-  if (host === 'pornhub.com' || host.endsWith('.pornhub.com')) {
+  if (/(^|\.)pornhub\.(com|org|net)$/.test(host)) {
     // Strona wideo (view_video.php?viewkey=…) nie wchodzi w ramkę – serwis ma osobny adres do osadzania.
     const key = u.searchParams.get('viewkey') || (u.pathname.match(/^\/embed\/([^/?#]+)/) || [])[1];
     if (!key || !/^[A-Za-z0-9]{6,24}$/.test(key)) return null;
-    return { kind: 'iframe', label: 'Pornhub', src: `https://www.pornhub.com/embed/${key}`, thumb: '', href };
+    return { kind: 'iframe', provider: 'pornhub', label: 'Pornhub', src: `https://www.pornhub.com/embed/${key}`, thumb: '', href };
   }
   if (DIRECT_VIDEO.test(u.pathname)) {
-    return { kind: 'video', label: u.hostname, src: u.href, thumb: '', href };
+    return { kind: 'video', provider: 'file', label: u.hostname, src: u.href, thumb: '', href };
   }
   return null;
 }
@@ -601,7 +602,7 @@ function makePlayerNode(video, className) {
 
 // Karta pod wiadomością: miniatura + „Odtwórz tutaj” (w wiadomości) albo „Mały odtwarzacz” (pływające okienko).
 function makeVideoEmbed(video, afterChange) {
-  const card = el('div', 'vembed');
+  const card = el('div', `vembed vembed--${video.provider}`);
   const stage = el('div', 'vembed__stage');
   const header = el('div', 'vembed__bar');
   header.appendChild(iconNode('span', 'vembed__label', 'play', video.label));
@@ -654,38 +655,122 @@ function makeVideoEmbed(video, afterChange) {
   return card;
 }
 
-// Pływający odtwarzacz: jedno okno na całą aplikację, można je przeciągać i zwinąć.
+// Pływający odtwarzacz: jedno okno na całą aplikację. Przeciągasz je za pasek – po puszczeniu przyciąga się do
+// najbliższego rogu. Ma trzy rozmiary, tryb kinowy (duży, na środku) oraz listę odtwarzania: wszystkie filmy
+// z linków na bieżącym kanale (poprzedni / następny). Rozmiar i róg są pamiętane na urządzeniu.
 let miniPlayer = null;
+const playerPrefs = store.get('mychat.player', { size: 'm', corner: 'br' });
+const PLAYER_SIZES = ['s', 'm', 'l'];
+const savePlayerPrefs = () => store.set('mychat.player', playerPrefs);
 
 function closeMiniPlayer() {
   if (!miniPlayer) return;
+  miniPlayer._backdrop?.remove();
   miniPlayer.remove(); // usunięcie iframe/video zatrzymuje dźwięk
   miniPlayer = null;
 }
 
+// Wszystkie różne filmy z linków w wiadomościach widocznych na kanale, w kolejności rozmowy.
+function channelVideos() {
+  const seen = new Set();
+  const list = [];
+  messagesEl.querySelectorAll('.msg__text[data-raw]').forEach((node) => {
+    for (const v of videosInText(node.dataset.raw)) {
+      if (seen.has(v.src)) continue;
+      seen.add(v.src);
+      list.push(v);
+    }
+  });
+  return list;
+}
+
 function openMiniPlayer(video) {
   closeMiniPlayer();
+  let list = channelVideos();
+  let index = list.findIndex((v) => v.src === video.src);
+  if (index < 0) {
+    list = [video];
+    index = 0;
+  }
+
   const box = el('div', 'miniplayer');
+  box.dataset.provider = video.provider;
+  const applyLayout = () => {
+    if (!PLAYER_SIZES.includes(playerPrefs.size)) playerPrefs.size = 'm';
+    if (!/^(t|b)(l|r)$/.test(playerPrefs.corner)) playerPrefs.corner = 'br';
+    box.classList.remove('miniplayer--s', 'miniplayer--m', 'miniplayer--l');
+    box.classList.add(`miniplayer--${playerPrefs.size}`);
+    for (const c of ['tl', 'tr', 'bl', 'br']) box.classList.toggle(`miniplayer--${c}`, c === playerPrefs.corner);
+  };
+  applyLayout();
+
   const bar = el('div', 'miniplayer__bar');
-  bar.appendChild(iconNode('span', 'miniplayer__title', 'play', video.label));
-  const collapse = iconNode('button', 'miniplayer__btn', 'minus');
-  collapse.type = 'button';
-  collapse.title = 'Zwiń / rozwiń';
-  collapse.addEventListener('click', () => box.classList.toggle('miniplayer--collapsed'));
-  const close = iconNode('button', 'miniplayer__btn', 'close');
-  close.type = 'button';
-  close.title = 'Zamknij odtwarzacz';
-  close.addEventListener('click', closeMiniPlayer);
-  bar.append(collapse, close);
+  const title = iconNode('span', 'miniplayer__title', 'play', '');
+  const titleText = title.appendChild(document.createTextNode(''));
+  const mkBtn = (icon, tip, onClick) => {
+    const b = iconNode('button', 'miniplayer__btn', icon);
+    b.type = 'button';
+    b.title = tip;
+    b.setAttribute('aria-label', tip);
+    b.addEventListener('click', onClick);
+    return b;
+  };
+  const prev = mkBtn('skip-back', 'Poprzedni film z kanału', () => go(-1));
+  const next = mkBtn('skip-next', 'Następny film z kanału', () => go(1));
+  const size = mkBtn('size', 'Zmień rozmiar okna', () => {
+    playerPrefs.size = PLAYER_SIZES[(PLAYER_SIZES.indexOf(playerPrefs.size) + 1) % PLAYER_SIZES.length];
+    savePlayerPrefs();
+    applyLayout();
+  });
+  const cinema = mkBtn('cinema', 'Tryb kinowy (Esc – wyjście)', () => setCinema(!box.classList.contains('miniplayer--cinema')));
+  const collapse = mkBtn('minus', 'Zwiń / rozwiń', () => box.classList.toggle('miniplayer--collapsed'));
+  const close = mkBtn('close', 'Zamknij odtwarzacz', closeMiniPlayer);
+  bar.append(title, prev, next, size, cinema, collapse, close);
+
   const body = el('div', 'miniplayer__body');
-  body.appendChild(makePlayerNode(video, 'miniplayer__media'));
   box.append(bar, body);
+
+  function show() {
+    const v = list[index];
+    box.dataset.provider = v.provider;
+    body.replaceChildren(makePlayerNode(v, 'miniplayer__media'));
+    titleText.textContent = list.length > 1 ? `${v.label} · ${index + 1}/${list.length}` : v.label;
+    prev.disabled = index === 0;
+    next.disabled = index === list.length - 1;
+    prev.hidden = next.hidden = list.length < 2;
+  }
+  function go(step) {
+    const target = index + step;
+    if (target < 0 || target >= list.length) return;
+    index = target;
+    box.classList.remove('miniplayer--collapsed');
+    show();
+  }
+  function setCinema(on) {
+    box.classList.toggle('miniplayer--cinema', on);
+    if (on && !box._backdrop) {
+      box._backdrop = el('div', 'miniplayer-backdrop');
+      box._backdrop.addEventListener('click', () => setCinema(false));
+      document.body.insertBefore(box._backdrop, box);
+    } else if (!on && box._backdrop) {
+      box._backdrop.remove();
+      box._backdrop = null;
+    }
+    box.classList.remove('miniplayer--collapsed');
+  }
+  box._exitCinema = () => {
+    if (!box.classList.contains('miniplayer--cinema')) return false;
+    setCinema(false);
+    return true;
+  };
+
+  show();
   document.body.appendChild(box);
   miniPlayer = box;
 
-  // Przeciąganie za pasek tytułu (mysz i dotyk), okno zostaje w granicach ekranu.
+  // Przeciąganie za pasek tytułu (mysz i dotyk); po puszczeniu okno przyciąga się do najbliższego rogu.
   bar.addEventListener('pointerdown', (e) => {
-    if (e.target.closest('button')) return;
+    if (e.target.closest('button') || box.classList.contains('miniplayer--cinema')) return;
     const rect = box.getBoundingClientRect();
     const dx = e.clientX - rect.left;
     const dy = e.clientY - rect.top;
@@ -700,6 +785,13 @@ function openMiniPlayer(video) {
       box.style.bottom = 'auto';
     };
     const stop = () => {
+      const r = box.getBoundingClientRect();
+      const vertical = r.top + r.height / 2 < window.innerHeight / 2 ? 't' : 'b';
+      const horizontal = r.left + r.width / 2 < window.innerWidth / 2 ? 'l' : 'r';
+      playerPrefs.corner = vertical + horizontal;
+      savePlayerPrefs();
+      box.style.left = box.style.top = box.style.right = box.style.bottom = '';
+      applyLayout();
       box.classList.remove('miniplayer--dragging');
       bar.removeEventListener('pointermove', move);
       bar.removeEventListener('pointerup', stop);
@@ -710,6 +802,11 @@ function openMiniPlayer(video) {
     bar.addEventListener('pointercancel', stop);
   });
 }
+
+// Esc wychodzi z trybu kinowego.
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && miniPlayer?._exitCinema()) e.stopPropagation();
+});
 
 // Pierwsze 2 różne linki do wideo z tekstu wiadomości.
 function videosInText(text) {

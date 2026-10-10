@@ -3626,3 +3626,74 @@ textarea.field {
     overflow-y: hidden; /* siatka emoji przewija się sama, zakładki zostają na górze */
   }
 }
+
+/* ============ Odtwarzacz: rozmiary, rogi, tryb kinowy, lista odtwarzania ============ */
+.miniplayer {
+  right: auto;
+  bottom: auto;
+  width: min(var(--mp-w, 300px), calc(100vw - 20px));
+}
+.miniplayer--s { --mp-w: 220px; }
+.miniplayer--m { --mp-w: 300px; }
+.miniplayer--l { --mp-w: 440px; }
+.miniplayer--tl { left: 20px; top: 64px; }
+.miniplayer--tr { right: 20px; top: 64px; }
+.miniplayer--bl { left: 20px; bottom: 20px; }
+.miniplayer--br { right: 20px; bottom: 20px; }
+.miniplayer__btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.miniplayer__btn:disabled:hover {
+  background: transparent;
+  color: var(--text-muted);
+}
+.miniplayer__btn[hidden] {
+  display: none;
+}
+.miniplayer--cinema {
+  left: 50% !important;
+  top: 50% !important;
+  right: auto !important;
+  bottom: auto !important;
+  width: min(1000px, 96vw) !important;
+  transform: translate(-50%, -50%);
+  z-index: 56;
+}
+.miniplayer--cinema .miniplayer__bar {
+  cursor: default;
+}
+.miniplayer--cinema .miniplayer__btn[title^='Zmień rozmiar'] {
+  display: none;
+}
+.miniplayer-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 55;
+  background: rgba(0, 0, 0, 0.82);
+  animation: fade 0.2s ease-out;
+}
+.vembed--pornhub {
+  border-left-color: #ff9000;
+}
+.vembed--pornhub .vembed__label .icon {
+  color: #ff9000;
+}
+.miniplayer[data-provider='pornhub'] .miniplayer__title .icon {
+  color: #ff9000;
+}
+@media (max-width: 720px) {
+  .miniplayer--s { --mp-w: 190px; }
+  .miniplayer--m { --mp-w: 250px; }
+  .miniplayer--l { --mp-w: 340px; }
+  .miniplayer--tl,
+  .miniplayer--tr { top: 56px; }
+  .miniplayer--bl,
+  .miniplayer--br { bottom: calc(76px + env(safe-area-inset-bottom)); }
+  .miniplayer--tl,
+  .miniplayer--bl { left: 10px; right: auto; }
+  .miniplayer--tr,
+  .miniplayer--br { right: 10px; left: auto; }
+  .miniplayer__bar { gap: 0; }
+  .miniplayer__btn { width: 24px; }
+}
