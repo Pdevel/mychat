@@ -653,6 +653,50 @@ function reportWatched() {
   });
 }
 
+// Odtwarzacz Pornhuba w ramce nie zdradza stanu odtwarzania, więc mierzymy czas, który film faktycznie był otwarty:
+// licznik tyka tylko, gdy karta jest widoczna, a odtwarzacz rozwinięty i uruchomiony. Dzień zaliczysz dopiero po
+// upływie podanej przez Ciebie długości filmu (95%, min. 1 minuta).
+const watchState = new Map(); // adres filmu -> { sec: obejrzane sekundy, need: wymagane sekundy (0 = jeszcze nie podano) }
+const watchSources = new Set();
+const watchOf = (video) => {
+  let s = watchState.get(video.src);
+  if (!s) watchState.set(video.src, (s = { sec: 0, need: 0 }));
+  return s;
+};
+const watchTitle = (video) => {
+  const s = watchOf(video);
+  return s.need ? `Zalicz do streaka – obejrzano ${formatClock(s.sec)} z ${formatClock(s.need)}` : 'Zalicz do streaka – obejrzałem do końca';
+};
+
+setInterval(() => {
+  if (document.hidden) return;
+  for (const src of [...watchSources]) {
+    if (src.node.isConnected) src.seen = true;
+    else if (src.seen) watchSources.delete(src);
+    if (!src.node.isConnected || !src.active()) continue;
+    watchOf(src.video()).sec += 1;
+    src.btn.title = watchTitle(src.video());
+  }
+}, 1000);
+
+function trackWatch(node, btn, video, active) {
+  watchSources.add({ node, btn, video, active, seen: false });
+}
+
+function completeWatch(video) {
+  const s = watchOf(video);
+  if (!s.need) {
+    const answer = window.prompt('Ile trwa ten film? Np. 12:30 (liczymy czas, który faktycznie oglądasz).');
+    if (answer === null) return;
+    const len = parseClock(answer);
+    if (len === null || len < 60 || len > 4 * 3600) return toast('Podaj długość od 1:00 do 4:00:00.');
+    s.need = Math.round(len * 0.95);
+  }
+  if (s.sec < s.need) return toast(`Jeszcze ${formatClock(s.need - s.sec)} oglądania, zanim zaliczysz.`);
+  watchState.delete(video.src);
+  reportWatched();
+}
+
 // Element odtwarzacza: iframe (YouTube/Vimeo) albo <video> z własnymi kontrolkami.
 // `ambient`: próbujemy wczytać plik z CORS, żeby dało się odczytać kolory obrazu do poświaty (bez CORS wracamy do zwykłego).
 function makePlayerNode(video, className, { startSec = 0, ambient = false } = {}) {
@@ -731,7 +775,13 @@ function makeVideoEmbed(video, afterChange) {
   doneBtn.type = 'button';
   doneBtn.title = 'Obejrzałem do końca – zalicz do streaka';
   doneBtn.setAttribute('aria-label', doneBtn.title);
-  doneBtn.addEventListener('click', reportWatched);
+  doneBtn.addEventListener('click', () => completeWatch(cur));
+  trackWatch(
+    card,
+    doneBtn,
+    () => cur,
+    () => !doneBtn.classList.contains('hidden') && card.offsetParent !== null && !document.body.classList.contains('media-hidden')
+  );
   actions.append(doneBtn, stopBtn, favBtn, partyBtn, popBtn, openBtn);
   header.appendChild(actions);
 
@@ -1318,7 +1368,7 @@ function openMiniPlayer(video, opts = {}) {
   const prev = mkBtn('skip-back', 'Poprzedni film (P)', () => go(-1));
   const next = mkBtn('skip-next', 'Następny film (N)', () => go(1));
   const source = mkBtn('list', 'Lista: filmy z kanału / ulubione', () => switchSource());
-  const watched = mkBtn('sparkle', 'Obejrzałem do końca – zalicz do streaka', reportWatched);
+  const watched = mkBtn('sparkle', 'Obejrzałem do końca – zalicz do streaka', () => completeWatch(list[index]));
   const fav = mkBtn('star', 'Dodaj do ulubionych (F)', () => {});
   bindFavButton(fav, () => list[index]);
   const marksBtn = mkBtn('bookmark', 'Zapamiętane momenty (M)', () => toggleMarks());
@@ -1334,6 +1384,16 @@ function openMiniPlayer(video, opts = {}) {
   const btns = el('div', 'miniplayer__btns');
   btns.append(prev, next, source, watched, fav, marksBtn, size, cinema, collapse, close);
   bar.append(title, btns);
+  trackWatch(
+    box,
+    watched,
+    () => list[index],
+    () =>
+      !watched.hidden &&
+      !box.classList.contains('miniplayer--collapsed') &&
+      !box.classList.contains('miniplayer--waiting') &&
+      !document.body.classList.contains('media-hidden')
+  );
 
   const body = el('div', 'miniplayer__body');
   const feed = el('div', 'miniplayer__feed');
