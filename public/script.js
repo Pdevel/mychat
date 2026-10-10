@@ -516,6 +516,196 @@ function isJumboMessage(text) {
   return leftovers === '' && total >= 1 && total <= 8;
 }
 
+// ---------- Wideo z linków (miniodtwarzacz jak na Discordzie) ----------
+// Rozpoznajemy YouTube, Vimeo i bezpośrednie pliki wideo. Nic nie ładujemy z cudzych serwisów
+// (poza miniaturą YouTube), dopóki ktoś nie kliknie „Odtwórz”.
+const DIRECT_VIDEO = /\.(mp4|webm|ogv|mov|m4v)$/i;
+const YT_ID = /^[A-Za-z0-9_-]{11}$/;
+
+function parseVideoLink(href) {
+  let u;
+  try {
+    u = new URL(href);
+  } catch {
+    return null;
+  }
+  if (u.protocol !== 'https:' && u.protocol !== 'http:') return null;
+  const host = u.hostname.replace(/^(www|m|music)\./, '');
+  if (host === 'youtu.be' || host === 'youtube.com' || host === 'youtube-nocookie.com') {
+    let id = host === 'youtu.be' ? u.pathname.slice(1).split('/')[0] : u.searchParams.get('v');
+    const path = u.pathname.match(/^\/(?:shorts|embed|live|v)\/([^/?#]+)/);
+    if (!id && path) id = path[1];
+    if (!id || !YT_ID.test(id)) return null;
+    const start = parseInt(u.searchParams.get('t') || u.searchParams.get('start') || '', 10);
+    const query = `autoplay=1&rel=0${start > 0 ? `&start=${start}` : ''}`;
+    return {
+      kind: 'iframe',
+      label: 'YouTube',
+      src: `https://www.youtube-nocookie.com/embed/${id}?${query}`,
+      thumb: `https://i.ytimg.com/vi/${id}/hqdefault.jpg`,
+      href,
+    };
+  }
+  if (host === 'vimeo.com' || host === 'player.vimeo.com') {
+    const m = u.pathname.match(/\/(?:video\/)?(\d{5,12})(?:\/([0-9a-f]{8,}))?\/?$/);
+    if (!m) return null;
+    const hash = m[2] || u.searchParams.get('h');
+    const src = `https://player.vimeo.com/video/${m[1]}?autoplay=1${hash && /^[0-9a-f]+$/.test(hash) ? `&h=${hash}` : ''}`;
+    return { kind: 'iframe', label: 'Vimeo', src, thumb: '', href };
+  }
+  if (DIRECT_VIDEO.test(u.pathname)) {
+    return { kind: 'video', label: u.hostname, src: u.href, thumb: '', href };
+  }
+  return null;
+}
+
+// Element odtwarzacza: iframe (YouTube/Vimeo) albo <video> z własnymi kontrolkami.
+function makePlayerNode(video, className) {
+  if (video.kind === 'video') {
+    const v = el('video', className);
+    v.controls = true;
+    v.autoplay = true;
+    v.preload = 'metadata';
+    v.referrerPolicy = 'no-referrer';
+    v.src = video.src;
+    return v;
+  }
+  const frame = el('iframe', className);
+  frame.src = video.src;
+  frame.title = `${video.label} – odtwarzacz`;
+  frame.allow = 'autoplay; encrypted-media; picture-in-picture; fullscreen';
+  frame.allowFullscreen = true;
+  frame.referrerPolicy = 'strict-origin-when-cross-origin';
+  frame.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-presentation allow-popups');
+  return frame;
+}
+
+// Karta pod wiadomością: miniatura + „Odtwórz tutaj” (w wiadomości) albo „Mały odtwarzacz” (pływające okienko).
+function makeVideoEmbed(video, afterChange) {
+  const card = el('div', 'vembed');
+  const stage = el('div', 'vembed__stage');
+  const header = el('div', 'vembed__bar');
+  header.appendChild(el('span', 'vembed__label', `▶ ${video.label}`));
+  const actions = el('div', 'vembed__actions');
+
+  const popBtn = el('button', 'vembed__btn', '⧉ Mały odtwarzacz');
+  popBtn.type = 'button';
+  popBtn.title = 'Oglądaj w pływającym oknie – zostaje przy zmianie kanału';
+  popBtn.addEventListener('click', () => {
+    showStage(false);
+    openMiniPlayer(video);
+  });
+  const openBtn = el('a', 'vembed__btn', '↗');
+  openBtn.href = video.href;
+  openBtn.target = '_blank';
+  openBtn.rel = 'noopener noreferrer';
+  openBtn.title = 'Otwórz w nowej karcie';
+  actions.append(popBtn, openBtn);
+  header.appendChild(actions);
+
+  const showStage = (playing) => {
+    stage.replaceChildren();
+    if (playing) {
+      stage.appendChild(makePlayerNode(video, 'vembed__player'));
+      closeMiniPlayer();
+    } else {
+      const poster = el('button', 'vembed__poster');
+      poster.type = 'button';
+      poster.setAttribute('aria-label', `Odtwórz wideo (${video.label})`);
+      if (video.thumb) {
+        const img = el('img', 'vembed__thumb');
+        img.loading = 'lazy';
+        img.referrerPolicy = 'no-referrer';
+        img.alt = '';
+        img.addEventListener('load', afterChange);
+        img.addEventListener('error', () => img.remove());
+        img.src = video.thumb;
+        poster.appendChild(img);
+      }
+      poster.appendChild(el('span', 'vembed__play', '▶'));
+      poster.addEventListener('click', () => {
+        showStage(true);
+        afterChange();
+      });
+      stage.appendChild(poster);
+    }
+  };
+  showStage(false);
+  card.append(header, stage);
+  return card;
+}
+
+// Pływający odtwarzacz: jedno okno na całą aplikację, można je przeciągać i zwinąć.
+let miniPlayer = null;
+
+function closeMiniPlayer() {
+  if (!miniPlayer) return;
+  miniPlayer.remove(); // usunięcie iframe/video zatrzymuje dźwięk
+  miniPlayer = null;
+}
+
+function openMiniPlayer(video) {
+  closeMiniPlayer();
+  const box = el('div', 'miniplayer');
+  const bar = el('div', 'miniplayer__bar');
+  bar.appendChild(el('span', 'miniplayer__title', `▶ ${video.label}`));
+  const collapse = el('button', 'miniplayer__btn', '–');
+  collapse.type = 'button';
+  collapse.title = 'Zwiń / rozwiń';
+  collapse.addEventListener('click', () => box.classList.toggle('miniplayer--collapsed'));
+  const close = el('button', 'miniplayer__btn', '✕');
+  close.type = 'button';
+  close.title = 'Zamknij odtwarzacz';
+  close.addEventListener('click', closeMiniPlayer);
+  bar.append(collapse, close);
+  const body = el('div', 'miniplayer__body');
+  body.appendChild(makePlayerNode(video, 'miniplayer__media'));
+  box.append(bar, body);
+  document.body.appendChild(box);
+  miniPlayer = box;
+
+  // Przeciąganie za pasek tytułu (mysz i dotyk), okno zostaje w granicach ekranu.
+  bar.addEventListener('pointerdown', (e) => {
+    if (e.target.closest('button')) return;
+    const rect = box.getBoundingClientRect();
+    const dx = e.clientX - rect.left;
+    const dy = e.clientY - rect.top;
+    bar.setPointerCapture(e.pointerId);
+    box.classList.add('miniplayer--dragging'); // na czas ruchu iframe nie może przechwytywać kursora
+    const move = (ev) => {
+      const x = Math.min(Math.max(0, ev.clientX - dx), window.innerWidth - box.offsetWidth);
+      const y = Math.min(Math.max(0, ev.clientY - dy), window.innerHeight - box.offsetHeight);
+      box.style.left = `${x}px`;
+      box.style.top = `${y}px`;
+      box.style.right = 'auto';
+      box.style.bottom = 'auto';
+    };
+    const stop = () => {
+      box.classList.remove('miniplayer--dragging');
+      bar.removeEventListener('pointermove', move);
+      bar.removeEventListener('pointerup', stop);
+      bar.removeEventListener('pointercancel', stop);
+    };
+    bar.addEventListener('pointermove', move);
+    bar.addEventListener('pointerup', stop);
+    bar.addEventListener('pointercancel', stop);
+  });
+}
+
+// Pierwsze 2 różne linki do wideo z tekstu wiadomości.
+function videosInText(text) {
+  const seen = new Set();
+  const found = [];
+  for (const [url] of String(text).matchAll(/https?:\/\/[^\s<>"']+/g)) {
+    const video = parseVideoLink(url);
+    if (!video || seen.has(video.src)) continue;
+    seen.add(video.src);
+    found.push(video);
+    if (found.length === 2) break;
+  }
+  return found;
+}
+
 function openLightbox(src) {
   lightbox.querySelector('img').src = src;
   lightbox.classList.remove('hidden');
@@ -1226,6 +1416,7 @@ function addMessage(m, { historic = false } = {}) {
     body._mentions = m.mentions || [];
     body.appendChild(renderRichText(m.text, jumbo, body._mentions));
     wrap.appendChild(body);
+    for (const video of videosInText(m.text)) wrap.appendChild(makeVideoEmbed(video, afterMediaLoad));
   }
 
   wrap._reactions = m.reactions || {};
