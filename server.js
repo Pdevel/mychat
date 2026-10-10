@@ -1111,7 +1111,7 @@ io.on('connection', (socket) => {
       else delete reactions[payload.emoji];
 
       await store.setReactions(payload.id, reactions);
-      io.to(`ch:${channel}`).emit('reactions', { id: payload.id, reactions: publicReactions(reactions) });
+      io.to(`ch:${msg.channel}`).emit('reactions', { id: payload.id, reactions: publicReactions(reactions) });
       reply({ ok: true });
     } catch (err) {
       console.error('Błąd reakcji:', err.message);
@@ -1578,7 +1578,7 @@ io.on('connection', (socket) => {
     const { account, group } = ctx;
     const targetId = payload.accountId;
     if (!isGroupMember(group, targetId)) return reply({ ok: false, error: 'Tej osoby nie ma w grupie.' });
-    if (targetId === group.ownerId) return reply({ ok: false, error: 'Nie można zmieniać ról twórcy grupy.' });
+    if (targetId === group.ownerId && targetId !== account.id) return reply({ ok: false, error: 'Nie można zmieniać ról twórcy grupy.' });
     if (targetId !== account.id && !(topRank(group, account.id) < topRank(group, targetId))) {
       return reply({ ok: false, error: 'Ta osoba ma rolę wyżej lub na równi z Twoją.' });
     }

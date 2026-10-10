@@ -95,7 +95,7 @@ if (profile.avatar && profile.avatar.startsWith('data:')) {
 }
 
 // Wersje do sprawdzenia, czy telefon pobrał nową stronę i czy serwer jest po wdrożeniu.
-const CLIENT_VERSION = '2026-10-10l';
+const CLIENT_VERSION = '2026-10-10m';
 let serverInfo = null;
 function renderVersionInfo() {
   const server = serverInfo ? `serwer: ${serverInfo.version}${serverInfo.party ? '' : ' (STARSZY – brak seansów, wdróż ponownie)'}` : 'serwer: sprawdzam…';
@@ -6123,7 +6123,7 @@ function gsetMembers(g, body) {
     left.append(info, chipRow);
     row.appendChild(left);
 
-    const touchable = !m.isOwner && (isMe || g.rank < rank);
+    const touchable = isMe || (!m.isOwner && g.rank < rank); // twórca może nadać role sobie, ale nikt nie zmienia ról twórcy
     const actions = el('div', 'gset__memberactions');
     if (canRoles && touchable) {
       // Ikona etykiety: nadawanie ról. Bez żadnej roli prowadzi do zakładki, w której się je tworzy.
