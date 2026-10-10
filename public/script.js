@@ -95,7 +95,7 @@ if (profile.avatar && profile.avatar.startsWith('data:')) {
 }
 
 // Wersje do sprawdzenia, czy telefon pobrał nową stronę i czy serwer jest po wdrożeniu.
-const CLIENT_VERSION = '2026-10-10k';
+const CLIENT_VERSION = '2026-10-10l';
 let serverInfo = null;
 function renderVersionInfo() {
   const server = serverInfo ? `serwer: ${serverInfo.version}${serverInfo.party ? '' : ' (STARSZY – brak seansów, wdróż ponownie)'}` : 'serwer: sprawdzam…';
@@ -6032,7 +6032,7 @@ function gsetRoles(g, body) {
   if (!isEveryone) {
     editor.appendChild(el('div', 'section-title', 'Nazwa roli'));
     editor.appendChild(nameInput);
-    editor.appendChild(el('div', 'section-title gset__spaced', 'KOLOR'));
+    editor.appendChild(el('div', 'section-title gset__spaced', 'Kolor'));
     const colorRow = el('div', 'gset__colorrow');
     colorInput = el('input', 'gset__color');
     colorInput.type = 'color';
