@@ -62,9 +62,6 @@ const THEMES = [
   { id: 'forest', name: 'Las', colors: ['#121b16', '#19261f', '#1f2f26'] },
   { id: 'sunset', name: 'Zachód słońca', colors: ['#1d1424', '#2a1b33', '#33213e'] },
   { id: 'red', name: 'Czerwony', colors: ['#260b0f', '#3b1218', '#4a1a21'], accent: '#ed4245' },
-  { id: 'amber', name: 'Bursztyn', colors: ['#1a1208', '#271a0b', '#302210'], accent: '#ff9f1a' },
-  { id: 'burgundy', name: 'Bordo', colors: ['#1e0a14', '#2e0f1f', '#381427'], accent: '#e0457b' },
-  { id: 'violet', name: 'Fiolet', colors: ['#130d24', '#1d1435', '#251a42'], accent: '#a07bff' },
 ];
 const DEFAULT_ACCENT = '#5865f2';
 const ACCENTS = ['#5865f2', '#3ba55d', '#eb459e', '#ed4245', '#faa61a', '#1abc9c', '#9b59b6'];
@@ -78,13 +75,6 @@ let settings = store.get('mychat.settings', {
   screenAudio: 'on', // dźwięk karty przy udostępnianiu ekranu: 'on' | 'off'
   archive: true, // zapisuj wiadomości na tym urządzeniu (nie znikają po okresie przechowywania na serwerze)
   archiveFiles: false, // zapisuj też zawartość plików (zajmuje więcej miejsca)
-  partyGlow: 'image', // poświata trybu kinowego: 'image' (według obrazu, gdzie się da) | 'steady' | 'off'
-  partySounds: false, // dźwięki seansu: tykanie odliczania, start, reakcje
-  partyVoice: false, // przy wspólnym seansie dołącz do kanału głosowego i wycisz dźwięki aplikacji
-  keepAwake: true, // nie wygaszaj ekranu, gdy gra film w odtwarzaczu
-  discreet: false, // tryb dyskretny: neutralna karta, ukrywanie multimediów klawiszem H i przy zmianie karty
-  partyEmoji: '🔥😍👏😂❤️😮', // własne reakcje na żywo (do 8)
-  oneHand: 'off', // tryb jednej ręki na telefonie: 'off' | 'left' | 'right'
 });
 // avatar = adres obrazu z serwera; avatarData = mała lokalna kopia (pozwala odtworzyć avatar po zresetowaniu serwera)
 let profile = store.get('mychat.profile', { nick: '', avatar: null, avatarData: null });
@@ -93,20 +83,6 @@ if (profile.avatar && profile.avatar.startsWith('data:')) {
   profile.avatarData = profile.avatarData || profile.avatar;
   profile.avatar = null;
 }
-
-// Wersje do sprawdzenia, czy telefon pobrał nową stronę i czy serwer jest po wdrożeniu.
-const CLIENT_VERSION = '2026-10-10o';
-let serverInfo = null;
-function renderVersionInfo() {
-  const server = serverInfo ? `serwer: ${serverInfo.version}${serverInfo.party ? '' : ' (STARSZY – brak seansów, wdróż ponownie)'}` : 'serwer: sprawdzam…';
-  const text = `Wersja strony: ${CLIENT_VERSION} · ${server}`;
-  const note = $('version-note');
-  if (note) note.textContent = text;
-  const login = $('login-version');
-  if (login) login.textContent = text;
-}
-
-renderVersionInfo();
 
 let myNick = null;
 let myAccountId = null;
@@ -198,22 +174,9 @@ function styleNick(node, nick, style, fallbackColor) {
   node.style.fontWeight = font && font.weight ? String(font.weight) : '';
 }
 
-// Kolor najwyższej roli, która ma kolor, w bieżącej grupie (null, gdy osoba nie ma takiej roli albo lista członków
-// jeszcze nie przyszła). Wygrywa z kolorem nicku z profilu, tak jak kolor roli na Discordzie; czcionka zostaje własna.
-function roleColorOf(accountId) {
-  const group = groupByChannel(currentChannel);
-  if (!accountId || !group || !group.roles || !group.roles.length || groupMembersFor !== group.id) return null;
-  const member = groupMembers.find((m) => m.id === accountId);
-  if (!member || !member.roles || !member.roles.length) return null;
-  const top = group.roles.find((r) => r.color && member.roles.includes(r.id));
-  return top ? top.color : null;
-}
-
 function applyNickStyle(node, nick, accountId) {
   const style = (accountId && nickStyles.get(accountId)) || nickStylesByNick.get(nick) || null;
   styleNick(node, nick, style, colorFor(nick));
-  const roleColor = roleColorOf(accountId);
-  if (roleColor) node.style.color = roleColor;
   node.classList.add('nick-styled');
   node.dataset.nick = nick;
   if (accountId) node.dataset.account = accountId;
@@ -239,19 +202,6 @@ function el(tag, className, text) {
   if (className) node.className = className;
   if (text !== undefined) node.textContent = text; // textContent = ochrona przed XSS
   return node;
-}
-
-// Pomocnicze elementy z ikonami (zestaw w icons.js): podpis i ikona po prawej oraz znaczek przy osobie w kanale głosowym.
-function textWithIcon(text, name) {
-  const span = el('span', 'text-icon', `${text} `);
-  span.appendChild(icon(name));
-  return span;
-}
-
-function voiceFlag(name, title) {
-  const flag = iconNode('span', 'voice-member__flags', name);
-  flag.title = title;
-  return flag;
 }
 
 function toast(text, info = false) {
@@ -327,13 +277,6 @@ function renderSettingsOptions() {
   $('screen-mode').value = settings.screenMode;
   $('screen-audio').value = settings.screenAudio;
   $('archive-toggle').checked = settings.archive;
-  $('party-glow').value = settings.partyGlow;
-  $('one-hand').value = settings.oneHand;
-  $('party-emoji').value = settings.partyEmoji;
-  $('party-sounds-toggle').checked = settings.partySounds;
-  $('party-voice-toggle').checked = settings.partyVoice;
-  $('keep-awake-toggle').checked = settings.keepAwake;
-  $('discreet-toggle').checked = settings.discreet;
   $('archive-files-toggle').checked = settings.archiveFiles;
   $('archive-files-toggle').disabled = !settings.archive;
 }
@@ -573,1099 +516,6 @@ function isJumboMessage(text) {
   return leftovers === '' && total >= 1 && total <= 8;
 }
 
-// ---------- Wideo z linków (miniodtwarzacz jak na Discordzie) ----------
-// Rozpoznajemy YouTube, Vimeo i bezpośrednie pliki wideo. Nic nie ładujemy z cudzych serwisów
-// (poza miniaturą YouTube), dopóki ktoś nie kliknie „Odtwórz”.
-const DIRECT_VIDEO = /\.(mp4|webm|ogv|mov|m4v)$/i;
-const YT_ID = /^[A-Za-z0-9_-]{11}$/;
-
-function parseVideoLink(href) {
-  let u;
-  try {
-    u = new URL(href);
-  } catch {
-    return null;
-  }
-  if (u.protocol !== 'https:' && u.protocol !== 'http:') return null;
-  const host = u.hostname.replace(/^(www|m|music)\./, '');
-  if (host === 'youtu.be' || host === 'youtube.com' || host === 'youtube-nocookie.com') {
-    let id = host === 'youtu.be' ? u.pathname.slice(1).split('/')[0] : u.searchParams.get('v');
-    const path = u.pathname.match(/^\/(?:shorts|embed|live|v)\/([^/?#]+)/);
-    if (!id && path) id = path[1];
-    if (!id || !YT_ID.test(id)) return null;
-    const start = parseInt(u.searchParams.get('t') || u.searchParams.get('start') || '', 10);
-    const query = `autoplay=1&rel=0${start > 0 ? `&start=${start}` : ''}`;
-    const short = /^\/shorts\//.test(u.pathname);
-    return {
-      kind: 'iframe',
-      provider: 'youtube',
-      short,
-      label: short ? 'YouTube Shorts' : 'YouTube',
-      src: `https://www.youtube-nocookie.com/embed/${id}?${query}`,
-      thumb: `https://i.ytimg.com/vi/${id}/hqdefault.jpg`,
-      href,
-    };
-  }
-  if (host === 'vimeo.com' || host === 'player.vimeo.com') {
-    const m = u.pathname.match(/\/(?:video\/)?(\d{5,12})(?:\/([0-9a-f]{8,}))?\/?$/);
-    if (!m) return null;
-    const hash = m[2] || u.searchParams.get('h');
-    const src = `https://player.vimeo.com/video/${m[1]}?autoplay=1${hash && /^[0-9a-f]+$/.test(hash) ? `&h=${hash}` : ''}`;
-    return { kind: 'iframe', provider: 'vimeo', label: 'Vimeo', src, thumb: '', href };
-  }
-  if (DIRECT_VIDEO.test(u.pathname)) {
-    return { kind: 'video', provider: 'file', label: u.hostname, src: u.href, thumb: '', href };
-  }
-  return null;
-}
-
-// Adres filmu od podanej sekundy (YouTube, Vimeo i pliki wideo).
-function videoSrcAt(video, sec) {
-  const at = Math.floor(sec);
-  if (!(at > 0)) return video.src;
-  try {
-    const u = new URL(video.src);
-    if (video.provider === 'youtube') u.searchParams.set('start', String(at));
-    else if (video.provider === 'vimeo') u.hash = `t=${at}s`;
-    else if (video.provider === 'file') u.hash = `t=${at}`;
-    else return video.src;
-    return u.href;
-  } catch {
-    return video.src;
-  }
-}
-
-// Element odtwarzacza: iframe (YouTube/Vimeo) albo <video> z własnymi kontrolkami.
-// `ambient`: próbujemy wczytać plik z CORS, żeby dało się odczytać kolory obrazu do poświaty (bez CORS wracamy do zwykłego).
-function makePlayerNode(video, className, { startSec = 0, ambient = false } = {}) {
-  if (video.kind === 'video') {
-    const v = el('video', className);
-    v.controls = true;
-    v.autoplay = true;
-    v.preload = 'metadata';
-    v.referrerPolicy = 'no-referrer';
-    const src = videoSrcAt(video, startSec);
-    if (ambient) {
-      v.crossOrigin = 'anonymous';
-      v.addEventListener(
-        'error',
-        () => {
-          if (!v.crossOrigin) return;
-          v.removeAttribute('crossorigin'); // serwer nie wysyła CORS – gramy bez odczytu kolorów
-          v.src = src;
-        },
-        { once: true }
-      );
-    }
-    v.src = src;
-    return v;
-  }
-  const frame = el('iframe', className);
-  const at = startSec > 0 ? { ...video, src: videoSrcAt(video, startSec) } : video;
-  frame.src = at.src;
-  frame.title = `${video.label} – odtwarzacz`;
-  frame.allow = 'autoplay; encrypted-media; picture-in-picture; fullscreen';
-  frame.allowFullscreen = true;
-  frame.referrerPolicy = 'strict-origin-when-cross-origin';
-  frame.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-presentation allow-popups');
-  return frame;
-}
-
-// Karta pod wiadomością: miniatura + „Odtwórz tutaj” (w wiadomości) albo „Mały odtwarzacz” (pływające okienko).
-function makeVideoEmbed(video, afterChange) {
-  const cur = video;
-  const card = el('div', 'vembed');
-  const stage = el('div', 'vembed__stage');
-  const header = el('div', 'vembed__bar');
-  const label = iconNode('span', 'vembed__label', 'play', '');
-  const labelText = label.appendChild(document.createTextNode(''));
-  header.appendChild(label);
-  const actions = el('div', 'vembed__actions');
-
-  const popBtn = iconNode('button', 'vembed__btn', 'popout', 'Mały odtwarzacz');
-  popBtn.type = 'button';
-  popBtn.title = 'Oglądaj w pływającym oknie – zostaje przy zmianie kanału';
-  popBtn.addEventListener('click', () => {
-    showStage(false);
-    openMiniPlayer(cur);
-  });
-  const partyBtn = iconNode('button', 'vembed__btn', 'users');
-  partyBtn.type = 'button';
-  partyBtn.title = 'Oglądajmy razem – zaproś kanał, wspólny start 3-2-1';
-  partyBtn.setAttribute('aria-label', partyBtn.title);
-  partyBtn.addEventListener('click', () => openPartyChooser(partyBtn, cur));
-  const favBtn = iconNode('button', 'vembed__btn', 'star');
-  favBtn.type = 'button';
-  bindFavButton(favBtn, () => cur);
-  const stopBtn = iconNode('button', 'vembed__btn hidden', 'close', 'Zatrzymaj');
-  stopBtn.type = 'button';
-  stopBtn.title = 'Zatrzymaj i schowaj odtwarzacz';
-  stopBtn.addEventListener('click', () => {
-    showStage(false);
-    afterChange();
-  });
-  const openBtn = iconNode('a', 'vembed__btn', 'external');
-  openBtn.target = '_blank';
-  openBtn.rel = 'noopener noreferrer';
-  openBtn.title = 'Otwórz w nowej karcie';
-  actions.append(stopBtn, favBtn, partyBtn, popBtn, openBtn);
-  header.appendChild(actions);
-
-  // Klasy karty zależą od serwisu i od tego, czy to short (układ pionowy).
-  const sync = () => {
-    card.className = `vembed vembed--${cur.provider}${cur.short ? ' vembed--short' : ''}`;
-    labelText.textContent = ` ${cur.label}`;
-    openBtn.href = cur.href;
-    document.dispatchEvent(new CustomEvent('favs-changed')); // gwiazdka pokazuje stan nowego filmu
-  };
-  const showStage = (playing) => {
-    stage.replaceChildren();
-    stopBtn.classList.toggle('hidden', !playing);
-    if (playing) {
-      stage.appendChild(makePlayerNode(cur, 'vembed__player'));
-      closeMiniPlayer();
-    } else {
-      const poster = el('button', 'vembed__poster');
-      poster.type = 'button';
-      poster.setAttribute('aria-label', `Odtwórz wideo (${cur.label})`);
-      if (cur.thumb) {
-        const img = el('img', 'vembed__thumb');
-        img.loading = 'lazy';
-        img.referrerPolicy = 'no-referrer';
-        img.alt = '';
-        img.addEventListener('load', afterChange);
-        img.addEventListener('error', () => img.remove());
-        img.src = cur.thumb;
-        poster.appendChild(img);
-      }
-      poster.appendChild(iconNode('span', 'vembed__play', 'play'));
-      poster.addEventListener('click', () => {
-        showStage(true);
-        afterChange();
-      });
-      stage.appendChild(poster);
-    }
-  };
-  sync();
-  showStage(false);
-  card.append(header, stage);
-  return card;
-}
-
-// ---------- Ulubione ----------
-// Filmy zapisane gwiazdką – lista tylko na tym urządzeniu (do 50 pozycji), dostępna jako osobna playlista w odtwarzaczu.
-const favStore = store.get('mychat.favs', { list: [] });
-const favList = () => (Array.isArray(favStore.list) ? favStore.list : []);
-const isFav = (video) => favList().some((f) => f.src === video.src);
-function toggleFav(video) {
-  const list = favList();
-  const at = list.findIndex((f) => f.src === video.src);
-  if (at >= 0) list.splice(at, 1);
-  else list.unshift({ href: video.href, src: video.src });
-  favStore.list = list.slice(0, 50);
-  store.set('mychat.favs', favStore);
-  document.dispatchEvent(new CustomEvent('favs-changed'));
-  return at < 0;
-}
-const favVideos = () => favList().map((f) => parseVideoLink(f.href)).filter(Boolean);
-
-// Gwiazdka (przycisk) odświeżająca się, gdy ulubione zmienią się gdziekolwiek.
-function bindFavButton(btn, getVideo) {
-  const sync = () => {
-    const on = isFav(getVideo());
-    btn.classList.toggle('is-fav', on);
-    btn.title = on ? 'Usuń z ulubionych' : 'Dodaj do ulubionych';
-    btn.setAttribute('aria-pressed', String(on));
-  };
-  btn.addEventListener('click', () => {
-    const added = toggleFav(getVideo());
-    toast(added ? 'Dodano do ulubionych.' : 'Usunięto z ulubionych.', true);
-  });
-  document.addEventListener('favs-changed', () => btn.isConnected && sync());
-  sync();
-}
-
-// ---------- Zapamiętane momenty ----------
-// Znaczniki czasu w filmach (np. „12:30 – ten fragment”), do 20 na film. Odtwarzacze YouTube, Vimeo i pliki wideo
-// potrafią wystartować od zapamiętanej sekundy; dla pozostałych zostaje podpowiedź, gdzie przewinąć.
-function marksOf(video) {
-  const all = favStore.marks || {};
-  return Array.isArray(all[video.src]) ? all[video.src] : [];
-}
-function saveMarks(video, list) {
-  const all = favStore.marks || {};
-  all[video.src] = list.slice(0, 20);
-  if (!all[video.src].length) delete all[video.src];
-  const keys = Object.keys(all);
-  for (const k of keys.slice(0, Math.max(0, keys.length - 200))) delete all[k]; // najstarsze wypadają
-  favStore.marks = all;
-  store.set('mychat.favs', favStore);
-}
-function parseClock(text) {
-  const parts = String(text).trim().split(':').map((x) => Number(x));
-  if (!parts.length || parts.length > 3 || parts.some((n) => !Number.isFinite(n) || n < 0)) return null;
-  return parts.reduce((total, n) => total * 60 + n, 0);
-}
-function formatClock(sec) {
-  const h = Math.floor(sec / 3600);
-  const m = Math.floor((sec % 3600) / 60);
-  const ss = String(Math.floor(sec % 60)).padStart(2, '0');
-  return h ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`;
-}
-
-// ---------- Tryb dyskretny (opcjonalny) ----------
-// Neutralny tytuł i ikona karty, klawisz H (albo zmiana karty przeglądarki) chowa multimedia i odtwarzacze.
-const appTitle = (text) => (settings.discreet ? text.replace('MyChat', 'Notatki') : text);
-const NEUTRAL_ICON =
-  "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23999' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='5' y='3' width='14' height='18' rx='2'/%3E%3Cpath d='M9 8h6M9 12h6M9 16h4'/%3E%3C/svg%3E";
-function applyDiscreet() {
-  document.title = appTitle(unread ? `(${unread}) MyChat` : 'MyChat');
-  let link = document.querySelector('link[rel="icon"][data-discreet]');
-  if (settings.discreet && !link) {
-    link = document.createElement('link');
-    link.rel = 'icon';
-    link.dataset.discreet = '1';
-    link.href = NEUTRAL_ICON;
-    document.head.appendChild(link);
-  } else if (!settings.discreet && link) {
-    link.remove();
-  }
-  if (!settings.discreet) setMediaHidden(false);
-}
-function setMediaHidden(hidden) {
-  document.body.classList.toggle('media-hidden', hidden);
-  if (hidden) closeMiniPlayer();
-  let pill = $('media-reveal');
-  if (hidden && !pill) {
-    pill = el('button', 'media-reveal', '· · ·');
-    pill.id = 'media-reveal';
-    pill.type = 'button';
-    pill.title = 'Pokaż ukryte multimedia (H)';
-    pill.addEventListener('click', () => setMediaHidden(false));
-    document.body.appendChild(pill);
-  } else if (!hidden && pill) {
-    pill.remove();
-  }
-}
-document.addEventListener('keydown', (e) => {
-  if (!settings.discreet || e.ctrlKey || e.metaKey || e.altKey) return;
-  if (e.key.toLowerCase() !== 'h' || e.target.closest('input, textarea, select, [contenteditable]')) return;
-  setMediaHidden(!document.body.classList.contains('media-hidden'));
-});
-document.addEventListener('visibilitychange', () => {
-  if (document.hidden && settings.discreet) setMediaHidden(true);
-});
-applyDiscreet();
-
-// ---------- Tryb jednej ręki (telefon) ----------
-// Lewa albo prawa ręka: przyciski w karcie wideo i w oknie odtwarzacza przechodzą do dolnego rzędu, po stronie kciuka.
-// Reszta aplikacji wygląda tak samo. Działa tylko na wąskich ekranach.
-const narrowScreen = window.matchMedia('(max-width: 720px)');
-const oneHandActive = () => settings.oneHand !== 'off' && narrowScreen.matches;
-
-function applyOneHand() {
-  document.body.classList.toggle('onehand', settings.oneHand !== 'off');
-  document.body.classList.toggle('onehand--left', settings.oneHand === 'left');
-  document.body.classList.toggle('onehand--right', settings.oneHand === 'right');
-}
-narrowScreen.addEventListener('change', () => miniPlayer && miniPlayer._applyLayout?.());
-applyOneHand();
-
-// ---------- Oglądajmy razem ----------
-// Serwer pilnuje stanu: publiczne zaproszenie dla kanału albo prywatny seans dla dwóch osób, lista uczestników,
-// kolejka z głosowaniem, odliczanie 3-2-1 i reakcje na żywo. Klient dostaje „swój” widok seansu na kanale.
-const partyByChannel = new Map(); // kanał -> widok seansu z serwera albo null
-const currentParty = () => partyByChannel.get(currentChannel) || null;
-const iAmViewer = (p = currentParty()) => Boolean(p && myAccountId && p.viewers.some((v) => v.id === myAccountId));
-const inPartyPlayer = () => Boolean(miniPlayer && miniPlayer.classList.contains('miniplayer--party'));
-const DEFAULT_REACTIONS = ['🔥', '😍', '👏', '😂', '❤️', '😮'];
-
-// Własne reakcje z ustawień (do 8 emotek, rozdzielane na „znaki” użytkownika, nie na bajty).
-function reactionSet() {
-  const raw = String(settings.partyEmoji || '');
-  const graphemes = window.Intl && Intl.Segmenter ? Array.from(new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(raw), (x) => x.segment) : Array.from(raw);
-  const list = graphemes.filter((g) => /\p{Extended_Pictographic}/u.test(g)).slice(0, 8);
-  return list.length ? list : DEFAULT_REACTIONS;
-}
-
-// Krótkie dźwięki seansu (tik odliczania, start, reakcja) – tylko gdy włączone w ustawieniach.
-function partyTone(kind) {
-  if (!settings.partySounds) return;
-  try {
-    const ctx = getAudioCtx();
-    const t = ctx.currentTime;
-    const [freq, len, vol] = kind === 'tick' ? [520, 0.09, 0.08] : kind === 'go' ? [880, 0.35, 0.12] : [740, 0.07, 0.04];
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.type = 'sine';
-    osc.frequency.value = freq;
-    gain.gain.setValueAtTime(0.0001, t);
-    gain.gain.exponentialRampToValueAtTime(vol, t + 0.01);
-    gain.gain.exponentialRampToValueAtTime(0.0001, t + len);
-    osc.connect(gain).connect(ctx.destination);
-    osc.start(t);
-    osc.stop(t + len + 0.02);
-  } catch {
-    /* brak audio – pomijamy */
-  }
-}
-
-// Spokojne tło dźwiękowe do trybu kinowego: dwie nastrojone sinusoidy z wolnym falowaniem głośności.
-let ambientPad = null;
-function toggleAmbientPad(on) {
-  if (!on) {
-    if (ambientPad) {
-      const { gain, nodes, ctx } = ambientPad;
-      gain.gain.cancelScheduledValues(ctx.currentTime);
-      gain.gain.linearRampToValueAtTime(0.0001, ctx.currentTime + 0.6);
-      setTimeout(() => nodes.forEach((n) => n.stop()), 700);
-      ambientPad = null;
-    }
-    return;
-  }
-  if (ambientPad) return;
-  try {
-    const ctx = getAudioCtx();
-    const gain = ctx.createGain();
-    gain.gain.setValueAtTime(0.0001, ctx.currentTime);
-    gain.gain.linearRampToValueAtTime(0.05, ctx.currentTime + 2);
-    gain.connect(ctx.destination);
-    const nodes = [110, 164.8, 220.5].map((freq, i) => {
-      const osc = ctx.createOscillator();
-      const g = ctx.createGain();
-      osc.type = 'sine';
-      osc.frequency.value = freq;
-      g.gain.value = 0.35 - i * 0.08;
-      osc.connect(g).connect(gain);
-      osc.start();
-      return osc;
-    });
-    const lfo = ctx.createOscillator();
-    const lfoGain = ctx.createGain();
-    lfo.frequency.value = 0.12;
-    lfoGain.gain.value = 0.02;
-    lfo.connect(lfoGain).connect(gain.gain);
-    lfo.start();
-    nodes.push(lfo);
-    ambientPad = { ctx, gain, nodes };
-  } catch {
-    /* brak audio – pomijamy */
-  }
-}
-
-// Ekran nie gaśnie, gdy gra film (Wake Lock API – działa w nowych przeglądarkach).
-let wakeLock = null;
-async function holdScreenAwake(on) {
-  try {
-    if (!on) {
-      await wakeLock?.release();
-      wakeLock = null;
-    } else if (navigator.wakeLock && !wakeLock) {
-      wakeLock = await navigator.wakeLock.request('screen');
-      wakeLock.addEventListener('release', () => {
-        wakeLock = null;
-      });
-    }
-  } catch {
-    /* przeglądarka odmówiła – nic się nie dzieje */
-  }
-}
-document.addEventListener('visibilitychange', () => {
-  if (!document.hidden && miniPlayer && settings.keepAwake) holdScreenAwake(true);
-});
-
-// Seans z czatem głosowym: dołączamy do kanału głosowego grupy i wyciszamy dźwięki aplikacji, żeby nie przeszkadzały.
-let autoVoice = false;
-function partyVoiceOn() {
-  if (!settings.partyVoice) return;
-  appSoundsMuted = true;
-  if (!voice.active && !voice.joining && myCurrentGroup()) {
-    autoVoice = true;
-    joinVoice();
-  }
-}
-function partyVoiceOff() {
-  appSoundsMuted = false;
-  if (autoVoice) {
-    autoVoice = false;
-    leaveVoice();
-  }
-}
-
-function startParty(video, { invite } = {}) {
-  socket.emit('party:start', { href: video.href, invite }, (res) => {
-    if (!res || !res.ok) return toast((res && res.error) || 'Nie udało się zaprosić do oglądania.');
-    openMiniPlayer(video, { party: true });
-  });
-}
-
-// Wybór, kto ma oglądać: cały kanał albo jedna osoba (prywatny seans dla dwóch).
-function openPartyChooser(anchor, video) {
-  document.querySelector('.partychooser')?.remove();
-  const others = onlineUsers.filter((u) => u.id !== myAccountId);
-  if (!others.length) return startParty(video);
-  const box = el('div', 'partychooser');
-  const add = (label, hint, onClick) => {
-    const b = el('button', 'partychooser__item');
-    b.type = 'button';
-    b.append(el('span', '', label), el('small', '', hint));
-    b.addEventListener('click', () => {
-      box.remove();
-      onClick();
-    });
-    box.appendChild(b);
-  };
-  add('Cały kanał', 'Zaproszenie widzą wszyscy', () => startParty(video));
-  others.slice(0, 12).forEach((u) => add(`Tylko ${u.nick}`, 'Prywatny seans dla dwóch osób', () => startParty(video, { invite: u.id })));
-  document.body.appendChild(box);
-  const r = anchor.getBoundingClientRect();
-  box.style.top = `${Math.min(r.bottom + 6, window.innerHeight - box.offsetHeight - 8)}px`;
-  box.style.left = `${Math.max(8, Math.min(r.right - box.offsetWidth, window.innerWidth - box.offsetWidth - 8))}px`;
-  const away = (e) => {
-    if (box.contains(e.target)) return;
-    box.remove();
-    document.removeEventListener('pointerdown', away, true);
-  };
-  setTimeout(() => document.addEventListener('pointerdown', away, true), 0);
-}
-
-function joinParty(id) {
-  socket.emit('party:join', { id }, (res) => {
-    if (!res || !res.ok) return toast((res && res.error) || 'Nie udało się dołączyć.');
-    const video = parseVideoLink(res.party.href);
-    if (video) openMiniPlayer(video, { party: true, immediate: res.party.started });
-  });
-}
-
-function leaveParty() {
-  socket.emit('party:leave');
-  if (inPartyPlayer()) closeMiniPlayer();
-}
-
-// Podsumowanie po seansie: najgorętsze momenty według liczby reakcji.
-function showPartyStats() {
-  socket.emit('party:stats', {}, (res) => {
-    if (!res || !res.ok) return toast('Brak danych do podsumowania.');
-    document.querySelector('.partystats')?.remove();
-    const card = el('div', 'partystats');
-    card.appendChild(el('h3', '', 'Podsumowanie seansu'));
-    if (!res.total) card.appendChild(el('p', '', 'Nikt jeszcze nie zareagował – po starcie filmu pojawią się tu najgorętsze momenty.'));
-    else {
-      card.appendChild(el('p', '', `Reakcji łącznie: ${res.total}`));
-      const list = el('ol', 'partystats__top');
-      for (const t of res.top) list.appendChild(el('li', '', `${formatClock(t.fromSec)}–${formatClock(t.toSec)} od startu · ${t.emoji} ${t.count}`));
-      card.append(el('div', 'partystats__label', 'Najgorętsze momenty'), list);
-      const totals = Object.entries(res.totals).sort((a, b) => b[1] - a[1]).map(([e, n]) => `${e} ${n}`).join('   ');
-      card.appendChild(el('p', 'partystats__totals', totals));
-    }
-    card.appendChild(iconButton('close', 'Zamknij', () => card.remove()));
-    document.body.appendChild(card);
-  });
-}
-
-// Szkic pola „dodaj do kolejki” przetrwa odświeżenie paska (po każdej zmianie stanu serwer wysyła nowy widok).
-let queueOpen = false;
-let queueDraft = '';
-
-function renderPartyBar() {
-  const bar = $('party-bar');
-  const p = currentParty();
-  if (!p) {
-    bar.classList.add('hidden');
-    return bar.replaceChildren();
-  }
-  const refocus = document.activeElement && document.activeElement.classList.contains('partybar__add') && bar.contains(document.activeElement);
-  const video = parseVideoLink(p.href);
-  const viewer = iAmViewer(p);
-  const isHost = p.hostId === myAccountId;
-
-  const info = el('div', 'partybar__info');
-  const host = el('b', '', p.host);
-  const label = video ? ` · ${video.label}` : '';
-  if (p.private && viewer) info.textContent = `Prywatny seans${label}`;
-  else info.append(host, document.createTextNode(p.private ? ` zaprasza Cię na prywatny seans${label}` : ` zaprasza do wspólnego oglądania${label}`));
-  info.appendChild(el('div', 'partybar__who', `Oglądają (${p.viewers.length}): ${p.viewers.map((v) => v.nick).join(', ')}`));
-
-  const buttons = el('div', 'partybar__actions');
-  const mk = (cls, name, label, onClick, text = '') => {
-    const b = iconNode('button', `${cls} btn-iconly`, name, text);
-    b.type = 'button';
-    b.title = label;
-    b.setAttribute('aria-label', label);
-    b.addEventListener('click', onClick);
-    return b;
-  };
-  if (!viewer) {
-    if (video) buttons.appendChild(mk('btn-primary btn-sm', 'login', 'Dołącz do seansu', () => joinParty(p.id)));
-  } else {
-    if (video && !inPartyPlayer()) {
-      buttons.appendChild(mk('btn-secondary btn-sm', 'popout', 'Otwórz odtwarzacz', () => openMiniPlayer(video, { party: true, immediate: p.started })));
-    }
-    if (isHost) buttons.appendChild(mk('btn-primary btn-sm', 'play', 'Start – odliczanie 3·2·1 dla wszystkich', () => socket.emit('party:go'), '3·2·1'));
-    if (p.started) buttons.appendChild(mk('btn-secondary btn-sm', 'chart', 'Podsumowanie seansu', showPartyStats));
-    buttons.appendChild(mk('btn-secondary btn-sm', 'logout', 'Wyjdź z seansu', leaveParty));
-  }
-  const top = el('div', 'partybar__top');
-  top.append(iconNode('span', 'partybar__icon', p.private ? 'user' : 'users'), info, buttons);
-  bar.replaceChildren(top);
-
-  if (viewer) {
-    // Kolejka: dokładasz linki, głosujesz, a gospodarz włącza zwycięzcę.
-    const q = el('details', 'partybar__queue');
-    q.open = queueOpen;
-    q.addEventListener('toggle', () => {
-      queueOpen = q.open;
-    });
-    q.appendChild(el('summary', '', `Kolejka (${p.queue.length}) – co oglądamy dalej`));
-    const list = el('div', 'partybar__qlist');
-    const ranked = p.queue.map((item, i) => ({ item, i })).sort((a, b) => b.item.voters.length - a.item.voters.length || a.i - b.i);
-    for (const { item } of ranked) {
-      const v = parseVideoLink(item.href);
-      const row = el('div', 'partybar__qrow');
-      const voted = item.voters.includes(myAccountId);
-      const vote = iconNode('button', `partybar__vote${voted ? ' is-voted' : ''}`, 'chevron-up', String(item.voters.length));
-      vote.type = 'button';
-      vote.title = voted ? 'Cofnij głos' : 'Zagłosuj na ten film';
-      vote.addEventListener('click', () => socket.emit('party:queue:vote', item.id));
-      const label = el('span', 'partybar__qtext', `${v ? v.label : 'Link'} · dodał(a) ${item.by}`);
-      label.title = item.href;
-      row.append(vote, label);
-      if (isHost || item.by === p.viewers.find((x) => x.id === myAccountId)?.nick) {
-        const del = iconNode('button', 'partybar__qdel', 'close');
-        del.type = 'button';
-        del.title = 'Usuń z kolejki';
-        del.addEventListener('click', () => socket.emit('party:queue:remove', item.id));
-        row.appendChild(del);
-      }
-      list.appendChild(row);
-    }
-    if (!p.queue.length) list.appendChild(el('div', 'partybar__qempty', 'Kolejka jest pusta – dodaj link poniżej.'));
-    const form = el('form', 'partybar__qform');
-    const input = el('input', 'partybar__add');
-    input.type = 'url';
-    input.placeholder = 'Wklej link do filmu…';
-    input.value = queueDraft;
-    input.addEventListener('input', () => {
-      queueDraft = input.value;
-    });
-    const addBtn = iconNode('button', 'btn-secondary btn-sm btn-iconly', 'plus');
-    addBtn.type = 'submit';
-    addBtn.title = 'Dodaj do kolejki';
-    addBtn.setAttribute('aria-label', addBtn.title);
-    form.append(input, addBtn);
-    form.addEventListener('submit', (e) => {
-      e.preventDefault();
-      const href = input.value.trim();
-      if (!href) return;
-      if (!parseVideoLink(href)) return toast('Ten link nie jest obsługiwanym filmem.');
-      socket.emit('party:queue:add', { href }, (res) => {
-        if (!res || !res.ok) return toast((res && res.error) || 'Nie udało się dodać.');
-        queueDraft = '';
-        input.value = '';
-      });
-    });
-    q.append(list, form);
-    if (isHost) {
-      const next = mk('btn-primary btn-sm', 'skip-next', 'Następny film (wygrywa najwięcej głosów)', () =>
-        socket.emit('party:next', {}, (res) => res && !res.ok && toast(res.error))
-      );
-      next.disabled = !p.queue.length;
-      q.appendChild(next);
-    }
-    bar.appendChild(q);
-  }
-  bar.classList.remove('hidden');
-  if (refocus) bar.querySelector('.partybar__add')?.focus();
-}
-
-socket.on('party:update', ({ channel, party: p }) => {
-  const before = partyByChannel.get(channel);
-  partyByChannel.set(channel, p || null);
-  if (p && p.private && (!before || before.id !== p.id) && !iAmViewer(p)) {
-    toast(`${p.host} zaprasza Cię na prywatny seans.`, true);
-    beep([660, 990]);
-  }
-  if (inPartyPlayer() && miniPlayer._partyChannel === channel && !iAmViewer(p)) closeMiniPlayer();
-  if (channel === currentChannel) renderPartyBar();
-  if (miniPlayer && miniPlayer._refreshParty) miniPlayer._refreshParty();
-});
-socket.on('party:countdown', ({ channel, id, inMs }) => {
-  const p = partyByChannel.get(channel);
-  if (!p || p.id !== id || !iAmViewer(p) || !inPartyPlayer() || miniPlayer._partyChannel !== channel) return;
-  miniPlayer._partyCountdown(inMs);
-});
-socket.on('party:react', ({ channel, nick, emoji }) => {
-  if (inPartyPlayer() && miniPlayer._partyChannel === channel) {
-    miniPlayer._burst(emoji, nick);
-    partyTone('react');
-  }
-});
-
-// Pływający odtwarzacz: jedno okno na całą aplikację. Przeciągasz je za pasek – po puszczeniu przyciąga się do
-// najbliższego rogu. Ma trzy rozmiary, tryb kinowy (duży, na środku, z czatem na tle filmu, poświatą, ściemnianiem
-// i tłem dźwiękowym), listę odtwarzania (filmy z kanału albo ulubione), zapamiętane momenty, skróty klawiszowe
-// i tryb „razem” (wspólny start, reakcje na żywo). Rozmiar, róg i poziom ściemnienia są pamiętane na urządzeniu.
-let miniPlayer = null;
-const playerPrefs = store.get('mychat.player', { size: 'm', corner: 'br', dim: 82 });
-const PLAYER_SIZES = ['s', 'm', 'l'];
-const savePlayerPrefs = () => store.set('mychat.player', playerPrefs);
-
-function closeMiniPlayer() {
-  if (!miniPlayer) return;
-  const wasParty = miniPlayer.classList.contains('miniplayer--party');
-  clearInterval(miniPlayer._countTimer);
-  clearInterval(miniPlayer._glowTimer);
-  miniPlayer._backdrop?.remove();
-  miniPlayer.remove(); // usunięcie iframe/video zatrzymuje dźwięk
-  miniPlayer = null;
-  toggleAmbientPad(false);
-  holdScreenAwake(false);
-  if (wasParty) partyVoiceOff();
-}
-
-// Wszystkie różne filmy z linków w wiadomościach widocznych na kanale, w kolejności rozmowy.
-function channelVideos() {
-  const seen = new Set();
-  const list = [];
-  messagesEl.querySelectorAll('.msg__text[data-raw]').forEach((node) => {
-    for (const v of videosInText(node.dataset.raw)) {
-      if (seen.has(v.src)) continue;
-      seen.add(v.src);
-      list.push(v);
-    }
-  });
-  return list;
-}
-
-// Czat na tle filmu w trybie kinowym: ostatnie wiadomości znikają po chwili.
-function pushCinemaFeed(nick, text) {
-  const feed = miniPlayer && miniPlayer.classList.contains('miniplayer--cinema') && miniPlayer._feed;
-  if (!feed) return;
-  const line = el('div', 'miniplayer__feedline');
-  line.append(el('b', '', nick), document.createTextNode(` ${String(text).slice(0, 140)}`));
-  feed.appendChild(line);
-  while (feed.children.length > 4) feed.firstChild.remove();
-  setTimeout(() => line.remove(), 9000);
-}
-
-function openMiniPlayer(video, opts = {}) {
-  closeMiniPlayer();
-  setMediaHidden(false);
-  const partyMode = Boolean(opts.party);
-  let mode = 'channel'; // źródło listy: 'channel' albo 'favs'
-  let list = channelVideos();
-  let index = list.findIndex((v) => v.src === video.src);
-  if (partyMode || index < 0) {
-    list = [video];
-    index = 0;
-  }
-  let live = !partyMode || Boolean(opts.immediate); // w trybie „razem” film startuje dopiero po odliczaniu
-  let startSec = 0; // od której sekundy startuje film (z zapamiętanego momentu)
-
-  const box = el('div', 'miniplayer');
-  box.dataset.glow = settings.partyGlow;
-  if (partyMode) {
-    box.classList.add('miniplayer--party');
-    box._partyChannel = currentChannel;
-    partyVoiceOn();
-  }
-  const applyLayout = () => {
-    if (!PLAYER_SIZES.includes(playerPrefs.size)) playerPrefs.size = 'm';
-    if (!/^(t|b)(l|r)$/.test(playerPrefs.corner)) playerPrefs.corner = 'br';
-    box.classList.remove('miniplayer--s', 'miniplayer--m', 'miniplayer--l');
-    box.classList.add(`miniplayer--${playerPrefs.size}`);
-    for (const c of ['tl', 'tr', 'bl', 'br']) box.classList.toggle(`miniplayer--${c}`, c === playerPrefs.corner);
-    box.classList.toggle('miniplayer--onehand', oneHandActive()); // przyciski na dole, okno przy kciuku
-  };
-  applyLayout();
-  box._applyLayout = applyLayout;
-
-  const bar = el('div', 'miniplayer__bar');
-  const title = iconNode('span', 'miniplayer__title', 'play', '');
-  const titleText = title.appendChild(document.createTextNode(''));
-  const mkBtn = (icon, tip, onClick) => {
-    const b = iconNode('button', 'miniplayer__btn', icon);
-    b.type = 'button';
-    b.title = tip;
-    b.setAttribute('aria-label', tip);
-    b.addEventListener('click', onClick);
-    return b;
-  };
-  const prev = mkBtn('skip-back', 'Poprzedni film (P)', () => go(-1));
-  const next = mkBtn('skip-next', 'Następny film (N)', () => go(1));
-  const source = mkBtn('list', 'Lista: filmy z kanału / ulubione', () => switchSource());
-  const fav = mkBtn('star', 'Dodaj do ulubionych (F)', () => {});
-  bindFavButton(fav, () => list[index]);
-  const marksBtn = mkBtn('bookmark', 'Zapamiętane momenty (M)', () => toggleMarks());
-  const size = mkBtn('size', 'Zmień rozmiar okna', () => {
-    playerPrefs.size = PLAYER_SIZES[(PLAYER_SIZES.indexOf(playerPrefs.size) + 1) % PLAYER_SIZES.length];
-    savePlayerPrefs();
-    applyLayout();
-  });
-  const cinema = mkBtn('cinema', 'Tryb kinowy (C, Esc – wyjście)', () => setCinema(!box.classList.contains('miniplayer--cinema')));
-  const collapse = mkBtn('minus', 'Zwiń / rozwiń', () => box.classList.toggle('miniplayer--collapsed'));
-  const close = mkBtn('close', 'Zamknij odtwarzacz', closeMiniPlayer);
-  if (partyMode) prev.hidden = next.hidden = source.hidden = true;
-  const btns = el('div', 'miniplayer__btns');
-  btns.append(prev, next, source, fav, marksBtn, size, cinema, collapse, close);
-  bar.append(title, btns);
-
-  const body = el('div', 'miniplayer__body');
-  const feed = el('div', 'miniplayer__feed');
-  const marksPanel = el('div', 'miniplayer__marks hidden');
-  box._feed = feed;
-  box.append(bar, body);
-
-  // Pasek narzędzi trybu kinowego: ściemnianie, tło dźwiękowe i pole „napisz do czatu”.
-  const tools = el('div', 'miniplayer__tools');
-  const dim = el('input', 'miniplayer__dim');
-  dim.type = 'range';
-  dim.min = '20';
-  dim.max = '100';
-  dim.value = String(playerPrefs.dim ?? 82);
-  dim.title = 'Jak ciemno wokół filmu';
-  dim.setAttribute('aria-label', 'Jak ciemno wokół filmu');
-  dim.addEventListener('input', () => {
-    playerPrefs.dim = Number(dim.value);
-    savePlayerPrefs();
-    if (box._backdrop) box._backdrop.style.background = `rgba(0, 0, 0, ${playerPrefs.dim / 100})`;
-  });
-  const music = mkBtn('music', 'Spokojne tło dźwiękowe', () => {
-    const on = !music.classList.contains('is-on');
-    music.classList.toggle('is-on', on);
-    toggleAmbientPad(on);
-  });
-  const say = el('form', 'miniplayer__say');
-  const sayInput = el('input');
-  sayInput.type = 'text';
-  sayInput.maxLength = 500;
-  sayInput.placeholder = 'Napisz do czatu…';
-  sayInput.autocomplete = 'off';
-  say.appendChild(sayInput);
-  say.addEventListener('submit', (e) => {
-    e.preventDefault();
-    const text = sayInput.value.trim();
-    if (!text) return;
-    socket.emit('message', { text });
-    sayInput.value = '';
-  });
-  tools.append(dim, music, say);
-  box.appendChild(tools);
-
-  if (partyMode) {
-    const reactions = el('div', 'miniplayer__reactions');
-    for (const emoji of reactionSet()) {
-      const b = el('button', '', emoji);
-      b.type = 'button';
-      b.title = 'Wyślij reakcję do oglądających';
-      b.addEventListener('click', () => socket.emit('party:react', emoji));
-      reactions.appendChild(b);
-    }
-    box.appendChild(reactions);
-  }
-
-  function updateTitle() {
-    const v = list[index];
-    let text = v.label;
-    if (partyMode) {
-      const p = partyByChannel.get(box._partyChannel);
-      text += p ? ` · ${p.private ? 'prywatnie' : 'razem'} (${p.viewers.length})` : '';
-    } else if (list.length > 1) {
-      text += ` · ${mode === 'favs' ? '★ ' : ''}${index + 1}/${list.length}`;
-    }
-    titleText.textContent = text;
-  }
-
-  function waitPanel() {
-    const w = el('div', 'miniplayer__wait');
-    const p = partyByChannel.get(box._partyChannel);
-    w.append(iconNode('span', 'miniplayer__waiticon', 'hourglass'), document.createTextNode(`Czekamy na start${p ? ` od ${p.host}` : ''}…`));
-    return w;
-  }
-
-  // Poświata według obrazu: dla plików wideo (gdy serwer pozwala odczytać piksele) próbkujemy średni kolor.
-  function startGlowSampling() {
-    clearInterval(box._glowTimer);
-    box.style.removeProperty('--glow');
-    if (settings.partyGlow !== 'image' || list[index].kind !== 'video') return;
-    const v = body.querySelector('video');
-    if (!v) return;
-    const canvas = document.createElement('canvas');
-    canvas.width = canvas.height = 8;
-    const ctx2d = canvas.getContext('2d', { willReadFrequently: true });
-    box._glowTimer = setInterval(() => {
-      if (v.paused || v.readyState < 2) return;
-      try {
-        ctx2d.drawImage(v, 0, 0, 8, 8);
-        const d = ctx2d.getImageData(0, 0, 8, 8).data;
-        let r = 0, g = 0, bl = 0;
-        for (let i = 0; i < d.length; i += 4) {
-          r += d[i];
-          g += d[i + 1];
-          bl += d[i + 2];
-        }
-        const n = d.length / 4;
-        box.style.setProperty('--glow', `rgba(${Math.round(r / n)}, ${Math.round(g / n)}, ${Math.round(bl / n)}, 0.55)`);
-      } catch {
-        clearInterval(box._glowTimer); // wideo bez CORS – zostaje poświata w kolorze serwisu
-      }
-    }, 400);
-  }
-
-  function show() {
-    const v = list[index];
-    box.dataset.provider = v.provider;
-    marksPanel.classList.add('hidden');
-    const node = live ? makePlayerNode(v, 'miniplayer__media', { startSec, ambient: settings.partyGlow === 'image' }) : waitPanel();
-    body.replaceChildren(node, feed, marksPanel);
-    box.classList.toggle('miniplayer--short', Boolean(v.short)); // krótkie filmy: okno w układzie pionowym
-    startSec = 0;
-    updateTitle();
-    prev.disabled = index === 0;
-    next.disabled = index === list.length - 1;
-    if (!partyMode) prev.hidden = next.hidden = list.length < 2 && mode === 'channel';
-    box.classList.toggle('miniplayer--waiting', !live);
-    startGlowSampling();
-  }
-  function go(step) {
-    const target = index + step;
-    if (partyMode || target < 0 || target >= list.length) return;
-    index = target;
-    box.classList.remove('miniplayer--collapsed');
-    show();
-  }
-  function switchSource() {
-    if (partyMode) return;
-    if (mode === 'channel') {
-      const favs = favVideos();
-      if (!favs.length) return toast('Nie masz jeszcze ulubionych – dodaj film gwiazdką.', true);
-      const current = list[index];
-      mode = 'favs';
-      list = favs;
-      index = Math.max(0, favs.findIndex((v) => v.src === current.src));
-    } else {
-      mode = 'channel';
-      const current = list[index];
-      list = channelVideos();
-      index = list.findIndex((v) => v.src === current.src);
-      if (index < 0) {
-        list = [current, ...list];
-        index = 0;
-      }
-    }
-    toast(mode === 'favs' ? 'Lista: ulubione.' : 'Lista: filmy z kanału.', true);
-    show();
-  }
-
-  // Zapamiętane momenty: lista z możliwością skoku i dodania nowego (dla plików wideo czas bierzemy z odtwarzacza).
-  function renderMarks() {
-    const v = list[index];
-    const marks = marksOf(v);
-    marksPanel.replaceChildren(el('div', 'miniplayer__markshead', 'Zapamiętane momenty'));
-    if (!marks.length) marksPanel.appendChild(el('div', 'miniplayer__marksempty', 'Brak – dodaj pierwszy, gdy trafisz na ulubiony fragment.'));
-    marks.forEach((m, i) => {
-      const row = el('div', 'miniplayer__markrow');
-      const jump = el('button', 'miniplayer__markjump', `${formatClock(m.sec)}${m.label ? ` · ${m.label}` : ''}`);
-      jump.type = 'button';
-      jump.addEventListener('click', () => {
-        live = true;
-        startSec = m.sec;
-        show();
-      });
-      const del = iconNode('button', 'miniplayer__markdel', 'close');
-      del.type = 'button';
-      del.title = 'Usuń moment';
-      del.addEventListener('click', () => {
-        marks.splice(i, 1);
-        saveMarks(v, marks);
-        renderMarks();
-      });
-      row.append(jump, del);
-      marksPanel.appendChild(row);
-    });
-    const add = iconNode('button', 'btn-secondary btn-sm btn-iconly', 'plus');
-    add.type = 'button';
-    add.title = 'Zapamiętaj moment';
-    add.setAttribute('aria-label', add.title);
-    add.addEventListener('click', () => {
-      const media = body.querySelector('video');
-      const guess = media && Number.isFinite(media.currentTime) ? formatClock(media.currentTime) : '';
-      const raw = prompt('Czas w filmie (np. 12:30 albo 1:02:03):', guess);
-      if (raw === null) return;
-      const sec = parseClock(raw);
-      if (sec === null) return toast('Nie rozumiem tego czasu – wpisz np. 12:30.');
-      const label = (prompt('Opis (opcjonalnie):', '') || '').trim().slice(0, 40);
-      const next2 = [{ sec, label }, ...marks.filter((m) => m.sec !== sec)].sort((a, b) => a.sec - b.sec);
-      saveMarks(v, next2);
-      renderMarks();
-    });
-    marksPanel.appendChild(add);
-  }
-  function toggleMarks() {
-    if (marksPanel.classList.contains('hidden')) {
-      renderMarks();
-      marksPanel.classList.remove('hidden');
-    } else marksPanel.classList.add('hidden');
-  }
-
-  function setCinema(on) {
-    box.classList.toggle('miniplayer--cinema', on);
-    if (on && !box._backdrop) {
-      box._backdrop = el('div', 'miniplayer-backdrop');
-      box._backdrop.style.background = `rgba(0, 0, 0, ${(playerPrefs.dim ?? 82) / 100})`;
-      box._backdrop.addEventListener('click', () => setCinema(false));
-      document.body.insertBefore(box._backdrop, box);
-    } else if (!on && box._backdrop) {
-      box._backdrop.remove();
-      box._backdrop = null;
-    }
-    if (!on) {
-      feed.replaceChildren();
-      music.classList.remove('is-on');
-      toggleAmbientPad(false);
-    }
-    box.classList.remove('miniplayer--collapsed');
-  }
-  box._exitCinema = () => {
-    if (!box.classList.contains('miniplayer--cinema')) return false;
-    setCinema(false);
-    return true;
-  };
-  // Dla skrótów klawiszowych.
-  box._api = { go, cinema: () => setCinema(!box.classList.contains('miniplayer--cinema')), fav: () => fav.click(), marks: toggleMarks };
-
-  // Tryb „razem”: odliczanie 3-2-1 nad czekającym odtwarzaczem, potem start u wszystkich naraz.
-  box._partyCountdown = (ms) => {
-    clearInterval(box._countTimer);
-    live = false;
-    show();
-    box.classList.remove('miniplayer--collapsed');
-    const count = el('div', 'miniplayer__count');
-    body.appendChild(count);
-    const endAt = Date.now() + ms;
-    const tick = () => {
-      const left = endAt - Date.now();
-      if (left <= 0) {
-        clearInterval(box._countTimer);
-        live = true;
-        show();
-        partyTone('go');
-        return;
-      }
-      const n = String(Math.ceil(left / 1000));
-      if (count.textContent !== n) {
-        count.textContent = n;
-        count.classList.remove('pop');
-        void count.offsetWidth; // restart animacji
-        count.classList.add('pop');
-        partyTone('tick');
-      }
-    };
-    box._countTimer = setInterval(tick, 100);
-    tick();
-  };
-  box._refreshParty = () => {
-    const p = partyByChannel.get(box._partyChannel);
-    const parsed = p && parseVideoLink(p.href);
-    if (parsed && parsed.src !== list[index].src) {
-      list = [parsed]; // gospodarz włączył następny film z kolejki
-      index = 0;
-      live = false;
-      show();
-      return;
-    }
-    updateTitle();
-    if (!live && !box.querySelector('.miniplayer__count')) body.replaceChildren(waitPanel(), feed, marksPanel);
-  };
-  // Reakcje na żywo unoszą się nad filmem.
-  box._burst = (emoji, nick) => {
-    const b = el('div', 'party-burst');
-    b.append(el('span', 'party-burst__emoji', emoji), el('span', 'party-burst__nick', nick));
-    b.style.left = `${8 + Math.random() * 70}%`;
-    b.addEventListener('animationend', () => b.remove());
-    body.appendChild(b);
-  };
-
-  show();
-  document.body.appendChild(box);
-  miniPlayer = box;
-  if (settings.keepAwake) holdScreenAwake(true);
-  if (partyMode) renderPartyBar();
-
-  // Przeciąganie za pasek tytułu (mysz i dotyk); po puszczeniu okno przyciąga się do najbliższego rogu.
-  // W trybie kinowym pasek obsługuje przesunięcie palcem w bok: następny / poprzedni film.
-  bar.addEventListener('pointerdown', (e) => {
-    if (e.target.closest('button')) return;
-    if (box.classList.contains('miniplayer--cinema')) {
-      const startX = e.clientX;
-      const done = (ev) => {
-        bar.removeEventListener('pointerup', done);
-        const dx = ev.clientX - startX;
-        if (Math.abs(dx) > 60) go(dx < 0 ? 1 : -1);
-      };
-      bar.addEventListener('pointerup', done);
-      return;
-    }
-    const rect = box.getBoundingClientRect();
-    const dx = e.clientX - rect.left;
-    const dy = e.clientY - rect.top;
-    bar.setPointerCapture(e.pointerId);
-    box.classList.add('miniplayer--dragging'); // na czas ruchu iframe nie może przechwytywać kursora
-    const move = (ev) => {
-      const x = Math.min(Math.max(0, ev.clientX - dx), window.innerWidth - box.offsetWidth);
-      const y = Math.min(Math.max(0, ev.clientY - dy), window.innerHeight - box.offsetHeight);
-      box.style.left = `${x}px`;
-      box.style.top = `${y}px`;
-      box.style.right = 'auto';
-      box.style.bottom = 'auto';
-    };
-    const stop = () => {
-      const r = box.getBoundingClientRect();
-      const vertical = r.top + r.height / 2 < window.innerHeight / 2 ? 't' : 'b';
-      const horizontal = r.left + r.width / 2 < window.innerWidth / 2 ? 'l' : 'r';
-      playerPrefs.corner = vertical + horizontal;
-      savePlayerPrefs();
-      box.style.left = box.style.top = box.style.right = box.style.bottom = '';
-      applyLayout();
-      box.classList.remove('miniplayer--dragging');
-      bar.removeEventListener('pointermove', move);
-      bar.removeEventListener('pointerup', stop);
-      bar.removeEventListener('pointercancel', stop);
-    };
-    bar.addEventListener('pointermove', move);
-    bar.addEventListener('pointerup', stop);
-    bar.addEventListener('pointercancel', stop);
-  });
-}
-
-// Esc wychodzi z trybu kinowego; N / P / C / F / M sterują odtwarzaczem, gdy nie piszesz w żadnym polu.
-document.addEventListener('keydown', (e) => {
-  if (!miniPlayer) return;
-  if (e.key === 'Escape' && miniPlayer._exitCinema()) return e.stopPropagation();
-  if (e.ctrlKey || e.metaKey || e.altKey || e.target.closest('input, textarea, select, [contenteditable]')) return;
-  const api = miniPlayer._api;
-  const key = e.key.toLowerCase();
-  if (key === 'n') api.go(1);
-  else if (key === 'p') api.go(-1);
-  else if (key === 'c') api.cinema();
-  else if (key === 'f') api.fav();
-  else if (key === 'm') api.marks();
-});
-
-// Pierwsze 2 różne linki do wideo z tekstu wiadomości.
-function videosInText(text) {
-  const seen = new Set();
-  const found = [];
-  for (const [url] of String(text).matchAll(/https?:\/\/[^\s<>"']+/g)) {
-    const video = parseVideoLink(url);
-    if (!video || seen.has(video.src)) continue;
-    seen.add(video.src);
-    found.push(video);
-    if (found.length === 2) break;
-  }
-  return found;
-}
-
 function openLightbox(src) {
   lightbox.querySelector('img').src = src;
   lightbox.classList.remove('hidden');
@@ -1690,62 +540,14 @@ function makeImage(src, onLoad) {
   return img;
 }
 
-// ---------- Ulubione GIFy ----------
-// Gwiazdka w prawym górnym rogu GIFa (w czacie i w wynikach wyszukiwania) zapisuje go na liście na tym urządzeniu (do 100).
-// Lista pokazuje się w panelu GIF, w zakładce „Ulubione”, jako małe podglądy – kliknięcie wysyła GIF.
-const gifFavStore = store.get('mychat.gifs', { list: [] });
-const gifFavs = () => (Array.isArray(gifFavStore.list) ? gifFavStore.list : []);
-const isGifFav = (url) => gifFavs().includes(url);
-function toggleGifFav(url) {
-  const list = gifFavs();
-  const at = list.indexOf(url);
-  if (at >= 0) list.splice(at, 1);
-  else list.unshift(url);
-  gifFavStore.list = list.slice(0, 100);
-  store.set('mychat.gifs', gifFavStore);
-  document.dispatchEvent(new CustomEvent('gifs-changed'));
-  return at < 0;
-}
-
-// Przycisk gwiazdki, który sam pilnuje swojego stanu, gdy ulubione zmienią się gdziekolwiek.
-function makeGifFavButton(url) {
-  const btn = iconNode('button', 'giffav', 'star');
-  btn.type = 'button';
-  const sync = () => {
-    const on = isGifFav(url);
-    btn.classList.toggle('is-fav', on);
-    btn.title = on ? 'Usuń GIFa z ulubionych' : 'Dodaj GIFa do ulubionych';
-    btn.setAttribute('aria-label', btn.title);
-    btn.setAttribute('aria-pressed', String(on));
-  };
-  btn.addEventListener('click', (e) => {
-    e.stopPropagation(); // nie otwieraj podglądu ani nie wysyłaj GIFa z panelu
-    toggleGifFav(url);
-  });
-  document.addEventListener('gifs-changed', () => btn.isConnected && sync());
-  sync();
-  return btn;
-}
-
-// GIF w wiadomości: obraz z gwiazdką w prawym górnym rogu.
-function makeGifBox(url, onLoad) {
-  const box = el('div', 'gifmsg');
-  box.append(makeImage(url, onLoad), makeGifFavButton(url));
-  return box;
-}
-
 function fileIcon(mime, name) {
-  if (mime.startsWith('image/')) return 'image';
-  if (mime.startsWith('audio/')) return 'music';
-  if (mime.startsWith('video/')) return 'film';
-  if (mime === 'application/pdf') return 'file';
-  if (/\.(zip|rar|7z|tar|gz)$/i.test(name)) return 'archive';
-  if (mime.startsWith('text/')) return 'file-text';
-  return 'paperclip';
-}
-
-function fileIconBox(mime, name) {
-  return iconNode('div', 'filecard__icon', fileIcon(mime, name));
+  if (mime.startsWith('image/')) return '🖼️';
+  if (mime.startsWith('audio/')) return '🎵';
+  if (mime.startsWith('video/')) return '🎬';
+  if (mime === 'application/pdf') return '📕';
+  if (/\.(zip|rar|7z|tar|gz)$/i.test(name)) return '🗜️';
+  if (mime.startsWith('text/')) return '📄';
+  return '📎';
 }
 
 const INLINE_IMAGE = /^image\/(png|jpe?g|gif|webp|avif|bmp)$/;
@@ -2139,14 +941,14 @@ async function loadFileBytes(m) {
 // Karta pliku z historii: zawartość jest pobierana dopiero po kliknięciu.
 function makeRemoteFileCard(m, onLoad) {
   const card = el('div', 'filecard');
-  card.appendChild(fileIconBox(m.mime, m.name));
+  card.appendChild(el('div', 'filecard__icon', fileIcon(m.mime, m.name)));
   const info = el('div', 'filecard__info');
   info.appendChild(el('div', 'filecard__name', m.name));
-  info.appendChild(el('div', 'filecard__size', formatSize(m.size) + (localFileIds.has(m.id) ? ' · zapisano lokalnie' : '')));
+  info.appendChild(el('div', 'filecard__size', formatSize(m.size) + (localFileIds.has(m.id) ? ' · 💾 zapisano lokalnie' : '')));
   card.appendChild(info);
 
   const inline = INLINE_IMAGE.test(m.mime) || INLINE_VIDEO.test(m.mime) || INLINE_AUDIO.test(m.mime);
-  const btn = iconNode('button', 'icon-btn', inline ? 'eye' : 'download');
+  const btn = el('button', 'icon-btn', inline ? '👁' : '⬇');
   btn.type = 'button';
   btn.title = inline ? 'Pokaż' : 'Pobierz';
   btn.addEventListener('click', async () => {
@@ -2187,12 +989,12 @@ function makeFileContent(m, onLoad) {
   }
 
   const card = el('div', 'filecard');
-  card.appendChild(fileIconBox(m.mime, m.name));
+  card.appendChild(el('div', 'filecard__icon', fileIcon(m.mime, m.name)));
   const info = el('div', 'filecard__info');
   info.appendChild(el('div', 'filecard__name', m.name));
   info.appendChild(el('div', 'filecard__size', formatSize(m.size)));
   card.appendChild(info);
-  const dl = iconNode('a', 'icon-btn', 'download');
+  const dl = el('a', 'icon-btn', '⬇');
   dl.href = url;
   dl.download = m.name;
   dl.title = 'Pobierz';
@@ -2374,7 +1176,7 @@ function addMessage(m, { historic = false } = {}) {
   if (m.id) {
     // Pasek akcji widoczny po najechaniu: odpowiedź i reakcja (każdy) oraz usunięcie (tylko autor)
     const actions = el('div', 'msg__actions');
-    const answer = iconNode('button', 'msg__action', 'reply');
+    const answer = el('button', 'msg__action', '↩');
     answer.type = 'button';
     answer.title = 'Odpowiedz';
     answer.setAttribute('aria-label', 'Odpowiedz na wiadomość');
@@ -2384,7 +1186,7 @@ function addMessage(m, { historic = false } = {}) {
     });
     actions.appendChild(answer);
 
-    const react = iconNode('button', 'msg__action js-react', 'smile');
+    const react = el('button', 'msg__action js-react', '😀');
     react.type = 'button';
     react.title = 'Dodaj reakcję';
     react.setAttribute('aria-label', 'Dodaj reakcję');
@@ -2396,7 +1198,7 @@ function addMessage(m, { historic = false } = {}) {
 
     // Cudze wiadomości w grupie może usuwać też moderator (uprawnienie „Zarządzanie wiadomościami”).
     if (mine || hasGroupPerm(groupByChannel(currentChannel), 'manageMessages')) {
-      const del = iconNode('button', 'msg__action msg__action--danger', 'trash');
+      const del = el('button', 'msg__action msg__action--danger', '🗑');
       del.type = 'button';
       del.title = mine ? 'Usuń wiadomość' : 'Usuń wiadomość (moderacja)';
       del.setAttribute('aria-label', 'Usuń wiadomość');
@@ -2414,7 +1216,7 @@ function addMessage(m, { historic = false } = {}) {
   };
 
   if (m.kind === 'gif') {
-    wrap.appendChild(makeGifBox(m.url, afterMediaLoad));
+    wrap.appendChild(makeImage(m.url, afterMediaLoad));
   } else if (m.kind === 'file') {
     wrap.appendChild(makeFileContent(m, afterMediaLoad));
   } else {
@@ -2424,7 +1226,6 @@ function addMessage(m, { historic = false } = {}) {
     body._mentions = m.mentions || [];
     body.appendChild(renderRichText(m.text, jumbo, body._mentions));
     wrap.appendChild(body);
-    for (const video of videosInText(m.text)) wrap.appendChild(makeVideoEmbed(video, afterMediaLoad));
   }
 
   wrap._reactions = m.reactions || {};
@@ -2434,13 +1235,12 @@ function addMessage(m, { historic = false } = {}) {
   lastNick = m.nick;
   lastMessageTime = m.time;
   if (stick) scrollToBottom();
-  if (!historic && m.kind !== 'gif' && m.kind !== 'file') pushCinemaFeed(m.nick, m.text);
 
   if (!mine && !historic) {
     beep(mentioned ? [880, 1175] : undefined);
     if (document.hidden) {
       unread += 1;
-      document.title = appTitle(`(${unread}) MyChat`);
+      document.title = `(${unread}) MyChat`;
     }
   }
 }
@@ -2449,7 +1249,7 @@ function addMessage(m, { historic = false } = {}) {
 // m.replyTo (z serwera): { id, nick, accountId, kind, preview } albo { id, missing: true }, gdy oryginału już nie ma.
 function previewOfMessage(m) {
   if (m.kind === 'gif') return 'GIF';
-  if (m.kind === 'file') return `Plik: ${m.name}`;
+  if (m.kind === 'file') return `📎 ${m.name}`;
   return String(m.text || '').slice(0, 120);
 }
 
@@ -2535,7 +1335,7 @@ function renderReplyBar() {
     renderReplyBar();
   });
 
-  const close = iconNode('button', 'icon-btn', 'close');
+  const close = el('button', 'icon-btn', '✕');
   close.type = 'button';
   close.title = 'Anuluj odpowiedź';
   close.addEventListener('click', clearReply);
@@ -2628,27 +1428,16 @@ function renderMembersPanel() {
     .map((m) => ({ ...m, ...(online.get(m.id) || { status: 'offline' }), isOwner: m.isOwner, offline: !online.has(m.id), topRole: topRoleOf(m) }))
     .sort((a, b) => Number(a.offline) - Number(b.offline) || a.nick.localeCompare(b.nick, 'pl'));
 
-  // Sekcje jak na Discordzie: twórca, role z włączonym „oddzielnie od użytkowników online” (od najwyższej, tylko osoby
-  // online), potem pozostali online, a na końcu wszyscy offline.
+  // Sekcje jak na Discordzie: twórca, potem role od najwyższej, na końcu osoby bez roli.
   const sections = [];
   const owners = list.filter((u) => u.isOwner);
   if (owners.length) sections.push({ title: 'TWÓRCA', items: owners });
-  const topHoistOf = (m) => {
-    const idx = (m.roles || []).map((id) => roles.findIndex((r) => r.id === id)).filter((i) => i !== -1 && roles[i].hoist);
-    return idx.length ? Math.min(...idx) : -1;
-  };
-  const others = list.filter((u) => !u.isOwner);
-  const placed = new Set();
   roles.forEach((role, i) => {
-    if (!role.hoist) return;
-    const items = others.filter((u) => !u.offline && topHoistOf(u) === i);
-    items.forEach((u) => placed.add(u.id));
+    const items = list.filter((u) => !u.isOwner && u.topRole === i);
     if (items.length) sections.push({ title: role.name.toUpperCase(), color: role.color, items });
   });
-  const onlineRest = others.filter((u) => !u.offline && !placed.has(u.id));
-  if (onlineRest.length) sections.push({ title: 'ONLINE', items: onlineRest });
-  const offline = others.filter((u) => u.offline);
-  if (offline.length) sections.push({ title: 'OFFLINE', items: offline });
+  const rest = list.filter((u) => !u.isOwner && u.topRole === -1);
+  if (rest.length) sections.push({ title: roles.length || owners.length ? 'CZŁONKOWIE' : '', items: rest });
   renderMembers(list, { group, sections, roles });
 }
 
@@ -2682,9 +1471,14 @@ function renderMembers(list, { group = null, sections = null, roles = [] } = {})
 
       const text = el('div', 'member__text');
       const name = el('span', 'member__name', u.nick);
-      applyNickStyle(name, u.nick, u.id); // kolor roli nakłada się tu sam (patrz roleColorOf)
+      applyNickStyle(name, u.nick, u.id);
+      if (roleColor && !u.nickColor) {
+        // kolor roli (jak na Discordzie), chyba że osoba ustawiła własny kolor nicku
+        name.classList.remove('nick-styled');
+        name.style.color = roleColor;
+      }
       if (u.isOwner) {
-        const crown = iconNode('span', 'member__crown', 'crown');
+        const crown = el('span', 'member__crown', '👑');
         crown.title = 'Twórca grupy';
         const nameRow = el('div', 'member__row');
         nameRow.append(name, crown);
@@ -2750,10 +1544,8 @@ function renderProfileCard(root, p, { isMe = false, onEdit = null } = {}) {
   body.appendChild(box);
 
   if (isMe && onEdit) {
-    const edit = iconNode('button', 'btn-secondary btn-sm btn-iconly pcard__edit', 'pencil');
+    const edit = el('button', 'btn-secondary btn-sm pcard__edit', 'Edytuj profil');
     edit.type = 'button';
-    edit.title = 'Edytuj profil';
-    edit.setAttribute('aria-label', edit.title);
     edit.addEventListener('click', onEdit);
     body.appendChild(edit);
   }
@@ -3026,7 +1818,6 @@ $('profile-save').addEventListener('click', () => {
 });
 
 // ---------- Dźwięk ----------
-let appSoundsMuted = false; // wyciszone na czas seansu z czatem głosowym
 let audioCtx;
 function getAudioCtx() {
   audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
@@ -3035,7 +1826,7 @@ function getAudioCtx() {
 }
 
 function beep(freqs = [660, 880]) {
-  if (!settings.sound || appSoundsMuted) return;
+  if (!settings.sound) return;
   try {
     getAudioCtx();
     const t = audioCtx.currentTime;
@@ -3131,7 +1922,6 @@ function join(nick) {
     serverSynced = true;
     currentChannel = res.channel || null; // serwer mógł zmienić kanał (np. wyjście z grupy); null = brak grup
     store.set('mychat.channel', { id: currentChannel });
-    renderPartyBar();
     voiceLists.clear();
     groupMembersFor = null;
     historyLoading = Boolean(currentChannel); // zaraz po zalogowaniu serwer wyśle historię kanału
@@ -3334,8 +2124,8 @@ const QUICK_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
 
 // Zawartość wybieraczki: zakładki „Emoji” i „Własne”; onPick dostaje znak Unicode albo :nazwa:.
 function fillEmojiPicker(container, onPick, { quick = false } = {}) {
-  const tabStd = iconNode('button', 'epicker__tab is-active', 'smile', 'Emoji');
-  const tabCustom = iconNode('button', 'epicker__tab', 'star', `Własne (${customEmoji.length})`);
+  const tabStd = el('button', 'epicker__tab is-active', '😀 Emoji');
+  const tabCustom = el('button', 'epicker__tab', `⭐ Własne (${customEmoji.length})`);
   tabStd.type = tabCustom.type = 'button';
   const tabs = el('div', 'epicker__tabs');
   tabs.append(tabStd, tabCustom);
@@ -3372,10 +2162,8 @@ function fillEmojiPicker(container, onPick, { quick = false } = {}) {
     tabStd.classList.remove('is-active');
     if (!customEmoji.length) {
       const empty = el('div', 'epicker__empty', 'Serwer nie ma jeszcze własnych emoji. ');
-      const add = iconNode('button', 'btn-secondary btn-sm btn-iconly', 'plus');
+      const add = el('button', 'btn-secondary btn-sm', 'Dodaj pierwsze');
       add.type = 'button';
-      add.title = 'Dodaj pierwsze emoji';
-      add.setAttribute('aria-label', add.title);
       add.addEventListener('click', () => {
         closePopups();
         openSettings('emoji');
@@ -3648,7 +2436,7 @@ function renderEmojiSettings() {
       text.appendChild(el('div', 'emoji-card__by', e.by ? `dodał(a) ${e.by}` : ''));
       card.appendChild(text);
       if (e.byId && e.byId === myAccountId) {
-        const del = iconNode('button', 'icon-btn icon-btn--danger', 'trash');
+        const del = el('button', 'icon-btn icon-btn--danger', '🗑');
         del.type = 'button';
         del.title = 'Usuń emoji';
         del.addEventListener('click', () => {
@@ -4082,97 +2870,25 @@ async function loadGifs(query) {
     const res = await fetch(`/api/gifs?q=${encodeURIComponent(query)}`);
     if (!res.ok) throw new Error('request failed');
     const list = await res.json();
-    if (request !== gifRequest || gifTab !== 'search') return;
+    if (request !== gifRequest) return;
     gifGrid.replaceChildren(
       ...list.map((g) => {
-        const cell = el('div', 'gif-cell');
         const img = el('img');
         img.src = g.preview;
         img.loading = 'lazy';
         img.referrerPolicy = 'no-referrer';
         img.alt = 'GIF';
         img.addEventListener('click', () => sendGif(g.url));
-        cell.append(img, makeGifFavButton(g.url));
-        return cell;
+        return img;
       })
     );
     gifHint.textContent = list.length ? 'Obsługiwane przez GIPHY' : 'Brak wyników.';
   } catch {
-    if (request !== gifRequest || gifTab !== 'search') return;
+    if (request !== gifRequest) return;
     gifGrid.replaceChildren();
     gifHint.textContent = 'Nie udało się pobrać GIFów. Możesz wkleić link poniżej.';
   }
 }
-
-// Zakładki panelu: wyszukiwarka i ulubione (małe podglądy).
-let gifTab = 'search';
-const gifTabSearch = $('gif-tab-search');
-const gifTabFavs = $('gif-tab-favs');
-
-function renderGifTabs() {
-  gifTabSearch.classList.toggle('is-active', gifTab === 'search');
-  gifTabFavs.classList.toggle('is-active', gifTab === 'favs');
-  gifTabFavs.replaceChildren(icon('star'), document.createTextNode(` Ulubione (${gifFavs().length})`));
-}
-
-function renderGifFavs() {
-  const list = gifFavs();
-  gifGrid.classList.add('gif-grid--favs');
-  gifGrid.replaceChildren(
-    ...list.map((url) => {
-      const cell = el('div', 'gif-cell');
-      const img = el('img');
-      img.src = url;
-      img.loading = 'lazy';
-      img.referrerPolicy = 'no-referrer';
-      img.alt = 'Ulubiony GIF';
-      img.addEventListener('click', () => sendGif(url));
-      img.addEventListener('error', () => cell.classList.add('gif-cell--broken'));
-      const remove = iconNode('button', 'giffav gif-cell__remove', 'close');
-      remove.type = 'button';
-      remove.title = 'Usuń z ulubionych';
-      remove.setAttribute('aria-label', remove.title);
-      remove.addEventListener('click', (e) => {
-        e.stopPropagation();
-        toggleGifFav(url);
-      });
-      cell.append(img, remove);
-      return cell;
-    })
-  );
-  gifHint.textContent = list.length
-    ? 'Kliknij GIFa, aby go wysłać. ✕ usuwa z ulubionych.'
-    : 'Nie masz jeszcze ulubionych GIFów – kliknij gwiazdkę w prawym górnym rogu GIFa w czacie.';
-}
-
-function showGifTab(tab) {
-  gifTab = tab;
-  renderGifTabs();
-  gifRequest += 1; // spóźniona odpowiedź wyszukiwarki nie nadpisze ulubionych
-  if (tab === 'favs') {
-    gifSearch.classList.add('hidden');
-    renderGifFavs();
-    return;
-  }
-  gifGrid.classList.remove('gif-grid--favs');
-  if (gifSearchEnabled) {
-    gifSearch.classList.remove('hidden');
-    loadGifs(gifSearch.value.trim());
-    gifSearch.focus();
-  } else {
-    gifSearch.classList.add('hidden');
-    gifGrid.replaceChildren();
-    gifHint.textContent =
-      'Wyszukiwarka GIFów jest wyłączona (brak klucza GIPHY_API_KEY na serwerze). Wklej link do GIFa z Tenor lub Giphy albo bezpośredni link do obrazka.';
-    gifUrlInput.focus();
-  }
-}
-gifTabSearch.addEventListener('click', () => showGifTab('search'));
-gifTabFavs.addEventListener('click', () => showGifTab('favs'));
-document.addEventListener('gifs-changed', () => {
-  renderGifTabs();
-  if (gifTab === 'favs' && !gifPanel.classList.contains('hidden')) renderGifFavs();
-});
 
 function sendGif(url) {
   if (!socket.connected) return toast('Brak połączenia z serwerem.');
@@ -4188,8 +2904,17 @@ function sendGif(url) {
 
 $('gif-btn').addEventListener('click', () => {
   if (!togglePopup(gifPanel, $('gif-btn'))) return;
-  // bez wyszukiwarki (brak klucza) i z zapisanymi ulubionymi od razu pokazujemy ulubione
-  showGifTab(!gifSearchEnabled && gifFavs().length ? 'favs' : gifTab);
+  if (gifSearchEnabled) {
+    gifSearch.classList.remove('hidden');
+    loadGifs(gifSearch.value.trim());
+    gifSearch.focus();
+  } else {
+    gifSearch.classList.add('hidden');
+    gifGrid.replaceChildren();
+    gifHint.textContent =
+      'Wyszukiwarka GIFów jest wyłączona (brak klucza GIPHY_API_KEY na serwerze). Wklej link do GIFa z Tenor lub Giphy albo bezpośredni link do obrazka.';
+    gifUrlInput.focus();
+  }
 });
 
 gifSearch.addEventListener('input', () => {
@@ -4253,29 +2978,6 @@ $('userpanel').addEventListener('click', openSettings);
 $('settings-close').addEventListener('click', closeSettings);
 settingsModal.addEventListener('click', (e) => {
   if (e.target === settingsModal) closeSettings();
-});
-const saveSetting = (key, value) => {
-  settings[key] = value;
-  store.set('mychat.settings', settings);
-};
-$('party-glow').addEventListener('change', (e) => saveSetting('partyGlow', e.target.value));
-$('one-hand').addEventListener('change', (e) => {
-  saveSetting('oneHand', e.target.value);
-  applyOneHand();
-  if (miniPlayer && miniPlayer._applyLayout) miniPlayer._applyLayout(); // otwarte okno od razu zmienia układ
-  if (e.target.value !== 'off') toast('Przyciski odtwarzaczy są teraz na dole, po stronie kciuka (tylko na telefonie).', true);
-});
-$('party-emoji').addEventListener('change', (e) => {
-  saveSetting('partyEmoji', e.target.value);
-  e.target.value = reactionSet().join(''); // pokazujemy to, co faktycznie zostanie użyte
-});
-$('party-sounds-toggle').addEventListener('change', (e) => saveSetting('partySounds', e.target.checked));
-$('party-voice-toggle').addEventListener('change', (e) => saveSetting('partyVoice', e.target.checked));
-$('keep-awake-toggle').addEventListener('change', (e) => saveSetting('keepAwake', e.target.checked));
-$('discreet-toggle').addEventListener('change', (e) => {
-  saveSetting('discreet', e.target.checked);
-  applyDiscreet();
-  if (e.target.checked) toast('Tryb dyskretny: klawisz H ukrywa multimedia, a przy zmianie karty ukrywają się same.', true);
 });
 $('sound-toggle').addEventListener('change', (e) => {
   settings.sound = e.target.checked;
@@ -4403,7 +3105,7 @@ document.addEventListener('keydown', (e) => {
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) {
     unread = 0;
-    document.title = appTitle('MyChat');
+    document.title = 'MyChat';
   }
 });
 
@@ -4486,8 +3188,8 @@ function renderVoiceUsers() {
   const flags = (u) => {
     const nodes = [];
     if (u.sharing) nodes.push(el('span', 'voice-live', 'LIVE'));
-    if (u.deafened) nodes.push(voiceFlag('headphones-off', 'Dźwięk wyłączony'));
-    else if (u.muted) nodes.push(voiceFlag('mic-off', 'Wyciszony'));
+    if (u.deafened) nodes.push(el('span', 'voice-member__flags', '🙉'));
+    else if (u.muted) nodes.push(el('span', 'voice-member__flags', '🔇'));
     return nodes;
   };
 
@@ -4565,7 +3267,7 @@ function showScreen(key, stream, label) {
     const bar = el('div', 'screen-tile__bar');
     const title = el('span', 'screen-tile__title');
     bar.appendChild(title);
-    const full = iconNode('button', 'icon-btn', 'expand');
+    const full = el('button', 'icon-btn', '⛶');
     full.type = 'button';
     full.title = 'Pełny ekran';
     bar.appendChild(full);
@@ -5237,14 +3939,22 @@ $('voice-mute').addEventListener('click', () => {
   if (voice.deafened) {
     voice.deafened = false;
     voice.muted = false;
+    voice.mutedBeforeDeafen = false;
   } else {
     voice.muted = !voice.muted;
   }
   applyVoiceState();
 });
 $('voice-deafen').addEventListener('click', () => {
-  voice.deafened = !voice.deafened;
-  voice.muted = voice.deafened; // jak na Discordzie: wyłączenie dźwięku wycisza też mikrofon
+  if (!voice.deafened) {
+    voice.mutedBeforeDeafen = voice.muted; // zapamiętujemy, czy mikrofon był już wyciszony
+    voice.deafened = true;
+    voice.muted = true; // jak na Discordzie: wyłączenie dźwięku wycisza też mikrofon
+  } else {
+    voice.deafened = false;
+    voice.muted = Boolean(voice.mutedBeforeDeafen); // wracamy do stanu sprzed – wyciszony mikrofon nie włącza się sam
+    voice.mutedBeforeDeafen = false;
+  }
   applyVoiceState();
 });
 
@@ -5417,7 +4127,6 @@ $('channel-select').addEventListener('change', (e) => switchChannel(e.target.val
 // `null` = żaden kanał (brak grup).
 function showChannelView(id) {
   currentChannel = id;
-  renderPartyBar();
   const viewedGroup = groupByChannel(id);
   if (viewedGroup) lastGroupChannel.set(viewedGroup.id, id);
   historyLoading = Boolean(id); // nowe wiadomości czekają, aż przyjdzie historia tego kanału
@@ -5680,31 +4389,34 @@ function renderGroupList() {
         const box = el('div', 'group-card__code');
         box.appendChild(el('div', 'group-card__code-label', 'JEDNORAZOWY KOD DOSTĘPU'));
         box.appendChild(el('span', 'group-card__code-value', g.code));
-        const copy = iconButton('copy', 'Kopiuj kod', () => {
+        const copy = el('button', 'btn-secondary btn-sm', 'Kopiuj');
+        copy.type = 'button';
+        copy.addEventListener('click', () => {
           copyText(g.code);
           toast('Kod skopiowany', true);
         });
-        const renew = iconButton('refresh', 'Nowy kod – poprzedni przestanie działać', () =>
-          groupAction('group:code', g.id, () => toast('Wygenerowano nowy kod', true))
-        );
+        const renew = el('button', 'btn-secondary btn-sm', 'Nowy kod');
+        renew.type = 'button';
+        renew.title = 'Wygeneruj nowy kod – poprzedni przestanie działać';
+        renew.addEventListener('click', () => groupAction('group:code', g.id, () => toast('Wygenerowano nowy kod', true)));
         box.append(copy, renew);
         card.appendChild(box);
       }
 
       const actions = el('div', 'group-card__actions');
-      const isOpen = g.channel === currentChannel;
-      actions.appendChild(
-        iconButton(
-          'chat',
-          isOpen ? 'Ta grupa jest już otwarta' : 'Otwórz grupę',
-          () => {
-            closeGroups();
-            switchChannel(g.channel);
-          },
-          { variant: 'btn-primary', disabled: isOpen }
-        )
-      );
-      actions.appendChild(iconButton('gear', 'Ustawienia grupy', () => openGroupSettings(g.id)));
+      const open = el('button', 'btn-primary btn-sm', g.channel === currentChannel ? 'Otwarta' : 'Otwórz');
+      open.type = 'button';
+      open.disabled = g.channel === currentChannel;
+      open.addEventListener('click', () => {
+        closeGroups();
+        switchChannel(g.channel);
+      });
+      actions.appendChild(open);
+
+      const settingsBtn = el('button', 'btn-secondary btn-sm', '⚙ Ustawienia');
+      settingsBtn.type = 'button';
+      settingsBtn.addEventListener('click', () => openGroupSettings(g.id));
+      actions.appendChild(settingsBtn);
 
       actions.appendChild(leaveOrDeleteButton(g));
       card.appendChild(actions);
@@ -5713,35 +4425,25 @@ function renderGroupList() {
   );
 }
 
-// Przycisk z samą ikoną (podpowiedź i etykieta dla czytników ekranu w `label`).
-function iconButton(name, label, onClick, { variant = 'btn-secondary', danger = false, disabled = false } = {}) {
-  const b = iconNode('button', `${variant} btn-sm btn-iconly${danger ? ' btn-danger' : ''}`, name);
-  b.type = 'button';
-  b.title = label;
-  b.setAttribute('aria-label', label);
-  b.disabled = disabled;
-  b.addEventListener('click', onClick);
-  return b;
-}
-
 function leaveOrDeleteButton(g) {
   if (g.isOwner) {
-    return iconButton(
-      'trash',
-      'Usuń grupę',
-      () => {
-        if (!confirm(`Usunąć grupę „${g.name}”? Wszyscy członkowie zostaną z niej usunięci, a cała historia czatu przepadnie.`)) return;
-        removedByMe.add(g.id);
-        groupAction('group:delete', g.id, () => toast(`Usunięto grupę ${g.name}`, true));
-      },
-      { danger: true }
-    );
+    const del = el('button', 'btn-secondary btn-sm btn-danger', 'Usuń grupę');
+    del.type = 'button';
+    del.addEventListener('click', () => {
+      if (!confirm(`Usunąć grupę „${g.name}”? Wszyscy członkowie zostaną z niej usunięci, a cała historia czatu przepadnie.`)) return;
+      removedByMe.add(g.id);
+      groupAction('group:delete', g.id, () => toast(`Usunięto grupę ${g.name}`, true));
+    });
+    return del;
   }
-  return iconButton('logout', 'Opuść grupę', () => {
+  const leave = el('button', 'btn-secondary btn-sm', 'Opuść');
+  leave.type = 'button';
+  leave.addEventListener('click', () => {
     if (!confirm(`Opuścić grupę „${g.name}”? Aby wrócić, będziesz potrzebować nowego kodu od twórcy.`)) return;
     removedByMe.add(g.id);
     groupAction('group:leave', g.id, () => toast(`Opuszczono grupę ${g.name}`, true));
   });
+  return leave;
 }
 
 // ---------- Ustawienia grupy: przegląd, kanały, role, członkowie ----------
@@ -5758,12 +4460,6 @@ const PERM_LABELS = {
 const PERM_ORDER = ['admin', 'send', 'manageMessages', 'manageChannels', 'manageRoles', 'kick', 'invite', 'manageGroup'];
 
 const gsetModal = $('gset-modal');
-const GSET_PANES = {
-  overview: { title: 'Przegląd grupy', lead: 'Nazwa, obrazek i kod dostępu, którym zaprosisz nowe osoby.' },
-  channels: { title: 'Kanały', lead: 'Kanały tekstowe tej grupy – każdy ma osobną historię.' },
-  members: { title: 'Członkowie', lead: 'Osoby w grupie. Ikona etykiety nadaje im role, a druga ikona wyrzuca z grupy.' },
-  roles: { title: 'Role', lead: 'Role dają uprawnienia i kolor. Nadajesz je w zakładce Członkowie.' },
-};
 const gset = { groupId: null, tab: 'overview', roleId: 'everyone', openMember: null, members: [], membersFor: null };
 
 const gsetGroup = () => groups.find((g) => g.id === gset.groupId) || null;
@@ -5828,22 +4524,17 @@ function gsetSection(title) {
 }
 
 function gsetButton(label, cls, onClick, { disabled = false, title = '' } = {}) {
-  const b = el('button', cls);
-  if (typeof label === 'string') b.textContent = label;
-  else b.appendChild(label); // ikona (węzeł SVG)
+  const b = el('button', cls, label);
   b.type = 'button';
   b.disabled = disabled;
-  if (title) {
-    b.title = title;
-    b.setAttribute('aria-label', title);
-  }
+  if (title) b.title = title;
   b.addEventListener('click', onClick);
   return b;
 }
 
 function gsetOverview(g, body) {
   // Obrazek grupy: widać go na pasku po lewej, w liście grup i nad kanałami (zmienia ten, kto może zmieniać nazwę grupy).
-  const iconSec = gsetSection('Obrazek grupy');
+  const iconSec = gsetSection('OBRAZEK GRUPY');
   const iconRow = el('div', 'gset__iconrow');
   const preview = el('div', 'group-card__icon gset__icon');
   applyGroupIcon(preview, g);
@@ -5866,17 +4557,16 @@ function gsetOverview(g, body) {
   iconRow.append(
     preview,
     file,
-    gsetButton(icon('image'), 'btn-secondary btn-sm btn-iconly', () => file.click(), { disabled: !canIcon, title: 'Zmień obrazek grupy' }),
-    gsetButton(icon('trash'), 'btn-secondary btn-sm btn-iconly', () => groupAction('group:icon', { groupId: g.id, icon: null }, () => toast('Usunięto obrazek', true)), {
+    gsetButton('Zmień obrazek', 'btn-secondary btn-sm', () => file.click(), { disabled: !canIcon }),
+    gsetButton('Usuń', 'btn-secondary btn-sm', () => groupAction('group:icon', { groupId: g.id, icon: null }, () => toast('Usunięto obrazek', true)), {
       disabled: !canIcon || !g.icon,
-      title: 'Usuń obrazek grupy',
     })
   );
   iconSec.appendChild(iconRow);
   iconSec.appendChild(el('div', 'groups__hint', 'Zwykłe obrazy są kadrowane do kwadratu; animowany GIF może mieć do 600 KB.'));
   body.appendChild(iconSec);
 
-  const nameSec = gsetSection('Nazwa grupy');
+  const nameSec = gsetSection('NAZWA GRUPY');
   const row = el('div', 'groups__row');
   const input = el('input', 'field');
   input.value = g.name;
@@ -5884,15 +4574,14 @@ function gsetOverview(g, body) {
   input.disabled = !g.perms.includes('manageGroup');
   row.append(
     input,
-    gsetButton(icon('check'), 'btn-primary btn-sm btn-iconly', () => groupAction('group:rename', { groupId: g.id, name: input.value }, () => toast('Zapisano nazwę', true)), {
+    gsetButton('Zapisz', 'btn-primary btn-sm', () => groupAction('group:rename', { groupId: g.id, name: input.value }, () => toast('Zapisano nazwę', true)), {
       disabled: input.disabled,
-      title: 'Zapisz nazwę',
     })
   );
   nameSec.appendChild(row);
   body.appendChild(nameSec);
 
-  const permSec = gsetSection('Twoje uprawnienia');
+  const permSec = gsetSection('TWOJE UPRAWNIENIA');
   const mine = g.isOwner ? ['Twórca grupy – masz wszystkie uprawnienia'] : PERM_ORDER.filter((p) => g.perms.includes(p)).map((p) => PERM_LABELS[p][0]);
   const chips = el('div', 'gset__chips');
   (mine.length ? mine : ['brak specjalnych uprawnień']).forEach((t) => chips.appendChild(el('span', 'gset__chip', t)));
@@ -5900,40 +4589,29 @@ function gsetOverview(g, body) {
   body.appendChild(permSec);
 
   if (g.code) {
-    const codeSec = gsetSection('Jednorazowy kod dostępu');
+    const codeSec = gsetSection('JEDNORAZOWY KOD DOSTĘPU');
     const box = el('div', 'group-card__code');
     box.appendChild(el('span', 'group-card__code-value', g.code));
     box.append(
-      gsetButton(icon('copy'), 'btn-secondary btn-sm btn-iconly', () => {
+      gsetButton('Kopiuj', 'btn-secondary btn-sm', () => {
         copyText(g.code);
         toast('Kod skopiowany', true);
-      }, { title: 'Kopiuj kod' }),
-      gsetButton(icon('refresh'), 'btn-secondary btn-sm btn-iconly', () => groupAction('group:code', g.id, () => toast('Wygenerowano nowy kod', true)), {
-        title: 'Nowy kod – poprzedni przestanie działać',
-      })
+      }),
+      gsetButton('Nowy kod', 'btn-secondary btn-sm', () => groupAction('group:code', g.id, () => toast('Wygenerowano nowy kod', true)))
     );
     codeSec.appendChild(box);
     codeSec.appendChild(el('div', 'groups__hint', 'Po użyciu kod wygasa, a w jego miejsce powstaje następny.'));
     body.appendChild(codeSec);
   }
 
-  const leaveSec = gsetSection(g.isOwner ? 'Usuń grupę' : 'Opuść grupę');
-  leaveSec.appendChild(
-    el(
-      'p',
-      'settings-note',
-      g.isOwner
-        ? 'Wszyscy członkowie zostaną usunięci, a cała historia czatu przepadnie. Tego nie da się cofnąć.'
-        : 'Aby wrócić, będziesz potrzebować nowego kodu od twórcy grupy.'
-    )
-  );
+  const leaveSec = gsetSection('');
   leaveSec.appendChild(leaveOrDeleteButton(g));
   body.appendChild(leaveSec);
 }
 
 function gsetChannels(g, body) {
   const canManage = g.perms.includes('manageChannels');
-  const listSec = gsetSection(`Kanały tekstowe — ${g.channels.length}`);
+  const listSec = gsetSection(`KANAŁY TEKSTOWE — ${g.channels.length}`);
   g.channels.forEach((c) => {
     const row = el('div', 'gset__row');
     row.appendChild(el('span', 'hash', '#'));
@@ -5944,17 +4622,16 @@ function gsetChannels(g, body) {
     row.appendChild(input);
     if (canManage) {
       row.appendChild(
-        gsetButton(icon('check'), 'btn-secondary btn-sm btn-iconly', () =>
-          groupAction('group:channel:rename', { groupId: g.id, channel: c.id, name: input.value }, () => toast('Zapisano nazwę kanału', true)),
-          { title: 'Zapisz nazwę kanału' }
+        gsetButton('Zapisz', 'btn-secondary btn-sm', () =>
+          groupAction('group:channel:rename', { groupId: g.id, channel: c.id, name: input.value }, () => toast('Zapisano nazwę kanału', true))
         )
       );
       if (!c.isDefault) {
         row.appendChild(
-          gsetButton(icon('trash'), 'btn-secondary btn-sm btn-iconly btn-danger', () => {
+          gsetButton('Usuń', 'btn-secondary btn-sm btn-danger', () => {
             if (!confirm(`Usunąć kanał #${c.name}? Wszystkie jego wiadomości i pliki przepadną.`)) return;
             groupAction('group:channel:delete', { groupId: g.id, channel: c.id }, () => toast('Usunięto kanał', true));
-          }, { title: 'Usuń kanał' })
+          })
         );
       }
     } else if (c.isDefault) {
@@ -5965,13 +4642,13 @@ function gsetChannels(g, body) {
   body.appendChild(listSec);
 
   if (canManage) {
-    const addSec = gsetSection('Nowy kanał');
+    const addSec = gsetSection('NOWY KANAŁ');
     const row = el('form', 'groups__row');
     const input = el('input', 'field');
     input.id = 'gset-new-channel';
     input.placeholder = 'nazwa-kanału';
     input.maxLength = 24;
-    row.append(input, gsetButton(icon('plus'), 'btn-primary btn-sm btn-iconly', () => {}, { title: 'Dodaj kanał' }));
+    row.append(input, gsetButton('Dodaj', 'btn-primary btn-sm', () => {}));
     row.lastChild.type = 'submit';
     row.addEventListener('submit', (e) => {
       e.preventDefault();
@@ -6007,11 +4684,11 @@ function gsetRoles(g, body) {
     });
     if (idx !== null && canManage && g.rank < idx) {
       const mover = el('span', 'gset__movers');
-      const up = gsetButton(icon('chevron-up'), 'gset__mv', (e) => {
+      const up = gsetButton('▲', 'gset__mv', (e) => {
         e.stopPropagation();
         groupAction('group:role:move', { groupId: g.id, roleId: id, dir: -1 }, () => {});
       }, { disabled: idx === 0 || g.rank >= idx - 1, title: 'Wyżej' });
-      const down = gsetButton(icon('chevron-down'), 'gset__mv', (e) => {
+      const down = gsetButton('▼', 'gset__mv', (e) => {
         e.stopPropagation();
         groupAction('group:role:move', { groupId: g.id, roleId: id, dir: 1 }, () => {});
       }, { disabled: idx === g.roles.length - 1, title: 'Niżej' });
@@ -6024,7 +4701,7 @@ function gsetRoles(g, body) {
   list.appendChild(item('everyone', '@everyone', null, g.memberCount, null));
   if (canManage) {
     list.appendChild(
-      gsetButton(textWithIcon('Nowa rola', 'plus'), 'btn-secondary btn-sm gset__newrole', () =>
+      gsetButton('+ Nowa rola', 'btn-secondary btn-sm gset__newrole', () =>
         groupAction('group:role:create', { groupId: g.id, name: 'nowa rola', perms: [] }, (res) => {
           gset.roleId = res.roleId; // zdarzenie z listą grup mogło przyjść wcześniej – przerysuj z zaznaczoną nową rolą
           renderGroupSettings();
@@ -6048,11 +4725,10 @@ function gsetRoles(g, body) {
   nameInput.disabled = !editable || isEveryone;
   let colorInput = null;
   let noColor = null;
-  let hoistInput = null;
   if (!isEveryone) {
-    editor.appendChild(el('div', 'section-title', 'Nazwa roli'));
+    editor.appendChild(el('div', 'section-title', 'NAZWA ROLI'));
     editor.appendChild(nameInput);
-    editor.appendChild(el('div', 'section-title gset__spaced', 'Kolor'));
+    editor.appendChild(el('div', 'section-title gset__spaced', 'KOLOR'));
     const colorRow = el('div', 'gset__colorrow');
     colorInput = el('input', 'gset__color');
     colorInput.type = 'color';
@@ -6067,47 +4743,37 @@ function gsetRoles(g, body) {
     colorInput.addEventListener('input', () => (noColor.checked = false));
     colorRow.append(colorInput, noColorLabel);
     editor.appendChild(colorRow);
-
-    // Jak na Discordzie: osoby z tą rolą mogą mieć własną sekcję w panelu członków, osobno od reszty online.
-    const hoistLabel = el('label', 'switch gset__hoist');
-    hoistInput = document.createElement('input');
-    hoistInput.type = 'checkbox';
-    hoistInput.checked = role.hoist !== false;
-    hoistInput.disabled = !editable;
-    hoistLabel.append(hoistInput, el('span', 'switch__track'), el('span', '', 'Wyświetlaj użytkowników z tą rolą oddzielnie od użytkowników online'));
-    editor.append(el('div', 'section-title gset__spaced', 'Wyświetlanie'), hoistLabel);
   } else {
     editor.appendChild(el('div', 'groups__hint', 'Uprawnienia, które dostaje każdy członek grupy.'));
   }
-  editor.appendChild(el('div', 'section-title gset__spaced', 'Uprawnienia'));
+  editor.appendChild(el('div', 'section-title gset__spaced', 'UPRAWNIENIA'));
   const perms = permCheckboxes(g, role.perms, { editable, allowAdmin: !isEveryone });
   editor.appendChild(perms);
 
   const actions = el('div', 'group-card__actions');
   if (editable) {
     actions.appendChild(
-      gsetButton(icon('check'), 'btn-primary btn-sm btn-iconly', () => {
+      gsetButton('Zapisz', 'btn-primary btn-sm', () => {
         const chosen = Array.from(perms.querySelectorAll('input:checked')).map((b) => b.value);
         // Nieedytowalnych (niedostępnych dla Ciebie) uprawnień nie ruszamy – serwer i tak by je odrzucił.
         const payload = { groupId: g.id, roleId: role.id, perms: chosen };
         if (!isEveryone) {
           payload.name = nameInput.value;
           payload.color = noColor.checked ? null : colorInput.value;
-          payload.hoist = hoistInput.checked;
         }
         groupAction('group:role:update', payload, () => toast('Zapisano rolę', true));
-      }, { title: 'Zapisz rolę' })
+      })
     );
     if (!isEveryone) {
       actions.appendChild(
-        gsetButton(icon('trash'), 'btn-secondary btn-sm btn-iconly btn-danger', () => {
+        gsetButton('Usuń rolę', 'btn-secondary btn-sm btn-danger', () => {
           if (!confirm(`Usunąć rolę „${role.name}”? Osoby, które ją mają, stracą jej uprawnienia.`)) return;
           groupAction('group:role:delete', { groupId: g.id, roleId: role.id }, () => {
             gset.roleId = 'everyone';
             renderGroupSettings();
             toast('Usunięto rolę', true);
           });
-        }, { title: 'Usuń rolę' })
+        })
       );
     }
   } else {
@@ -6129,8 +4795,7 @@ function gsetMembers(g, body) {
   const members = gset.members
     .slice()
     .sort((a, b) => memberRank(g, a) - memberRank(g, b) || a.nick.localeCompare(b.nick, 'pl'));
-  const sec = gsetSection(`Członkowie — ${members.length}`);
-  if (canRoles) sec.appendChild(el('div', 'groups__hint', 'Ikona etykiety przy osobie otwiera listę ról do nadania. Role tworzysz w zakładce „Role”.'));
+  const sec = gsetSection(`CZŁONKOWIE — ${members.length}`);
   members.forEach((m) => {
     const rank = memberRank(g, m);
     const isMe = m.id === myAccountId;
@@ -6140,7 +4805,7 @@ function gsetMembers(g, body) {
     const info = el('div', 'gset__memberinfo');
     const name = el('span', 'gset__membername', m.nick);
     info.appendChild(name);
-    if (m.isOwner) info.appendChild(iconNode('span', 'member__crown', 'crown'));
+    if (m.isOwner) info.appendChild(el('span', 'member__crown', '👑'));
     const chipRow = el('div', 'gset__chips');
     (m.roles || []).forEach((id) => {
       const r = g.roles.find((x) => x.id === id);
@@ -6153,37 +4818,22 @@ function gsetMembers(g, body) {
     left.append(info, chipRow);
     row.appendChild(left);
 
-    const touchable = isMe || (!m.isOwner && g.rank < rank); // twórca może nadać role sobie, ale nikt nie zmienia ról twórcy
+    const touchable = !m.isOwner && (isMe || g.rank < rank);
     const actions = el('div', 'gset__memberactions');
-    if (canRoles && touchable) {
-      // Ikona etykiety: nadawanie ról. Bez żadnej roli prowadzi do zakładki, w której się je tworzy.
-      const assign = iconButton(
-        'tag',
-        g.roles.length ? `Nadaj rolę: ${m.nick}` : 'Najpierw utwórz rolę (zakładka Role)',
-        () => {
-          if (!g.roles.length) {
-            toast('Nie ma jeszcze żadnej roli – utwórz ją w zakładce „Role”, potem nadasz ją tutaj.', true);
-            gset.tab = 'roles';
-            return renderGroupSettings();
-          }
+    if (canRoles && touchable && g.roles.length) {
+      actions.appendChild(
+        gsetButton(gset.openMember === m.id ? 'Role ▴' : 'Role ▾', 'btn-secondary btn-sm', () => {
           gset.openMember = gset.openMember === m.id ? null : m.id;
           renderGroupSettings();
-        }
+        })
       );
-      if (gset.openMember === m.id) assign.classList.add('is-on');
-      actions.appendChild(assign);
     }
     if (canKick && !isMe && !m.isOwner && g.rank < rank) {
       actions.appendChild(
-        iconButton(
-          'user-minus',
-          `Wyrzuć ${m.nick} z grupy`,
-          () => {
-            if (!confirm(`Wyrzucić ${m.nick} z grupy? Wróci tylko z nowym kodem.`)) return;
-            groupAction('group:kick', { groupId: g.id, accountId: m.id }, () => toast(`Wyrzucono ${m.nick}`, true));
-          },
-          { danger: true }
-        )
+        gsetButton('Wyrzuć', 'btn-secondary btn-sm btn-danger', () => {
+          if (!confirm(`Wyrzucić ${m.nick} z grupy? Wróci tylko z nowym kodem.`)) return;
+          groupAction('group:kick', { groupId: g.id, accountId: m.id }, () => toast(`Wyrzucono ${m.nick}`, true));
+        })
       );
     }
     row.appendChild(actions);
@@ -6226,11 +4876,8 @@ function renderGroupSettings() {
   const active = document.activeElement;
   if (body.contains(active) && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA') && active.type !== 'checkbox') return;
 
-  $('gset-title').textContent = g.name; // nazwa grupy nad menu, jak nazwa serwera na Discordzie
+  $('gset-title').textContent = `⚙ ${g.name}`;
   document.querySelectorAll('.gset__tab').forEach((t) => t.classList.toggle('is-active', t.dataset.tab === gset.tab));
-  const paneInfo = GSET_PANES[gset.tab] || GSET_PANES.overview;
-  $('gset-pane-title').textContent = paneInfo.title;
-  $('gset-pane-lead').textContent = paneInfo.lead;
   const scroll = body.scrollTop;
   const fresh = el('div', 'gset__content');
   if (gset.tab === 'channels') gsetChannels(g, fresh);
@@ -6411,8 +5058,6 @@ fetch('/api/config')
     if (Array.isArray(cfg.iceServers) && cfg.iceServers.length) iceServers = cfg.iceServers;
     if (cfg.maxVoiceUsers) maxVoiceUsers = cfg.maxVoiceUsers;
     $('persistence-note').hidden = cfg.persistent !== false; // ostrzeżenie tylko, gdy serwer nie ma trwałej bazy
-    serverInfo = { version: cfg.version || 'nieznana', party: Boolean(cfg.features && cfg.features.party) };
-    renderVersionInfo();
     if (cfg.gifAvatarBytes) gifAvatarBytes = cfg.gifAvatarBytes;
     if (cfg.gifBannerBytes) gifBannerBytes = cfg.gifBannerBytes;
     if (cfg.retentionMs) {
