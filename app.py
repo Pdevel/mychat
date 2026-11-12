@@ -983,14 +983,19 @@ def collect_blocks(root, base_url, with_images=False, skip_images=frozenset(), i
             parts = [part for part in parts if part[0]]
             img, src = card_image(container, base_url)
             has_image = img is not None or src is not None
+            labeled = not has_image and (
+                (2 <= len(parts) <= 3 and sum(1 for text, _ in parts if LABEL_PART.fullmatch(text)) == 1)
+                or (len(parts) == 1 and LABEL_LEAD.match(parts[0][0]) is not None and len(parts[0][0]) <= 80))
             named = squash(node.get("title") or "") or best_title.get(href, "")
             elsewhere = best_text.get(href, "")  # tekst innego linku pod ten sam adres (np. tytuł obok obrazka-linku)
             known = [(elsewhere, None)] if elsewhere and not any(fold(elsewhere) in fold(text) for text, _ in parts) else []
-            if named and len(named) >= 2:
+            if labeled:  # „Country:” + „USA” – to dane, nie tytuł z dopiskiem: zostają w kolejności ze strony
+                title, parts = " ".join(text for text, _ in parts), []
+            elif named and len(named) >= 2:
                 title = named  # atrybut title linku to zwykle pełny tytuł
             else:
                 title = pick_title(parts + known, container)
-            is_card = has_image or len(parts) >= 2
+            is_card = has_image or len(parts) >= 2 or labeled
             if title is None:  # same dane (np. „8,77 · 10 988 tys. ocen”) – zwykły link z tekstem w kolejności ze strony
                 title = no_urls(node_text(container)) or (squash(img.get("alt") or "") if img is not None else "")
                 is_card, parts = has_image, []
@@ -1489,7 +1494,16 @@ def lead_paragraphs(container, anchor, shown, base_url):
 
 META_LABEL = re.compile(r"^\s*([^\W\d_][\w .'&/-]{0,24}?)\s*:\s*$")
 META_SKIP = {"nav", "footer", "header", "aside", "form", "table"}
+META_ALWAYS_SKIP = {"nav", "footer", "table"}  # tych elementów nie traktujemy jak ramki z treścią
+LABEL_PART = re.compile(r"[^\W\d_][\w .'&/-]{0,24}:")
+LABEL_LEAD = re.compile(r"[^\W\d_][\w .'&/-]{0,24}:\s+\S")  # „Rok: 2000” zapisane w jednym kawałku tekstu
 META_NOT_DATA = re.compile(r"also|like|related|recommend|more|share|follow|polecan|podobn|zobacz|więcej|udostępnij|czytaj", re.I)
+
+
+def big_wrapper(tag, soup):
+    """Czy element (aside, header, form) obejmuje dużą część strony – wtedy to ramka z główną treścią, a nie panel boczny."""
+    body = soup.body or soup
+    return len(tag.get_text()) > WRAPPER_SHARE * max(len(body.get_text()), 1)
 
 
 def meta_rows(soup, base_url):
@@ -1500,8 +1514,13 @@ def meta_rows(soup, base_url):
         label_tag = label_text.parent
         if label_tag is None or label_tag.name in ("script", "style", "a", "option", "title"):
             continue
-        if label_tag.name in META_SKIP or any(a.name in META_SKIP for a in label_tag.parents):
-            continue  # nagłówek i stopka strony, menu, formularze
+        skipped = False
+        for ancestor in [label_tag] + list(label_tag.parents):
+            if ancestor.name in META_ALWAYS_SKIP or (ancestor.name in META_SKIP and not big_wrapper(ancestor, soup)):
+                skipped = True  # nagłówek i stopka strony, menu, małe panele boczne
+                break
+        if skipped:
+            continue
         row = label_tag
         for _ in range(3):  # w górę do pierwszego poziomu, na którym obok etykiety jest wartość (link albo tekst)
             if row.find("a", href=True) is not None or squash(node_text(row).replace(label_text.strip(), "", 1)):
@@ -1654,10 +1673,12 @@ def extract_article(html, url, videos=None, posters=None, info=None):
             blocks = blocks[:index] + blocks[index + 1:]
             break
     if meta and not infobox and not front_page:  # karta danych („Autor: …”, „Tagi: …”) pod zdjęciem głównym
-        blocks = [b for b in blocks if not (b[0] in ("p", "h") and b[2] in meta_links)]
-        position = 1 if blocks and blocks[0][0] in ("img", "thumb") else 0
-        if position and blocks[0][0] == "thumb":
-            blocks[0] = ("img",) + tuple(blocks[0][1:])  # zdjęcie główne nad kartą – pełne, nie miniatura listy
+        row_texts = {fold(re.sub(r"\s*:\s*", ": ", f"{r['l']}: {visible(r['v'])}")) for r in meta}
+        blocks = [b for b in blocks if not (b[0] in ("p", "h") and b[2] in meta_links)
+                  and not (b[0] in ("p", "pl") and fold(re.sub(r"\s*:\s*", ": ", visible(b[1]))) in row_texts)]
+        position = next((i + 1 for i, b in enumerate(blocks[:6]) if b[0] in ("img", "thumb")), 0)
+        if position and blocks[position - 1][0] == "thumb":
+            blocks[position - 1] = ("img",) + tuple(blocks[position - 1][1:])  # zdjęcie główne nad kartą – pełne
         blocks.insert(position, ("ib", json.dumps(meta, ensure_ascii=False), None))
     if infobox:  # tabela informacyjna po pierwszym akapicie, jak w mobilnej Wikipedii (także w krótkich hasłach)
         position = next((i + 1 for i, b in enumerate(blocks) if b[0] in ("p", "pl")), 0)
