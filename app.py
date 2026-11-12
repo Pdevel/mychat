@@ -19,6 +19,7 @@ import ipaddress
 import json
 import logging
 import os
+import pickle
 import re
 import shutil
 import socket
@@ -111,6 +112,7 @@ FROGFIND = "http://frogfind.com/"  # serwis działa tylko po http
 FROGFIND_UA = "LekkaSzukajka/1.0 (+https://github.com/Pdevel/mychat)"  # przedstawiamy się uczciwie
 BRAVE_API = "https://api.search.brave.com/res/v1/web/search"
 BRAVE_API_KEY = os.environ.get("BRAVE_API_KEY", "").strip()  # opcjonalny (darmowy plan); bez niego tylko DuckDuckGo
+PREFETCH_RESULTS = int(os.environ.get("PREFETCH_RESULTS", "2"))  # tyle pierwszych wyników wczytujemy z wyprzedzeniem
 DDG_BACKOFF = 600  # po nieudanej próbie DuckDuckGo przez tyle sekund pytamy od razu źródło zapasowe (bez czekania)
 ddg_down_until = 0.0
 
@@ -177,8 +179,65 @@ class TTLCache:
                 self._data.popitem(last=False)
 
 
-search_cache = TTLCache(maxsize=100, ttl=300)
-article_cache = TTLCache(maxsize=20, ttl=900)
+class DiskCache:
+    """Pamięć podręczna na dysku (pliki w katalogu tymczasowym) – wspólna dla wszystkich procesów Gunicorna, więc wynik
+    zapamiętany przez jeden proces jest gotowy także w drugim. Przed nią stoi szybka pamięć TTLCache w procesie."""
+
+    def __init__(self, name, ttl, max_files):
+        self.dir = os.path.join(CACHE_DIR, name)
+        self.ttl, self.max_files, self.writes = ttl, max_files, 0
+        self.memory = TTLCache(maxsize=50, ttl=ttl)
+
+    def path(self, key):
+        return os.path.join(self.dir, hashlib.sha1(repr(key).encode("utf-8")).hexdigest() + ".pkl")
+
+    def get(self, key):
+        value = self.memory.get(key)
+        if value is not None:
+            return value
+        path = self.path(key)
+        try:
+            if time.time() - os.path.getmtime(path) > self.ttl:
+                return None
+            with open(path, "rb") as handle:
+                value = pickle.load(handle)  # tylko nasze własne pliki w katalogu tymczasowym aplikacji
+        except (OSError, EOFError, pickle.PickleError, AttributeError, ValueError):
+            return None
+        self.memory.set(key, value)
+        return value
+
+    def set(self, key, value):
+        self.memory.set(key, value)
+        try:
+            os.makedirs(self.dir, exist_ok=True)
+            tmp = f"{self.path(key)}.{uuid.uuid4().hex}.tmp"
+            with open(tmp, "wb") as handle:
+                pickle.dump(value, handle, protocol=pickle.HIGHEST_PROTOCOL)
+            os.replace(tmp, self.path(key))
+        except OSError as err:
+            log.info("pamięć podręczna na dysku: %s", err)
+            return
+        self.writes += 1
+        if self.writes % 25 == 0:
+            self.trim()
+
+    def trim(self):
+        try:
+            files = sorted((os.path.getmtime(os.path.join(self.dir, n)), n) for n in os.listdir(self.dir))
+        except OSError:
+            return
+        now = time.time()
+        for index, (mtime, name) in enumerate(files):
+            if now - mtime > self.ttl or index < len(files) - self.max_files:
+                try:
+                    os.remove(os.path.join(self.dir, name))
+                except OSError:
+                    pass
+
+
+CACHE_DIR = os.environ.get("CACHE_DIR") or os.path.join(tempfile.gettempdir(), "szukajka-cache")
+search_cache = DiskCache("wyniki", ttl=1800, max_files=500)  # wyniki wyszukiwania: 30 min
+article_cache = DiskCache("strony", ttl=900, max_files=200)  # przeczytane strony: 15 min
 image_cache = TTLCache(maxsize=80, ttl=1800)  # gotowe, zmniejszone JPEG-i (ok. 10 KB każdy)
 
 
@@ -564,6 +623,68 @@ def says_no_results(html):
     return re.search(r"No\s+(?:more\s+)?results", html, re.I) is not None
 
 
+DDG_STATE = os.path.join(CACHE_DIR, "duckduckgo.json")
+DDG_BACKOFF_MAX = 6 * 3600
+
+
+def ddg_blocked():
+    """Czy DuckDuckGo jest w przerwie po porażkach (stan wspólny dla procesów serwera)."""
+    try:
+        with open(DDG_STATE, encoding="utf-8") as handle:
+            return time.time() < json.load(handle).get("down_until", 0)
+    except (OSError, ValueError):
+        return False
+
+
+def ddg_failed():
+    """Zapisuje porażkę; każda kolejna wydłuża przerwę 2× (10 min, 20 min, 40 min… do 6 h). Zwraca długość przerwy."""
+    try:
+        with open(DDG_STATE, encoding="utf-8") as handle:
+            failures = json.load(handle).get("failures", 0) + 1
+    except (OSError, ValueError):
+        failures = 1
+    pause = min(DDG_BACKOFF * 2 ** (failures - 1), DDG_BACKOFF_MAX)
+    try:
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        tmp = f"{DDG_STATE}.{uuid.uuid4().hex}.tmp"
+        with open(tmp, "w", encoding="utf-8") as handle:
+            json.dump({"failures": failures, "down_until": time.time() + pause}, handle)
+        os.replace(tmp, DDG_STATE)
+    except OSError:
+        pass
+    return pause
+
+
+def ddg_succeeded():
+    try:
+        os.remove(DDG_STATE)
+    except OSError:
+        pass
+
+
+_prefetching = threading.Lock()
+
+
+def prefetch_articles(urls):
+    """Wczytuje w tle pierwsze wyniki do pamięci podręcznej – kliknięty wynik otwiera się od razu."""
+    def run():
+        if not _prefetching.acquire(blocking=False):
+            return  # inne wczytywanie z wyprzedzeniem już trwa
+        try:
+            for url in urls:
+                if article_cache.get(url) is None:
+                    try:
+                        get_article(url)
+                    except (FetchError, VideoLink):
+                        pass
+                    except Exception:
+                        log.exception("wczytywanie z wyprzedzeniem: %s", url)
+        finally:
+            _prefetching.release()
+
+    threading.Thread(target=run, daemon=True).start()
+
+
 def ddg_search(query, page):
     """Zwraca (wyniki, czy_jest_następna_strona). Najpierw wersja Lite, w razie kłopotów wersja HTML, potem Brave."""
     global ddg_down_until
@@ -578,7 +699,7 @@ def ddg_search(query, page):
     last_error = FetchError("Nie udało się pobrać wyników wyszukiwania. Spróbuj ponownie.", 502)
     unreachable = FetchError("Wyszukiwarka DuckDuckGo nie odpowiada z tego serwera.", 503)
     endpoints = ((DDG_LITE, parse_ddg_lite), (DDG_HTML, parse_ddg_html))
-    if time.monotonic() < ddg_down_until:
+    if time.monotonic() < ddg_down_until or ddg_blocked():
         endpoints = ()  # DuckDuckGo niedawno zawiódł – od razu źródło zapasowe
     for endpoint, parser in endpoints:
         try:
@@ -587,17 +708,18 @@ def ddg_search(query, page):
             html = decode_html(read_body(resp, limit=800_000), resp)
         except FetchError as err:
             last_error = unreachable if err.status in (502, 504) else err
-            ddg_down_until = time.monotonic() + DDG_BACKOFF
-            continue
+            ddg_down_until = time.monotonic() + ddg_failed()
+            break  # drugi adres DuckDuckGo i tak zawiedzie tak samo – nie tracimy czasu
         if status != 200 or looks_blocked(html):
             log.warning("DuckDuckGo odrzucił zapytanie (%s, status %s)", endpoint, status)
-            ddg_down_until = time.monotonic() + DDG_BACKOFF
+            ddg_down_until = time.monotonic() + ddg_failed()
             last_error = FetchError(
                 "Wyszukiwarka chwilowo nie przyjmuje zapytań z tego serwera. Spróbuj za kilka minut.", 503
             )
             continue
         results = dedupe(parser(html))
         if results or says_no_results(html):
+            ddg_succeeded()
             value = (results[:RESULTS_PER_PAGE], len(results) >= RESULTS_PER_PAGE and page < MAX_RESULT_PAGES)
             search_cache.set(key, value)
             return value
@@ -1152,10 +1274,36 @@ def paginate(blocks, budget):
     return [page for page in pages if page]
 
 
+_inflight = {}
+_inflight_lock = threading.Lock()
+
+
 def get_article(url):
+    """Strona w czytniku. Gdy ta sama strona jest właśnie wczytywana (np. z wyprzedzeniem po wyszukiwaniu),
+    czekamy na wynik zamiast pobierać ją drugi raz."""
     cached = article_cache.get(url)
     if cached is not None:
         return cached
+    with _inflight_lock:
+        event = _inflight.get(url)
+        owner = event is None
+        if owner:
+            event = _inflight[url] = threading.Event()
+    if not owner:
+        event.wait(timeout=30)
+        cached = article_cache.get(url)
+        if cached is not None:
+            return cached
+    try:
+        return load_article(url)
+    finally:
+        if owner:
+            with _inflight_lock:
+                _inflight.pop(url, None)
+            event.set()
+
+
+def load_article(url):
     final_url, resp = http_request(url)
     if resp.status_code >= 400:
         resp.close()
@@ -2831,6 +2979,8 @@ def search():
     except FetchError as err:
         error = err.message
     items = [dict(r, host=host_of(r["url"])) for r in results]
+    if results and PREFETCH_RESULTS:
+        prefetch_articles([r["url"] for r in results[:PREFETCH_RESULTS] if not is_video_url(r["url"])])
     body = render_template(
         "search.html", q=query, page=page, offset=(page - 1) * RESULTS_PER_PAGE,
         results=items, has_more=has_more, error=error,

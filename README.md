@@ -114,6 +114,18 @@ przygotowywany jest jeden film (kolejne czekają).
 Strojenie: `VIDEO_FIRST_PARTS_MINUTES` (3,6,12), `VIDEO_PART_MINUTES` (15), `VIDEO_SOURCE_MAX_MB` (400), `VIDEO_CONVERT_MINUTES` (40), `VIDEO_JOBS` (1),
 `VIDEO_DISK_MB` (1500), `VIDEO_DIR`.
 
+## Szybkość
+
+- wyniki wyszukiwania (30 min) i przeczytane strony (15 min) są zapamiętywane na dysku – wspólnie dla wszystkich
+  procesów serwera, więc powtórka i powrót „Wstecz” są natychmiastowe,
+- po pokazaniu wyników serwer w tle wczytuje 2 pierwsze strony (`PREFETCH_RESULTS`), więc kliknięty wynik otwiera się
+  od razu; gdy klikniesz stronę, która właśnie się wczytuje, czytnik czeka na nią zamiast pobierać drugi raz,
+- DuckDuckGo blokuje serwery w chmurze: po porażce aplikacja pyta od razu FrogFind, a kolejną próbę DuckDuckGo robi
+  po coraz dłuższej przerwie (10 min, 20 min, 40 min… do 6 h),
+- darmowy plan Render usypia aplikację po 15 min bez ruchu – pierwsze wejście trwa wtedy 30–60 s. Pomaga darmowy
+  „budzik” (np. UptimeRobot albo cron-job.org) odwiedzający `https://<twoja-aplikacja>.onrender.com/healthz` co 10 min,
+  albo płatny plan bez usypiania.
+
 ## Wdrożenie na Render.com
 
 **Blueprint (najprościej):** w Render wybierz *New → Blueprint*, wskaż to repozytorium. Render odczyta `render.yaml`.
