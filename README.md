@@ -27,10 +27,13 @@ Strojenie zmiennymi środowiskowymi: `IMAGE_MAX_WIDTH` (220), `IMAGE_MAX_HEIGHT`
 
 ## Filmy dla Nokii 235 4G / 3210 4G
 
-Czytnik wykrywa filmy na stronie (`<video>`, `og:video`, JSON-LD, linki do plików .mp4/.webm/.m3u8…, adresy w skryptach
-odtwarzaczy, Vimeo – także osadzone na innych stronach, odtwarzacz Kaltura) i pokazuje przycisk „Film: obejrzyj na telefonie”. Link prosto do pliku filmu
-otwiera od razu stronę filmu. Serwer pobiera film (zwykły plik albo strumień HLS – wtedy najniższą jakość, która
-wypełni ekran), przekodowuje go ffmpegiem i podaje gotowy plik, który otwiera odtwarzacz telefonu:
+Czytnik wykrywa filmy na każdej stronie: `<video>`, `og:video`, `twitter:player`, JSON-LD, atrybuty `data-…`, linki
+do plików (.mp4, .webm, .m3u8…), adresy w konfiguracji odtwarzaczy w skryptach oraz **odtwarzacze osadzone
+w ramkach** (`<iframe>`). Stronę odtwarzacza serwer otwiera i szuka w niej dalej (do 2 poziomów: ramka w ramce).
+Popularne odtwarzacze z publicznym API obsługuje wprost: Vimeo, JW Player, Wistia, Kaltura. Pokazuje przycisk
+„Film: obejrzyj na telefonie”, a link prosto do pliku filmu otwiera od razu stronę filmu. Serwer pobiera film
+(zwykły plik albo strumień HLS – wtedy najniższą jakość, która wypełni ekran), przekodowuje go ffmpegiem i podaje
+gotowy plik, który otwiera odtwarzacz telefonu:
 
 - **MP4** – H.264 Baseline (poziom 1.3), do 320×240 (pionowe do 240×320), 15 kl./s, AAC mono – ok. 2 MB na minutę,
 - **3GP** – H.263 176×144, dźwięk AMR – ok. 1 MB na minutę; najbardziej zgodny ze starszymi odtwarzaczami.
@@ -39,7 +42,8 @@ Długie filmy są dzielone na części po 15 minut. Strona postępu odświeża s
 (Range), a gotowe filmy znikają po 3 godzinach. ffmpeg instaluje pip z pakietu `imageio-ffmpeg`, więc nie trzeba niczego
 doinstalowywać na Render.
 
-Nie zadziała dla YouTube, filmów z DRM/szyfrowaniem i stron za zabezpieczeniem Cloudflare („Just a moment…”).
+Nie zadziała dla YouTube, Dailymotion i Facebooka (blokują pobieranie poza swoim odtwarzaczem), filmów z DRM/szyfrowaniem,
+odtwarzaczy, które pobierają adres filmu dopiero przez własne API z kluczem, i stron za zabezpieczeniem Cloudflare.
 Na darmowym planie Render (słaby procesor) przygotowanie 10-minutowego filmu trwa kilka minut, a naraz
 przygotowywany jest jeden film (kolejne czekają).
 

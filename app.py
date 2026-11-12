@@ -818,7 +818,31 @@ VIDEO_FILE = re.compile(r"\.(mp4|m4v|mov|webm|mkv|3gp|3g2|avi|flv|mpe?g|m3u8)$",
 SCRIPT_VIDEO = re.compile(
     r"""https?:(?:\\?/){2}[^"'\s<>]+?\.(?:mp4|m4v|webm|m3u8|mov|3gp)(?:\?[^"'\s<>]*)?(?=["'\s<>\\]|$)""", re.I
 )
+SCRIPT_VIDEO_KEY = re.compile(
+    r"""["']?(file|src|url|hls|hlsUrl|mp4|source|contentUrl|videoUrl|video_url|stream|manifest)["']?\s*[:=]\s*"""
+    r"""["']([^"'\s<>]+\.(?:mp4|m4v|webm|m3u8|mov|3gp)(?:\?[^"'\s<>]*)?)["']""", re.I
+)
+VIDEO_HINT = re.compile(r"\.(mp4|m4v|webm|m3u8|mov|3gp)(\?|#|$)", re.I)
+# Odtwarzacze w ramkach i skryptach: strona odtwarzacza zwykle zawiera adres pliku albo strumienia.
+PLAYER_HINT = re.compile(
+    r"player|embed|video|wideo|film|vod|stream|/media/|jwplayer|jwplatform|vimeo|wistia|"
+    r"brightcove|kaltura|streamable|rumble|vidyard|cda\.pl|tvp\.pl|mux\.com", re.I
+)
+PLAYER_SKIP = re.compile(  # to nie filmy albo serwisy, których nie obsługujemy (YouTube, sieci społecznościowe, reklamy)
+    r"youtube\.com|youtube-nocookie\.com|youtu\.be|dailymotion\.com|dai\.ly|facebook\.com|fbcdn|instagram\.com|tiktok\.com|twitter\.com|//x\.com|"
+    r"google\.com/maps|maps\.google|googlesyndication|doubleclick|googletagmanager|disqus|recaptcha|spotify\.com|"
+    r"soundcloud\.com|addthis|sharethis|/ads?/|adserver", re.I
+)
+SCRIPT_PLAYER = re.compile(
+    r"https?://(?:cdn\.jwplayer\.com|content\.jwplatform\.com)/(?:v2/media|players|previews)/[a-zA-Z0-9]{8}[^\s\"'<>\\]*|"
+    r"https?://fast\.wistia\.(?:net|com)/embed/(?:iframe|medias)/[a-z0-9]{10}|https?://player\.vimeo\.com/video/\d+[^\s\"'<>\\]*",
+    re.I,
+)
 VIMEO_PLAYER = re.compile(r"^https://player\.vimeo\.com/video/\d+", re.I)
+KNOWN_PLAYER_PAGE = re.compile(  # strony, z których film bierzemy przez publiczne API odtwarzacza
+    r"^https?://(?:www\.)?(?:player\.vimeo\.com/video/|"
+    r"(?:cdn\.jwplayer\.com|content\.jwplatform\.com)/(?:players|previews)/|fast\.wistia\.(?:net|com)/embed/)", re.I
+)
 KALTURA_PARTNER = re.compile(r"""(?:partner_?id["']?\s*[:=]\s*["']?|/p/)(\d{3,9})""", re.I)
 KALTURA_ENTRY = re.compile(r"""(?:entry_?id["']?\s*[:=/]\s*["']?)([01]_[a-z0-9]{8})""", re.I)
 # ffmpeg czyta tylko lokalne pliki i tylko zwykłe formaty filmów – nigdy list (HLS, concat), które mogłyby wskazać
@@ -851,36 +875,58 @@ def is_video_response(content_type, url):
     return is_video_url(url) and ("html" not in content_type)
 
 
-def find_videos(soup, base_url):
-    """Adresy filmów na stronie: <video>/<source>, og:video, JSON-LD (VideoObject), linki do plików wideo, a gdy nic
-    nie ma – adresy .mp4/.m3u8 zapisane w skryptach odtwarzaczy i odtwarzacz Kaltura."""
-    found = []
+def player_key(url):
+    """Ten sam odtwarzacz pod różnymi adresami (parametry, wistia.net/.com) liczymy raz."""
+    return re.sub(r"[?#].*$", "", url.lower()).replace("wistia.net", "wistia.com").replace("/medias/", "/iframe/").rstrip("/")
 
-    def add(value, need_ext=False):
-        value = (value or "").strip().replace("\\/", "/").replace("\\u0026", "&").replace("&amp;", "&")
-        if not value or value.startswith(("blob:", "data:")):
+
+def find_videos(soup, base_url, deep=False):
+    """Filmy na stronie, w kolejności: pliki i strumienie podane wprost (<video>, og:video, JSON-LD, atrybuty data-…,
+    linki), adresy z konfiguracji odtwarzaczy w skryptach, a na końcu strony odtwarzaczy (iframe, og:video,
+    twitter:player) – te otwieramy dopiero przy przygotowaniu filmu i szukamy w nich dalej.
+    deep=True (przygotowanie filmu): bierze też ramki bez typowych słów w adresie i zawsze przegląda skrypty."""
+    if KNOWN_PLAYER_PAGE.match(base_url) and not deep:
+        return [base_url]  # sama strona to odtwarzacz: film weźmiemy z jego API w najlepszej dla telefonu jakości
+    direct, players = [], []
+
+    def add(value, target=None, need_ext=False):
+        value = (value or "").strip()
+        for escaped, plain in (("\\/", "/"), ("\\u002F", "/"), ("\\u002f", "/"), ("\\u0026", "&"), ("&amp;", "&")):
+            value = value.replace(escaped, plain)
+        if not value or value.startswith(("blob:", "data:", "javascript:", "about:")):
             return
         src = urljoin(base_url, value)
-        if urlparse(src).scheme not in ("http", "https") or len(src) > MAX_URL_LENGTH:
+        if urlparse(src).scheme not in ("http", "https") or len(src) > MAX_URL_LENGTH or PLAYER_SKIP.search(src):
             return
-        if need_ext and not is_video_url(src) and not VIMEO_PLAYER.match(src):
+        if src.split("#")[0] == base_url.split("#")[0] and not KNOWN_PLAYER_PAGE.match(src):
             return
-        if src not in found:
-            found.append(src)
+        if target is None:
+            target = direct if is_video_url(src) else players
+        if need_ext and target is direct and not is_video_url(src):
+            return
+        key = src if target is direct else player_key(src)
+        if src not in direct and key not in (player_key(p) for p in players):
+            target.append(src)
 
     for video in soup.find_all("video"):
         candidates = [video.get("src"), video.get("data-src")]
         candidates += [s.get("src") or s.get("data-src") for s in video.find_all("source")]
         for value in candidates:
             if value and not value.strip().startswith(("blob:", "data:")):
-                add(value)
+                add(value, direct)
                 break
     og_type = soup.find("meta", attrs={"property": "og:video:type"})
     og_type = (og_type.get("content") or "").lower() if og_type is not None else ""
-    direct = og_type.startswith("video/") or "mpegurl" in og_type
-    for name in ("og:video:secure_url", "og:video:url", "og:video", "twitter:player:stream"):
+    og_direct = og_type.startswith("video/") or "mpegurl" in og_type
+    before = len(direct)
+    for name in ("og:video:secure_url", "og:video:url", "og:video", "twitter:player:stream", "twitter:player"):
         for meta in soup.find_all("meta", attrs={"property": name}) + soup.find_all("meta", attrs={"name": name}):
-            add(meta.get("content"), need_ext=not direct)  # og:video bywa stroną z odtwarzaczem, a nie plikiem
+            value = meta.get("content")
+            if og_direct and name.startswith("og:"):
+                add(value, direct)
+            else:
+                add(value)  # zwykle strona odtwarzacza (text/html), czasem sam plik
+    del direct[before + 1:]  # znaczniki og:/twitter: opisują jeden film (czasem w kilku jakościach)
     for script in soup.find_all("script", type="application/ld+json"):
         try:
             stack = [json.loads(script.string or "")]
@@ -891,28 +937,46 @@ def find_videos(soup, base_url):
             if isinstance(item, list):
                 stack.extend(item)
             elif isinstance(item, dict):
-                if "Video" in str(item.get("@type", "")) and isinstance(item.get("contentUrl"), str):
-                    add(item["contentUrl"])
+                if "Video" in str(item.get("@type", "")):
+                    if isinstance(item.get("contentUrl"), str):
+                        add(item["contentUrl"], direct)
+                    if isinstance(item.get("embedUrl"), str):
+                        add(item["embedUrl"])
                 stack.extend(v for v in item.values() if isinstance(v, (list, dict)))
+    for tag in soup.find_all(True):  # atrybuty typu data-video-src="…mp4", data-hls="…m3u8", <param value="…">
+        for name, value in tag.attrs.items():
+            if isinstance(value, str) and (name.startswith("data-") or name in ("value", "content")) and VIDEO_HINT.search(value):
+                add(value, direct, need_ext=True)
+        classes = " ".join(tag.get("class") or [])
+        wistia = re.search(r"wistia_async_([a-z0-9]{10})", classes)
+        if wistia:
+            add(f"https://fast.wistia.net/embed/iframe/{wistia.group(1)}", players)
     for link in soup.find_all("a", href=True):
-        add(link["href"], need_ext=True)
-    for frame in soup.find_all("iframe", src=True):  # filmy Vimeo osadzone na innych stronach
-        if "player.vimeo.com/video/" in frame["src"]:
-            add(frame["src"])
-    if not found:
+        add(link["href"], direct, need_ext=True)
+    frames = [f.get("src") or f.get("data-src") or f.get("data-lazy-src") for f in soup.find_all("iframe")]
+    for value in filter(None, frames):
+        if deep or PLAYER_HINT.search(value):
+            add(value, players)
+    if deep or not direct:
         scripts = "\n".join(s.string or "" for s in soup.find_all("script"))
+        for escaped, plain in (("\\/", "/"), ("\\u002F", "/"), ("\\u002f", "/")):
+            scripts = scripts.replace(escaped, plain)
+        before = len(direct)
         for match in SCRIPT_VIDEO.finditer(scripts):
-            add(match.group(), need_ext=True)
-            if len(found) >= VIDEOS_PER_ARTICLE:
-                break
-        if not found:  # Kaltura (m.in. uczelniane serwisy wideo): strumień HLS z ich publicznego CDN
-            page = str(soup)
-            partner, entry = KALTURA_PARTNER.search(page), KALTURA_ENTRY.search(page)
-            if partner and entry and "kaltura" in page.lower():
-                pid, eid = partner.group(1), entry.group(1)
-                add(f"https://cdnapisec.kaltura.com/p/{pid}/sp/{pid}00/playManifest/entryId/{eid}"
-                    f"/format/applehttp/protocol/https/a.m3u8")
-    return found[:VIDEOS_PER_ARTICLE]
+            add(match.group(), direct, need_ext=True)
+        for match in SCRIPT_VIDEO_KEY.finditer(scripts):  # względne adresy w konfiguracji: "file": "/filmy/a.mp4"
+            add(match.group(2), direct, need_ext=True)
+        if not deep:
+            del direct[before + 1:]  # w skryptach to zwykle ten sam film w kilku jakościach – w czytniku wystarczy jeden
+        for match in SCRIPT_PLAYER.finditer(scripts):  # JW Player, Wistia, Vimeo wstawiane skryptem
+            add(match.group(), players)
+        page = str(soup)
+        partner, entry = KALTURA_PARTNER.search(page), KALTURA_ENTRY.search(page)
+        if partner and entry and "kaltura" in page.lower():  # Kaltura (m.in. uczelniane serwisy wideo)
+            pid, eid = partner.group(1), entry.group(1)
+            add(f"https://cdnapisec.kaltura.com/p/{pid}/sp/{pid}00/playManifest/entryId/{eid}"
+                f"/format/applehttp/protocol/https/a.m3u8", direct)
+    return (direct + players)[:VIDEOS_PER_ARTICLE * (2 if deep else 1)]
 
 
 def ffmpeg_info():
@@ -1222,10 +1286,62 @@ def vimeo_stream(url, referer):
     raise FetchError("Vimeo nie podało adresu tego filmu.", 415)
 
 
-def prepare_source(src, referer, part, report, depth=0):
-    """Pobiera źródło filmu na dysk. Zwraca ([(plik, przesunięcie_początku_s)], długość_całości_s albo None)."""
-    if VIMEO_PLAYER.match(src) and depth < 3:
-        return prepare_source(vimeo_stream(src, referer), src, part, report, depth + 1)
+def read_json(url, headers=None):
+    resp = open_media(url, dict({"Accept": "application/json"}, **(headers or {})))
+    try:
+        return json.loads(read_body(resp, limit=3_000_000).decode("utf-8", "replace"))
+    except ValueError:
+        raise FetchError("Odtwarzacz zwrócił nieczytelne dane.", 502)
+
+
+def smallest_enough(items, height_key="height"):
+    """Najmniejszy wariant, który nadal wypełni ekran (wysokość ≥ 216 px), a gdy takiego nie ma – największy."""
+    sized = [i for i in items if isinstance(i.get(height_key), (int, float))]
+    enough = [i for i in sized if i[height_key] >= 216]
+    if enough:
+        return min(enough, key=lambda i: i[height_key])
+    return max(sized, key=lambda i: i[height_key]) if sized else items[0]
+
+
+def player_stream(url, referer):
+    """Znane odtwarzacze, które podają film przez publiczne API (bez klucza): adres pliku/strumienia albo None."""
+    host = (urlparse(url).hostname or "").lower()
+    if VIMEO_PLAYER.match(url):
+        return vimeo_stream(url, referer)
+    if host.endswith(("jwplayer.com", "jwplatform.com")) and not is_video_url(url):
+        match = re.search(r"/(?:v2/media|players|previews|manifests)/([a-zA-Z0-9]{8})", url)
+        if match:
+            data = read_json(f"https://cdn.jwplayer.com/v2/media/{match.group(1)}")
+            sources = [s for item in data.get("playlist") or [] for s in item.get("sources") or [] if s.get("file")]
+            hls = [s for s in sources if "mpegurl" in (s.get("type") or "").lower() or ".m3u8" in s["file"]]
+            files = [s for s in sources if (s.get("type") or "").startswith("video/") and s.get("height")]
+            if files:
+                return smallest_enough(files)["file"]
+            if hls:
+                return hls[0]["file"]
+            raise FetchError("JW Player nie udostępnia tego filmu.", 415)
+    if "wistia" in host:
+        match = re.search(r"/(?:iframe|medias)/([a-z0-9]{10})", url)
+        if match:
+            media = read_json(f"https://fast.wistia.com/embed/medias/{match.group(1)}.json").get("media") or {}
+            assets = [a for a in media.get("assets") or [] if a.get("url") and a.get("container") == "mp4"]
+            if assets:
+                return smallest_enough(assets)["url"]
+            raise FetchError("Wistia nie udostępnia tego filmu.", 415)
+    return None
+
+
+def prepare_source(src, referer, part, report, depth=0, seen=None):
+    """Pobiera źródło filmu na dysk. Zwraca ([(plik, przesunięcie_początku_s)], długość_całości_s albo None).
+    Gdy pod adresem jest strona (np. odtwarzacz osadzony w ramce), szuka w niej filmu – najwyżej 2 poziomy w głąb."""
+    seen = seen if seen is not None else set()
+    seen.add(src)
+    if PLAYER_SKIP.search(src):
+        raise FetchError("Filmów z tego serwisu (np. YouTube, Dailymotion, Facebook) nie da się tu obejrzeć. Otwórz [Oryginał].", 415)
+    if not is_video_url(src) and depth < 4:
+        stream = player_stream(src, referer)
+        if stream:
+            return prepare_source(stream, src, part, report, depth + 1, seen)
     headers = {"Accept": "*/*"}
     if referer:
         headers["Referer"] = referer
@@ -1238,12 +1354,22 @@ def prepare_source(src, referer, part, report, depth=0):
     content_type = resp.headers.get("Content-Type", "").split(";")[0].strip().lower()
     if "mpegurl" in content_type or urlparse(final_url).path.lower().endswith(".m3u8"):
         return prepare_hls(final_url, read_body(resp, limit=2_000_000).decode("utf-8", "replace"), headers, part, report)
-    if "html" in content_type:  # adres strony z filmem – szukamy w niej pliku
+    if "html" in content_type:  # strona z filmem albo strona odtwarzacza – szukamy w niej dalej
         html = decode_html(read_body(resp), resp)
-        videos = find_videos(BeautifulSoup(CONTROL_CHARS.sub("", html), "lxml"), final_url) if depth == 0 else []
-        if not videos:
-            raise FetchError("Na tej stronie nie znalazłem pliku filmu (może to YouTube albo film chroniony).", 415)
-        return prepare_source(videos[0], final_url, part, report, depth + 1)
+        report(got=0)  # znak życia – szukanie po odtwarzaczach może chwilę potrwać
+        error = FetchError("Nie znalazłem filmu na tej stronie (odtwarzacz może go chronić albo to YouTube). "
+                           "Otwórz [Oryginał].", 415)
+        if depth >= 3:
+            raise error
+        found = find_videos(BeautifulSoup(CONTROL_CHARS.sub("", html), "lxml"), final_url, deep=True)
+        for candidate in [c for c in found if c not in seen][: 6 if depth == 0 else 3]:
+            try:
+                return prepare_source(candidate, final_url, part, report, depth + 1, seen)
+            except FetchError as err:
+                log.info("film: %s nie zadziałał (%s)", candidate, err.message)
+                if "Nie znalazłem" in error.message and "Nie znalazłem" not in err.message:
+                    error = err  # pierwszy konkretny błąd (np. za duży, zaszyfrowany) mówi więcej niż ogólny
+        raise error
     expected = int(resp.headers.get("Content-Length") or 0)
     if expected > VIDEO_SOURCE_MAX_BYTES:
         resp.close()
