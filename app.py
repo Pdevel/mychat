@@ -117,6 +117,7 @@ FROGFIND = "http://frogfind.com/"  # serwis działa tylko po http
 FROGFIND_UA = "LekkaSzukajka/1.0 (+https://github.com/Pdevel/mychat)"  # przedstawiamy się uczciwie
 BRAVE_API = "https://api.search.brave.com/res/v1/web/search"
 BRAVE_API_KEY = os.environ.get("BRAVE_API_KEY", "").strip()  # opcjonalny (darmowy plan); bez niego tylko DuckDuckGo
+PROBE_WAIT = float(os.environ.get("PROBE_WAIT", "2.0"))  # tyle s najwyżej czekamy przy szukaniu na sprawdzenie, czy strony z wyników nie blokują serwera
 PREFETCH_RESULTS = int(os.environ.get("PREFETCH_RESULTS", "2"))  # tyle pierwszych wyników wczytujemy z wyprzedzeniem
 DDG_BACKOFF = 600  # po nieudanej próbie DuckDuckGo przez tyle sekund pytamy od razu źródło zapasowe (bez czekania)
 ddg_down_until = 0.0
@@ -3512,7 +3513,8 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 {% if error %}<div class="e">{{ error }}</div>
 {% endif %}{% for r in results %}<div class="r"><a class="t" href="{{ url_for('read', url=r.url, q=q, rp=page) }}">{{ r.title }}</a><br>
 <span class="h">{{ r.host }}</span>{% if r.works %} <span class="ok">&#9654; filmy działają</span>{% endif %}{% if r.snippet %}<br><span class="s">{{ r.snippet }}</span>{% endif %} <a class="o" href="{{ r.url }}">[Oryginał]</a></div>
-{% endfor %}{% if hidden %}<p class="m">Ukryto {{ hidden }} {{ "stronę" if hidden == 1 else ("strony" if hidden % 10 in (2, 3, 4) and hidden % 100 not in (12, 13, 14) else "stron") }}, na których filmy nie działają. <a href="{{ url_for('search', q=q, p=page, all=1) }}">Pokaż</a></p>
+{% endfor %}{% if blocked_hidden %}<p class="m">Ukryto {{ blocked_hidden }} {{ "stronę, która blokuje" if blocked_hidden == 1 else ("strony, które blokują" if blocked_hidden % 10 in (2, 3, 4) and blocked_hidden % 100 not in (12, 13, 14) else "stron, które blokują") }} Szukajkę (ochrona przed botami). <a href="{{ url_for('search', q=q, p=page, all=1) }}">Pokaż</a></p>
+{% endif %}{% if hidden %}<p class="m">Ukryto {{ hidden }} {{ "stronę" if hidden == 1 else ("strony" if hidden % 10 in (2, 3, 4) and hidden % 100 not in (12, 13, 14) else "stron") }}, na których filmy nie działają. <a href="{{ url_for('search', q=q, p=page, all=1) }}">Pokaż</a></p>
 {% endif %}{% if not results and not error %}<p>Brak wyników.</p>
 {% endif %}{% if has_more %}<a class="b" href="{{ url_for('search', q=q, p=page + 1, all=1 if show_all else None) }}" accesskey="3">Następna strona &raquo;</a>
 {% endif %}{% if page > 1 %}<a class="b" href="{{ url_for('search', q=q, p=page - 1, all=1 if show_all else None) }}" accesskey="1">&laquo; Poprzednia strona</a>
@@ -3774,6 +3776,87 @@ def icon(name):
     return Response(_icons[name], mimetype="image/png", headers={"Cache-Control": "public, max-age=604800"})
 
 
+# ---------- Strony blokujące serwer Szukajki (ochrona przed botami) – nie pokazujemy ich w wynikach ----------
+BLOCKED_COOKIE = "blok"
+BLOCKED_DAYS = 7  # blokady bywają chwilowe (np. limit zapytań) – po tygodniu sprawdzamy stronę znowu
+BLOCKED_MAX = 60
+blocked_memory = DiskCache("blokady", ttl=3 * 24 * 3600, max_files=3000)  # host -> True (blokuje) / False (wpuszcza)
+_probing, _probing_lock = set(), threading.Lock()
+
+
+def site_host(url):
+    host = (urlparse(url).hostname or "").lower()
+    return host[4:] if host.startswith("www.") else host
+
+
+def read_blocked_cookie():
+    """{host: dzień zapisu} z ciasteczka (bez wpisów starszych niż BLOCKED_DAYS)."""
+    today = int(time.time() // 86400)
+    out = {}
+    for entry in (request.cookies.get(BLOCKED_COOKIE) or "").split("|"):
+        host, _, day = entry.rpartition("~")
+        if host and day.isdigit() and today - int(day) < BLOCKED_DAYS and re.fullmatch(r"[a-z0-9.-]{1,100}", host):
+            out[host] = int(day)
+    return out
+
+
+def encode_blocked_cookie(hosts):
+    items = sorted(hosts.items(), key=lambda kv: -kv[1])[:BLOCKED_MAX]
+    return "|".join(f"{h}~{d}" for h, d in items)
+
+
+def probe_blocked(url):
+    """Szybkie sprawdzenie strony z wyników: czy wpuszcza serwer Szukajki. Wynik trafia do pamięci (wg hosta)."""
+    host = site_host(url)
+    try:
+        _, resp = http_request(url)
+        try:
+            blocked = is_blocked(resp) if resp.status_code >= 400 else bool(
+                CHALLENGE_TITLE.search(next(resp.iter_content(8192), b"").decode("latin-1")))
+        finally:
+            resp.close()
+    except FetchError:
+        return  # strona nie odpowiada – to nie blokada, nie zapamiętujemy
+    except Exception:
+        log.exception("sprawdzanie blokady: %s", url)
+        return
+    finally:
+        with _probing_lock:
+            _probing.discard(host)
+    blocked_memory.set(host, blocked)
+
+
+def blocked_state(host, cookie):
+    if host in cookie:
+        return True
+    return blocked_memory.get(host)
+
+
+def check_blocked(items, cookie):
+    """Uzupełnia r["blocked"] (True/False/None); nieznane strony sprawdza równolegle, czekając najwyżej PROBE_WAIT s."""
+    unknown = {}
+    for r in items:
+        r["blocked"] = blocked_state(site_host(r["url"]), cookie)
+        if r["blocked"] is None and not is_video_url(r["url"]):
+            unknown.setdefault(site_host(r["url"]), r["url"])
+    if unknown and PROBE_WAIT > 0:
+        threads = []
+        for host, url in unknown.items():
+            with _probing_lock:
+                if host in _probing:
+                    continue
+                _probing.add(host)
+            thread = threading.Thread(target=probe_blocked, args=(url,), daemon=True)
+            thread.start()
+            threads.append(thread)
+        deadline = time.monotonic() + PROBE_WAIT
+        for thread in threads:  # wolne strony sprawdzają się dalej w tle – przydadzą się przy następnym szukaniu
+            thread.join(max(0.0, deadline - time.monotonic()))
+        for r in items:
+            if r["blocked"] is None:
+                r["blocked"] = blocked_memory.get(site_host(r["url"]))
+
+
 @app.route("/search")
 def search():
     query = squash(request.args.get("q", ""))[:200]
@@ -3790,6 +3873,11 @@ def search():
     sites = dict(reversed(read_video_sites()))
     items = [dict(r, host=host_of(r["url"]), works=site_videos_work(urlparse(r["url"]).hostname, sites)) for r in results]
     show_all = bool(request.args.get("all"))
+    cookie = read_blocked_cookie()
+    check_blocked(items, cookie)
+    blocked_hidden = 0 if show_all else sum(1 for r in items if r["blocked"])
+    if not show_all:
+        items = [r for r in items if not r["blocked"]]
     hidden = 0
     if VIDEO_QUERY.search(query) and not show_all:  # szukanie filmów: bez stron, na których filmy nie działają
         hidden = sum(1 for r in items if r["works"] is False)
@@ -3798,9 +3886,19 @@ def search():
         prefetch_articles([r["url"] for r in items[:PREFETCH_RESULTS] if not is_video_url(r["url"])])
     body = render_template(
         "search.html", q=query, page=page, offset=(page - 1) * RESULTS_PER_PAGE,
-        results=items, has_more=has_more, error=error, hidden=hidden, show_all=show_all,
+        results=items, has_more=has_more, error=error, hidden=hidden, blocked_hidden=blocked_hidden, show_all=show_all,
     )
-    return body, (502 if error else 200)
+    resp = make_response(body, 502 if error else 200)
+    today = int(time.time() // 86400)
+    known = {site_host(r["url"]): blocked_memory.get(site_host(r["url"])) for r in results}
+    updated = dict(cookie)
+    updated.update({h: today for h, b in known.items() if b and h not in cookie})
+    for h, b in known.items():
+        if b is False:
+            updated.pop(h, None)  # strona znowu wpuszcza serwer
+    if updated != cookie:
+        resp.set_cookie(BLOCKED_COOKIE, encode_blocked_cookie(updated), max_age=BLOCKED_DAYS * 86400, samesite="Lax")
+    return resp
 
 
 @app.route("/read")
@@ -3822,8 +3920,15 @@ def read():
     except VideoLink as found:
         return redirect(url_for("video", u=found.url, q=query or None, rp=results_page, a=1 if found.audio else None))
     except FetchError as err:
-        return render_template("error.html", message=err.message, original=url, retry=request.full_path, blocked=err.blocked,
-                               **common), err.status
+        resp = make_response(render_template("error.html", message=err.message, original=url, retry=request.full_path,
+                                             blocked=err.blocked, **common), err.status)
+        if err.blocked:  # następnym razem wyszukiwarka nie pokaże tej strony
+            host, cookie = site_host(url), read_blocked_cookie()
+            blocked_memory.set(host, True)
+            if host not in cookie:
+                cookie[host] = int(time.time() // 86400)
+                resp.set_cookie(BLOCKED_COOKIE, encode_blocked_cookie(cookie), max_age=BLOCKED_DAYS * 86400, samesite="Lax")
+        return resp
     pages = article["pages"]
     phrase = squash(request.args.get("s", ""))[:100]
     if phrase:  # szukanie na tej stronie
@@ -3871,6 +3976,11 @@ def read():
         bookmarked=is_bookmarked(article["url"]), **common,
     ))
     resp.headers["Server-Timing"] = server_timing(article, time.monotonic() - started)
+    cookie = read_blocked_cookie()
+    if site_host(url) in cookie or blocked_memory.get(site_host(url)):  # strona znowu wpuszcza serwer
+        blocked_memory.set(site_host(url), False)
+        cookie.pop(site_host(url), None)
+        resp.set_cookie(BLOCKED_COOKIE, encode_blocked_cookie(cookie), max_age=BLOCKED_DAYS * 86400, samesite="Lax")
     if verdict is not None:
         site = player_host(article["url"])
         sites = read_video_sites()
