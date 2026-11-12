@@ -32,6 +32,17 @@ Listy, które strona wyświetla dopiero JavaScriptem, czytnik bierze z danych wb
 z Next.js, inne `<script type="application/json">`, JSON-LD `ItemList`): obiekty z tytułem, adresem i obrazkiem.
 Menu i stopki z tych danych (krótkie tytuły bez obrazków) są pomijane.
 
+## Zgodność ze sprzętem (Nokia 3210 4G / 235 4G: UNISOC T107, 64 MB RAM, 128 MB pamięci, ekran 240×320)
+
+| | Szukajka | Uwagi |
+|---|---|---|
+| strona (HTML) | 3–7 KB, po kompresji 1–3 KB | bez JavaScriptu i plików CSS |
+| obrazki na stronie | 4–12 KB razem, najwyżej ok. 0,2 MB w pamięci | 220 px, zwykły JPEG |
+| powiększenie zdjęcia | do 480×2000 px, ≤ 3,8 MB w pamięci | tylko po wybraniu zdjęcia |
+| film MP4 | H.264 Baseline 1.3, do 320×240, 15 kl./s, AAC mono 22 kHz | ok. 1,1 MB na minutę |
+| film 3GP | H.263 176×144, AMR 8 kHz | ok. 1 MB na minutę |
+| część filmu | 3, 6, 12, potem 15 min – ok. 3,5 / 7 / 14 / 17 MB | dłuższe filmy lepiej zapisywać na kartę microSD |
+
 ## Obrazki dla Nokii 235 4G / 3210 4G
 
 Serwer pobiera obrazek, zmniejsza go do 220 px szerokości (ekran ma 240 px), zapisuje jako zwykły JPEG
@@ -44,8 +55,8 @@ Serwer pobiera obrazek, zmniejsza go do 220 px szerokości (ekran ma 240 px), za
 - galerie z powiększeniem (miniatura w linku do pełnego pliku .jpg/.png/.webp) pokazują pełne obrazy zmniejszone
   dla telefonu; obrazki galerii pominięte przez czytnik trafiają do sekcji „Galeria” (do 60 na stronę),
 - gdy artykuł nie ma obrazka w treści, na początku pojawia się zdjęcie główne z `og:image`,
-- każde zdjęcie w artykule jest linkiem: OK otwiera w nowej karcie powiększenie do 720 px (JPEG jakości 72, wysokie
-  obrazki np. komiksów do 3000 px); z Wikipedii serwer bierze wtedy większą wersję zdjęcia (`IMAGE_HQ_WIDTH`, `IMAGE_HQ_QUALITY`),
+- każde zdjęcie w artykule jest linkiem: OK otwiera w nowej karcie powiększenie do 480 px (2× ekran, JPEG jakości 65, wysokie
+  obrazki np. komiksów do 2000 px – najwyżej ok. 1 mln pikseli, bezpieczne dla 64 MB RAM); z Wikipedii serwer bierze wtedy większą wersję zdjęcia (`IMAGE_HQ_WIDTH`, `IMAGE_HQ_QUALITY`),
 - na dole artykułu link „Obrazki: wyłącz / włącz” (zapamiętany w ciasteczku).
 
 Strojenie zmiennymi środowiskowymi: `IMAGE_MAX_WIDTH` (220), `IMAGE_MAX_HEIGHT` (400), `IMAGE_QUALITY` (45),

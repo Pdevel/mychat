@@ -1,5 +1,5 @@
 """Ultralekka wyszukiwarka i czytnik stron dla Opera Mini na telefonach z klawiaturą
-(Nokia 235 4G / Nokia 3210 4G: ekran 2,8", brak dotyku, 64 MB RAM).
+(Nokia 235 4G / Nokia 3210 4G: ekran 2,4–2,8" 240×320, UNISOC T107, 64 MB RAM, 128 MB pamięci, bez dotyku).
 
 Strony to czysty HTML: bez CSS, bez JavaScriptu, z jak najmniejszą liczbą linków przed treścią,
 żeby wygodnie przechodzić po nich samymi strzałkami.
@@ -68,9 +68,11 @@ IMAGE_MAX_HEIGHT = int(os.environ.get("IMAGE_MAX_HEIGHT", "400"))  # wysokie gra
 IMAGE_QUALITY = int(os.environ.get("IMAGE_QUALITY", "45"))  # JPEG: mały plik, wciąż czytelny na tym ekranie
 IMAGE_MAX_BYTES = 4_000_000  # większych plików nie pobieramy
 # Powiększenie (zdjęcie wybrane w czytniku, otwierane w nowej karcie): większe i ostrzejsze, ale nadal lekkie.
-IMAGE_HQ_WIDTH = int(os.environ.get("IMAGE_HQ_WIDTH", "720"))
-IMAGE_HQ_HEIGHT = 3000  # wysokie obrazki (np. strony komiksu) zostają czytelne
-IMAGE_HQ_QUALITY = int(os.environ.get("IMAGE_HQ_QUALITY", "72"))
+# Nokia 3210 4G / 235 4G ma 64 MB RAM: powiększenie to najwyżej ok. 1 mln pikseli (≤ 3,8 MB po rozpakowaniu),
+# 2× szerokość ekranu 240 px – wyraźnie ostrzejsze, a wciąż bezpieczne dla pamięci telefonu.
+IMAGE_HQ_WIDTH = int(os.environ.get("IMAGE_HQ_WIDTH", "480"))
+IMAGE_HQ_HEIGHT = 2000  # wysokie obrazki (np. strony komiksu) zostają czytelne
+IMAGE_HQ_QUALITY = int(os.environ.get("IMAGE_HQ_QUALITY", "65"))
 IMAGE_HQ_MAX_BYTES = 10_000_000
 IMAGE_MIN_SIZE = 48  # mniejsze to ikonki, flagi i piksele śledzące – na ekranie 240 px to tylko szum
 IMAGES_PER_ARTICLE = 12  # więcej obrazków to zbyt dużo danych i pracy dla telefonu i darmowego serwera
