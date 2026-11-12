@@ -348,8 +348,13 @@ def frogfind_search(query, page):
         log.warning("FrogFind zwrócił status %s", status)
         raise FetchError("Zapasowa wyszukiwarka (FrogFind) nie odpowiada. Spróbuj za chwilę.", 502)
     results = dedupe(parse_frogfind(html))
-    if not results and "Search Results for" not in html:
-        raise FetchError("Nie udało się odczytać wyników wyszukiwania. Spróbuj ponownie.", 502)
+    if not results:
+        # Pusta lista od FrogFind to prawie zawsze awaria po jego stronie (DuckDuckGo blokuje także jego serwer)
+        # albo zmiana wyglądu strony – nie udajemy, że naprawdę nic nie znaleziono.
+        log.warning("FrogFind: 0 wyników (%d B, linków read.php: %d): %s", len(html), html.count("read.php?a="),
+                    squash(BeautifulSoup(html, "lxml").get_text(" "))[:300])
+        raise FetchError("Zapasowa wyszukiwarka (FrogFind) nie zwróciła wyników – pewnie chwilowo nie działa. "
+                         "Spróbuj za kilka minut.", 502)
     return results[:RESULTS_PER_PAGE], False
 
 
@@ -744,6 +749,17 @@ def diag():
                 sock.close()
             tcp_ms = int((time.monotonic() - started) * 1000)
             lines.append(f"{host}:{port} {name} {addrs[0]}: DNS {dns_ms} ms, TCP {result} {tcp_ms} ms")
+    started = time.monotonic()
+    try:  # FrogFind: czy odpowiada i czy na jego stronie są wyniki (stałe hasło testowe)
+        resp = requests.get(FROGFIND, params={"q": "wikipedia"}, timeout=(5, 15), headers={"User-Agent": FROGFIND_UA})
+        body = resp.content.decode("utf-8", errors="replace")
+        text = squash(BeautifulSoup(body, "lxml").get_text(" "))
+        lines.append(f"frogfind 'wikipedia': HTTP {resp.status_code}, {len(body)} B, linków read.php: "
+                     f"{body.count('read.php?a=')}, wyników odczytanych: {len(parse_frogfind(body))}, "
+                     f"{int((time.monotonic() - started) * 1000)} ms")
+        lines.append(f"frogfind tekst: {text[:300]}")
+    except requests.exceptions.RequestException as err:
+        lines.append(f"frogfind: BŁĄD {type(err).__name__} {int((time.monotonic() - started) * 1000)} ms")
     started = time.monotonic()
     try:
         resp = requests.get("https://example.com/", timeout=(5, 5), headers={"User-Agent": USER_AGENT})
