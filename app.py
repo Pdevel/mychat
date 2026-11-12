@@ -12,6 +12,7 @@ Strony to czysty HTML: bez CSS, bez JavaScriptu, z jak najmniejszą liczbą link
 
 import ipaddress
 import json
+import logging
 import os
 import re
 import socket
@@ -35,8 +36,8 @@ USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 )
-TIMEOUT = (5, 10)  # (połączenie, odczyt) w sekundach
-DOWNLOAD_DEADLINE = 15  # łączny czas pobierania jednej strony
+TIMEOUT = (6, 15)  # (połączenie, odczyt) w sekundach – razem z pobieraniem mieści się w limicie Gunicorna (40 s)
+DOWNLOAD_DEADLINE = 15  # łączny czas pobierania treści jednej strony
 MAX_PAGE_BYTES = 1_500_000  # więcej nie pobieramy (oszczędza pamięć serwera)
 MAX_REDIRECTS = 5
 MAX_URL_LENGTH = 2000
@@ -51,6 +52,11 @@ DDG_HTML = "https://html.duckduckgo.com/html/"
 DDG_REGION = "pl-pl"
 BRAVE_API = "https://api.search.brave.com/res/v1/web/search"
 BRAVE_API_KEY = os.environ.get("BRAVE_API_KEY", "").strip()  # opcjonalny (darmowy plan); bez niego tylko DuckDuckGo
+
+
+# Błędy pobierania trafiają do logów (na Render: zakładka Logs), żeby było widać, która strona i dlaczego zawiodła.
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+log = logging.getLogger("szukajka")
 
 
 class FetchError(Exception):
@@ -130,13 +136,20 @@ def http_request(url, method="GET", data=None, params=None, extra_headers=None):
                 method, current, data=data, params=params, headers=headers, timeout=TIMEOUT, stream=True,
                 allow_redirects=False,
             )
-        except requests.exceptions.Timeout:
-            raise FetchError("Strona nie odpowiedziała na czas. Spróbuj ponownie.", 504)
-        except requests.exceptions.SSLError:
+        except requests.exceptions.ConnectTimeout:
+            log.warning("timeout połączenia: %s", current)
+            raise FetchError("Nie udało się połączyć ze stroną na czas (serwer strony milczy). Spróbuj ponownie.", 504)
+        except requests.exceptions.ReadTimeout:
+            log.warning("timeout odpowiedzi: %s", current)
+            raise FetchError("Strona za długo nie odpowiada. Spróbuj ponownie albo otwórz [Oryginał].", 504)
+        except requests.exceptions.SSLError as err:
+            log.warning("błąd SSL: %s (%s)", current, err)
             raise FetchError("Błąd połączenia szyfrowanego (SSL) z tą stroną.", 502)
-        except requests.exceptions.ConnectionError:
+        except requests.exceptions.ConnectionError as err:
+            log.warning("błąd połączenia: %s (%s)", current, err)
             raise FetchError("Nie udało się połączyć ze stroną.", 502)
-        except requests.exceptions.RequestException:
+        except requests.exceptions.RequestException as err:
+            log.warning("błąd pobierania: %s (%s)", current, err)
             raise FetchError("Nie udało się pobrać strony.", 502)
         location = resp.headers.get("Location")
         if resp.status_code in (301, 302, 303, 307, 308) and location:
@@ -367,6 +380,7 @@ def ddg_search(query, page):
             last_error = err
             continue
         if status != 200 or looks_blocked(html):
+            log.warning("DuckDuckGo odrzucił zapytanie (%s, status %s)", endpoint, status)
             last_error = FetchError(
                 "Wyszukiwarka chwilowo nie przyjmuje zapytań z tego serwera. Spróbuj za kilka minut.", 503
             )
@@ -493,6 +507,7 @@ def get_article(url):
     final_url, resp = http_request(url)
     if resp.status_code >= 400:
         resp.close()
+        log.warning("strona zwróciła %s: %s", resp.status_code, final_url)
         raise FetchError(f"Strona zwróciła błąd {resp.status_code}.", 502)
     content_type = resp.headers.get("Content-Type", "").split(";")[0].strip().lower()
     if content_type and not (content_type.startswith("text/") or "html" in content_type or "xml" in content_type):
@@ -574,7 +589,7 @@ TEMPLATES = {
 {% block title %}Błąd{% endblock %}
 {% block body %}{% include "_nav.html" %}
 <p>{{ message }}</p>
-{% if original %}<p><a href="{{ original }}">[Oryginał]</a></p>{% endif %}
+{% if original %}<p><a href="{{ retry }}">Spróbuj ponownie</a><br><a href="{{ original }}">[Oryginał]</a></p>{% endif %}
 {% endblock %}
 """,
 }
@@ -623,7 +638,7 @@ def read():
     try:
         article = get_article(url)
     except FetchError as err:
-        return render_template("error.html", message=err.message, original=url, **common), err.status
+        return render_template("error.html", message=err.message, original=url, retry=request.full_path, **common), err.status
     pages = article["pages"]
     page = min(page, len(pages))
     return render_template(
