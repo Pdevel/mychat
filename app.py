@@ -315,29 +315,41 @@ def parse_ddg_html(html):
     return results
 
 
-def parse_frogfind(html):
-    """Wyniki z frogfind.com: <a href=…><b>tytuł</b>…</a>, za nim opis aż do <hr>.
+def frogfind_target(href):
+    """Adres docelowy z linku FrogFind: /read?a=ADRES&k=…, /read.php?a=ADRES, //duckduckgo.com/l/?uddg=ADRES
+    albo bezpośredni adres. Zwraca None dla linków wewnętrznych (np. logo „/”) i reklam."""
+    href = (href or "").strip()
+    parts = urlparse(href)
+    if parts.path.rstrip("/").endswith(("/read", "read.php")):
+        href = (parse_qs(parts.query).get("a") or [""])[0]
+    return clean_result_url(href)
 
-    Link bywa w trzech postaciach: /read.php?a=ADRES (czytnik FrogFind), //duckduckgo.com/l/?uddg=ADRES
-    albo po prostu bezpośredni adres – FrogFind przepisuje tylko stary format linków DuckDuckGo.
-    """
+
+def parse_frogfind(html):
+    """Wyniki z frogfind.com. Jeden wynik to zwykle dwa linki z tym samym adresem (tytuł i wyświetlany adres),
+    a za ostatnim z nich opis aż do <hr>. Tytuł bierzemy z pierwszego linku, który nie jest samym adresem."""
     soup = BeautifulSoup(html, "lxml")
-    results = []
+    found = OrderedDict()
     for link in soup.find_all("a", href=True):
-        href = link["href"].strip()
-        if "read.php?a=" in href:
-            href = (parse_qs(urlparse(href).query).get("a") or [""])[0]
-        url = clean_result_url(href)  # odrzuca też linki wewnętrzne FrogFind (np. logo „/”) i reklamy DuckDuckGo
-        if not url or link.find(["b", "font"]) is None:
+        url = frogfind_target(link["href"])
+        if not url:
             continue
+        item = found.setdefault(url, {"title": "", "url": url, "snippet": ""})
         bold = link.find("b")
-        title = node_text(bold) or node_text(link) or url
+        text = node_text(bold) if bold is not None else node_text(link)
+        if text and not item["title"] and not re.match(r"^(https?://|www\.)", text, re.I):
+            item["title"] = text
         parts = []
         for sibling in link.next_siblings:
             if getattr(sibling, "name", None) in ("hr", "a"):
                 break
             parts.append(sibling.get_text() if hasattr(sibling, "get_text") else str(sibling))
-        results.append({"title": title, "url": url, "snippet": shorten(squash("".join(parts)), SNIPPET_CHARS)})
+        snippet = squash("".join(parts))
+        if len(snippet) > len(item["snippet"]):
+            item["snippet"] = shorten(snippet, SNIPPET_CHARS)
+    results = list(found.values())
+    for item in results:
+        item["title"] = item["title"] or item["url"]
     return results
 
 
@@ -355,7 +367,7 @@ def frogfind_search(query, page):
     if not results:
         # Pusta lista od FrogFind to prawie zawsze awaria po jego stronie (DuckDuckGo blokuje także jego serwer)
         # albo zmiana wyglądu strony – nie udajemy, że naprawdę nic nie znaleziono.
-        log.warning("FrogFind: 0 wyników (%d B, linków read.php: %d): %s", len(html), html.count("read.php?a="),
+        log.warning("FrogFind: 0 wyników (%d B, linków read: %d): %s", len(html), html.count("read?a="),
                     squash(BeautifulSoup(html, "lxml").get_text(" "))[:300])
         raise FetchError("Zapasowa wyszukiwarka (FrogFind) nie zwróciła wyników – pewnie chwilowo nie działa. "
                          "Spróbuj za kilka minut.", 502)
@@ -758,8 +770,8 @@ def diag():
         resp = requests.get(FROGFIND, params={"q": "wikipedia"}, timeout=(5, 15), headers={"User-Agent": FROGFIND_UA})
         body = resp.content.decode("utf-8", errors="replace")
         text = squash(BeautifulSoup(body, "lxml").get_text(" "))
-        lines.append(f"frogfind 'wikipedia': HTTP {resp.status_code}, {len(body)} B, linków read.php: "
-                     f"{body.count('read.php?a=')}, wyników odczytanych: {len(parse_frogfind(body))}, "
+        lines.append(f"frogfind 'wikipedia': HTTP {resp.status_code}, {len(body)} B, linków read: "
+                     f"{body.count('read?a=') + body.count('read.php?a=')}, wyników odczytanych: {len(parse_frogfind(body))}, "
                      f"{int((time.monotonic() - started) * 1000)} ms")
         hrefs = [a["href"][:80] for a in BeautifulSoup(body, "lxml").find_all("a", href=True)][:4]
         lines.append(f"frogfind linki: {hrefs}")
