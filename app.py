@@ -501,25 +501,50 @@ JUNK_HINT = re.compile(
 )
 
 
-def collect_blocks(root):
-    """Zbiera z drzewa nagłówki i akapity w kolejności występowania, bez powtarzania zagnieżdżonych."""
-    blocks = []
+def primary_link(node, base_url):
+    """Adres, jeśli cały blok jest linkiem (np. tytuł artykułu na stronie głównej): blok leży w <a> albo jeden
+    link zajmuje większość jego tekstu. Pojedyncze słowa-linki w akapicie pomijamy – mniej skakania strzałkami."""
+    wrapper = node.find_parent("a", href=True)
+    if wrapper is not None:
+        candidates = [wrapper]
+    else:
+        total = len(node_text(node))
+        candidates = [a for a in node.find_all("a", href=True) if total and len(node_text(a)) >= 0.6 * total]
+    for link in candidates:
+        href = urljoin(base_url, link["href"].strip())
+        if urlparse(href).scheme not in ("http", "https"):
+            continue  # javascript:, mailto:, tel: …
+        if href.split("#")[0] == base_url.split("#")[0]:
+            continue  # kotwica na tej samej stronie
+        return href
+    return None
+
+
+def collect_blocks(root, base_url):
+    """Zbiera z drzewa nagłówki i akapity w kolejności występowania, bez powtarzania zagnieżdżonych.
+    Blok to (rodzaj, tekst, adres_linku_lub_None); ten sam adres linkujemy tylko raz."""
+    blocks, linked = [], set()
     for node in root.find_all(BLOCK_TAGS):
         if any(parent.name in CONTAINER_TAGS for parent in node.parents):
             continue  # np. <p> wewnątrz <li> – tekst trafi już z rodzica
         text = node_text(node)
         if not text:
             continue
+        href = primary_link(node, base_url)
+        if href in linked:
+            href = None
+        elif href:
+            linked.add(href)
         if node.name in ("h1", "h2", "h3", "h4", "h5", "h6"):
-            blocks.append(("h", text))
+            blocks.append(("h", text, href))
         elif node.name == "li":
-            blocks.append(("p", "• " + text))
+            blocks.append(("p", "• " + text, href))
         else:
-            blocks.append(("p", text))
+            blocks.append(("p", text, href))
     return blocks
 
 
-def fallback_blocks(soup):
+def fallback_blocks(soup, base_url):
     """Gdy readability zawiedzie: usuń śmieci (skrypty, menu, reklamy…) i weź tekst z <article>/<main>/<body>."""
     for tag in soup(JUNK_TAGS):
         tag.decompose()
@@ -530,14 +555,18 @@ def fallback_blocks(soup):
         if hint.strip() and JUNK_HINT.search(hint) and tag.name not in ("body", "html", "article", "main"):
             tag.decompose()
     root = soup.find("article") or soup.find("main") or soup.body or soup
-    blocks = collect_blocks(root)
+    blocks = collect_blocks(root, base_url)
     if not blocks:  # strona bez akapitów – bierzemy linie tekstu
-        blocks = [("p", line) for line in (squash(x) for x in root.get_text("\n").split("\n")) if len(line) > 1]
+        blocks = [("p", line, None) for line in (squash(x) for x in root.get_text("\n").split("\n")) if len(line) > 1]
     return blocks
 
 
+CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")  # przez nie readability (lxml) odmawia pracy
+
+
 def extract_article(html, url):
-    """Zwraca (tytuł, bloki), gdzie blok to ("h" | "p", tekst)."""
+    """Zwraca (tytuł, bloki), gdzie blok to ("h" | "p", tekst, adres_linku_lub_None)."""
+    html = CONTROL_CHARS.sub("", html)
     soup = BeautifulSoup(html, "lxml")
     title = node_text(soup.title) or host_of(url)
     blocks = []
@@ -545,12 +574,17 @@ def extract_article(html, url):
         try:
             doc = Document(html, url=url)
             title = squash(doc.short_title()) or title
-            blocks = collect_blocks(BeautifulSoup(doc.summary(html_partial=True), "lxml"))
-        except Exception:
+            blocks = collect_blocks(BeautifulSoup(doc.summary(html_partial=True), "lxml"), url)
+        except Exception as err:
+            log.info("readability nie poradził sobie z %s: %s", url, str(err)[:120])
             blocks = []
-    if sum(len(text) for _, text in blocks) < 300:
-        fallback = fallback_blocks(soup)
-        if sum(len(t) for _, t in fallback) > sum(len(t) for _, t in blocks):
+    # Gdy readability znalazła mało tekstu, to zwykle strona z listą artykułów (np. główna serwisu): readability wycina
+    # bloki gęste od linków, czyli właśnie tytuły. Wtedy bierzemy całą treść strony (bez menu i stopki) z tytułami-linkami.
+    # Artykuły i Wikipedia mają w readability tysiące znaków – zostają przy niej (bez list „czytaj też”).
+    readability_chars = sum(len(b[1]) for b in blocks)
+    if readability_chars < 1500:
+        fallback = fallback_blocks(soup, url)
+        if sum(len(b[1]) for b in fallback) > readability_chars:
             blocks = fallback
     if blocks and blocks[0][0] == "h" and blocks[0][1] == title:
         blocks = blocks[1:]  # tytuł pokazujemy osobno
@@ -577,13 +611,13 @@ def split_long(text, limit):
 def paginate(blocks, budget):
     """Rozkłada bloki na strony po ~budget znaków; nagłówek nie zostaje sam na końcu strony."""
     pages, size = [[]], 0
-    for kind, text in blocks:
-        for piece in split_long(text, budget):
+    for kind, text, href in blocks:
+        for number, piece in enumerate(split_long(text, budget)):
             if size and size + len(piece) > budget:
                 carry = [pages[-1].pop()] if pages[-1] and pages[-1][-1][0] == "h" else []
                 pages.append(carry)
-                size = sum(len(t) for _, t in carry)
-            pages[-1].append((kind, piece))
+                size = sum(len(b[1]) for b in carry)
+            pages[-1].append((kind, piece, href if number == 0 else None))
             size += len(piece)
     return [page for page in pages if page]
 
@@ -604,7 +638,7 @@ def get_article(url):
     text = decode_html(read_body(resp), resp)
     if content_type == "text/plain":
         title = host_of(final_url)
-        blocks = [("p", squash(part)) for part in re.split(r"\n\s*\n", text) if squash(part)]
+        blocks = [("p", squash(part), None) for part in re.split(r"\n\s*\n", text) if squash(part)]
     else:
         title, blocks = extract_article(text, final_url)
     if not blocks:
@@ -617,7 +651,7 @@ def get_article(url):
             break
         kept.append(block)
     if truncated:
-        kept.append(("p", "[Artykuł skrócony – całość w oryginale.]"))
+        kept.append(("p", "[Artykuł skrócony – całość w oryginale.]", None))
     article = {"title": title, "url": final_url, "pages": paginate(kept, ARTICLE_PAGE_CHARS)}
     article_cache.set(url, article)
     return article
@@ -666,8 +700,8 @@ TEMPLATES = {
 {% block body %}{% include "_nav.html" %}
 <h2>{{ title }}</h2>
 {% if pages > 1 %}<p>Strona {{ page }} z {{ pages }}</p>
-{% endif %}{% for kind, text in blocks %}{% if kind == "h" %}<h3>{{ text }}</h3>
-{% else %}<p>{{ text }}</p>
+{% endif %}{% for kind, text, href in blocks %}{% if href %}{% set link %}<a href="{{ url_for('read', url=href, q=q, rp=rp) }}">{{ text }}</a>{% endset %}{% else %}{% set link = text %}{% endif %}{% if kind == "h" %}<h3>{{ link }}</h3>
+{% else %}<p>{{ link }}</p>
 {% endif %}{% endfor %}<p>{% if page < pages %}<a href="{{ url_for('read', url=url, q=q, rp=rp, page=page + 1) }}">Dalej &raquo;</a> ({{ page }}/{{ pages }})<br>{% endif %}
 {% if page > 1 %}<a href="{{ url_for('read', url=url, q=q, rp=rp, page=page - 1) }}">&laquo; Wstecz</a>{% endif %}</p>
 {% include "_nav.html" %}<p><a href="{{ original }}">[Oryginał]</a></p>
