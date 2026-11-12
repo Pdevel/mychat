@@ -61,7 +61,7 @@ IMAGE_MIN_SIZE = 48  # mniejsze to ikonki, flagi i piksele śledzące – na ekr
 IMAGES_PER_ARTICLE = 12  # więcej obrazków to zbyt dużo danych i pracy dla telefonu i darmowego serwera
 IMAGE_WEIGHT = 600  # obrazek zajmuje na stronie czytnika tyle „znaków” z limitu ARTICLE_PAGE_CHARS
 # Miniatury na stronach z listą artykułów (np. główna serwisu): mniejsze i lżejsze niż zdjęcia w artykule.
-THUMB_MAX_SIZE = int(os.environ.get("THUMB_MAX_SIZE", "120"))  # najdłuższy bok miniatury w px
+THUMB_MAX_SIZE = int(os.environ.get("THUMB_MAX_SIZE", "80"))  # najdłuższy bok miniatury w px (stoi obok tytułu)
 THUMBS_PER_LISTING = 30
 THUMB_WEIGHT = 300  # ok. 10 miniatur na jedną stronę czytnika
 Image.MAX_IMAGE_PIXELS = 25_000_000  # ochrona przed „bombami” (ogromne wymiary w małym pliku)
@@ -781,7 +781,31 @@ def images_enabled():
     return request.cookies.get("obrazki") != "0"
 
 
-# ---------- Szablony (czysty HTML: bez CSS i JavaScriptu) ----------
+# ---------- Szablony ----------
+# Prosty HTML z małym, wbudowanym blokiem stylów (ok. 1 KB, bez plików CSS, flexboxa, grida i JavaScriptu): tylko
+# kolory, odstępy, ramki i opływanie miniatury tekstem – to Opera Mini na telefonach z klawiaturą obsługuje dobrze.
+STYLE = (
+    "body{margin:0;font-family:sans-serif;font-size:14px;line-height:1.35;color:#222;background:#fff}"
+    "a{color:#0b57d0}"
+    ".bar{background:#0b57d0;color:#fff;padding:5px 6px;font-size:12px}.bar a{color:#fff}"
+    ".w{padding:4px 6px}"
+    "h1{font-size:17px;line-height:1.25;margin:6px 0 2px}"
+    "h2{font-size:15px;line-height:1.25;margin:12px 0 4px}"
+    "p{margin:0 0 8px}"
+    ".m{color:#777;font-size:12px;margin:0 0 8px}"
+    ".it{border-bottom:1px solid #e3e3e3;padding:6px 0;overflow:hidden}"
+    ".it img{float:left;width:80px;margin:0 6px 0 0}"
+    ".it a{font-weight:bold;text-decoration:none}.it a.n{display:block;margin-left:86px}"
+    ".ph{margin:4px 0 10px}.ph img{max-width:100%}"
+    ".r{border-bottom:1px solid #e3e3e3;padding:6px 0}"
+    ".r a.t{font-weight:bold;text-decoration:none}"
+    ".h{color:#1e7d32;font-size:12px}.s{color:#444}.o{font-size:12px}"
+    ".b{display:block;background:#eef3fd;border:1px solid #c6d5f5;padding:7px;margin:8px 0;"
+    "text-align:center;font-weight:bold;text-decoration:none}"
+    ".f{border-top:1px solid #e3e3e3;padding:6px;font-size:12px;color:#777}"
+    ".q{width:140px}.e{background:#fff4e5;border:1px solid #f0c890;padding:6px;margin:6px 0}"
+)
+
 TEMPLATES = {
     "base.html": """<!DOCTYPE html>
 <html lang="pl">
@@ -789,6 +813,7 @@ TEMPLATES = {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width">
 <title>{% block title %}Szukaj{% endblock %}</title>
+<style>{{ style }}</style>
 </head>
 <body>
 {% block body %}{% endblock %}
@@ -796,53 +821,80 @@ TEMPLATES = {
 </html>
 """,
     "_form.html": """<form action="{{ url_for('search') }}" method="get">
-<input type="text" name="q" value="{{ q or '' }}" size="16" maxlength="200">
+<input class="q" type="text" name="q" value="{{ q or '' }}" maxlength="200">
 <input type="submit" value="Szukaj">
 </form>
 """,
-    "_nav.html": """<p>{% if q %}<a href="{{ url_for('search', q=q, p=rp) }}">Wróć do wyników</a> | {% endif %}<a href="{{ url_for('home') }}">Nowe szukanie</a></p>
+    "_nav.html": """<div class="bar">{% if q %}<a href="{{ url_for('search', q=q, p=rp) }}">&laquo; Wróć do wyników</a> | {% endif %}<a href="{{ url_for('home') }}">Nowe szukanie</a></div>
 """,
     "home.html": """{% extends "base.html" %}
-{% block body %}{% include "_form.html" %}
-<p>Szukaj w sieci i czytaj strony w lekkiej wersji tekstowej.</p>
+{% block body %}<div class="bar"><b>Szukajka</b></div>
+<div class="w">
+{% include "_form.html" %}
+<p class="m">Szukaj w sieci i czytaj strony w lekkiej wersji, wygodnej na telefonie z klawiaturą.</p>
+</div>
 {% endblock %}
 """,
     "search.html": """{% extends "base.html" %}
 {% block title %}{{ q }} - szukaj{% endblock %}
-{% block body %}<b>{{ q }}</b>{% if page > 1 %} (str. {{ page }}){% endif %}
-{% if error %}<p>{{ error }}</p>{% endif %}
-{% for r in results %}<p>{{ offset + loop.index }}. <a href="{{ url_for('read', url=r.url, q=q, rp=page) }}">{{ r.title }}</a><br>
-{% if r.snippet %}{{ r.snippet }}<br>{% endif %}<small>{{ r.host }}</small> <a href="{{ r.url }}">[Oryginał]</a></p>
+{% block body %}<div class="bar"><b>Szukajka</b> &middot; wyniki{% if page > 1 %}, str. {{ page }}{% endif %}</div>
+<div class="w">
+<h1>{{ q }}</h1>
+{% if error %}<div class="e">{{ error }}</div>
+{% endif %}{% for r in results %}<div class="r"><a class="t" href="{{ url_for('read', url=r.url, q=q, rp=page) }}">{{ r.title }}</a><br>
+<span class="h">{{ r.host }}</span>{% if r.snippet %}<br><span class="s">{{ r.snippet }}</span>{% endif %} <a class="o" href="{{ r.url }}">[Oryginał]</a></div>
 {% endfor %}{% if not results and not error %}<p>Brak wyników.</p>
-{% endif %}<p>{% if has_more %}<a href="{{ url_for('search', q=q, p=page + 1) }}">Następna strona &raquo;</a><br>{% endif %}
-{% if page > 1 %}<a href="{{ url_for('search', q=q, p=page - 1) }}">&laquo; Poprzednia strona</a>{% endif %}</p>
-{% include "_form.html" %}
+{% endif %}{% if has_more %}<a class="b" href="{{ url_for('search', q=q, p=page + 1) }}">Następna strona &raquo;</a>
+{% endif %}{% if page > 1 %}<a class="b" href="{{ url_for('search', q=q, p=page - 1) }}">&laquo; Poprzednia strona</a>
+{% endif %}{% include "_form.html" %}</div>
 {% endblock %}
 """,
     "read.html": """{% extends "base.html" %}
 {% block title %}{{ title }}{% endblock %}
-{% block body %}{% include "_nav.html" %}
-<h2>{{ title }}</h2>
-{% if pages > 1 %}<p>Strona {{ page }} z {{ pages }}</p>
-{% endif %}{% for kind, text, href in blocks %}{% if kind in ("img", "thumb") %}{% if images %}<p><img src="{{ url_for('image', u=href, r=site, t=1 if kind == 'thumb' else None) }}" alt="{{ text or 'obrazek' }}"></p>
-{% endif %}{% elif href %}{% set link %}<a href="{{ url_for('read', url=href, q=q, rp=rp) }}">{{ text }}</a>{% endset %}{% else %}{% set link = text %}{% endif %}{% if kind == "h" %}<h3>{{ link }}</h3>
-{% else %}<p>{{ link }}</p>
-{% endif %}{% endfor %}<p>{% if page < pages %}<a href="{{ url_for('read', url=url, q=q, rp=rp, page=page + 1) }}">Dalej &raquo;</a> ({{ page }}/{{ pages }})<br>{% endif %}
-{% if page > 1 %}<a href="{{ url_for('read', url=url, q=q, rp=rp, page=page - 1) }}">&laquo; Wstecz</a>{% endif %}</p>
-{% include "_nav.html" %}<p><a href="{{ original }}">[Oryginał]</a>{% if has_images %}<br><a href="{{ url_for('toggle_images', wl=0 if images else 1, next=request.full_path) }}">Obrazki: {{ "wyłącz" if images else "włącz" }}</a>{% endif %}</p>
+{% block body %}{% include "_nav.html" %}<div class="w">
+<h1>{{ title }}</h1>
+<p class="m">{{ host }}{% if pages > 1 %} &middot; strona {{ page }} z {{ pages }}{% endif %}</p>
+{% for it in items %}{% if it.kind == "item" %}<div class="it">{% if it.img and images %}<img src="{{ url_for('image', u=it.img, r=site, t=1) }}" alt="">{% endif %}<a{% if it.img and images %} class="n"{% endif %} href="{{ url_for('read', url=it.href, q=q, rp=rp) }}">{{ it.text }}</a></div>
+{% elif it.kind == "img" %}{% if images %}<div class="ph"><img src="{{ url_for('image', u=it.href, r=site) }}" alt="{{ it.text or 'obrazek' }}"></div>
+{% endif %}{% elif it.kind == "h" %}<h2>{{ it.text }}</h2>
+{% else %}<p>{{ it.text }}</p>
+{% endif %}{% endfor %}{% if page < pages %}<a class="b" href="{{ url_for('read', url=url, q=q, rp=rp, page=page + 1) }}">Dalej &raquo; ({{ page }}/{{ pages }})</a>
+{% endif %}{% if page > 1 %}<a class="b" href="{{ url_for('read', url=url, q=q, rp=rp, page=page - 1) }}">&laquo; Wstecz</a>
+{% endif %}</div>
+{% include "_nav.html" %}<div class="f"><a href="{{ original }}">[Oryginał]</a>{% if has_images %} &middot; <a href="{{ url_for('toggle_images', wl=0 if images else 1, next=request.full_path) }}">Obrazki: {{ "wyłącz" if images else "włącz" }}</a>{% endif %}</div>
 {% endblock %}
 """,
     "error.html": """{% extends "base.html" %}
 {% block title %}Błąd{% endblock %}
-{% block body %}{% include "_nav.html" %}
-<p>{{ message }}</p>
-{% if original %}<p><a href="{{ retry }}">Spróbuj ponownie</a><br><a href="{{ original }}">[Oryginał]</a></p>{% endif %}
+{% block body %}{% include "_nav.html" %}<div class="w">
+<div class="e">{{ message }}</div>
+{% if original %}<a class="b" href="{{ retry }}">Spróbuj ponownie</a>
+<p><a href="{{ original }}">[Oryginał]</a></p>
+{% endif %}</div>
 {% endblock %}
 """,
 }
 
+
+def page_items(blocks):
+    """Bloki jednej strony czytnika -> elementy do wyświetlenia. Miniatura stojąca tuż przed tytułem-linkiem
+    trafia obok niego (jeden wiersz listy), a każdy blok-link staje się wierszem listy."""
+    items, thumb = [], None
+    for kind, text, href in blocks:
+        if kind == "thumb":
+            thumb = href  # czeka na swój tytuł; bez tytułu zostaje pominięta
+            continue
+        if href and kind in ("h", "p"):
+            items.append({"kind": "item", "text": text[2:] if text.startswith("• ") else text, "href": href, "img": thumb})
+        else:
+            items.append({"kind": kind, "text": text, "href": href})
+        thumb = None
+    return items
+
+
 app = Flask(__name__)
 app.jinja_loader = DictLoader(TEMPLATES)
+app.jinja_env.globals["style"] = STYLE
 
 
 @app.route("/")
@@ -890,8 +942,8 @@ def read():
     page = min(page, len(pages))
     parts = urlparse(article["url"])
     return render_template(
-        "read.html", title=article["title"], url=url, original=article["url"],
-        blocks=pages[page - 1], page=page, pages=len(pages), images=images_enabled(),
+        "read.html", title=article["title"], url=url, original=article["url"], host=host_of(article["url"]),
+        items=page_items(pages[page - 1]), page=page, pages=len(pages), images=images_enabled(),
         has_images=any(b[0] in ("img", "thumb") for p in pages for b in p), site=f"{parts.scheme}://{parts.netloc}", **common,
     )
 

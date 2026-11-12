@@ -1,7 +1,8 @@
 # Lekka szukajka
 
 Wyszukiwarka i czytnik stron dla Opera Mini na telefonach z klawiaturą (Nokia 235 4G, Nokia 3210 4G).
-Czysty HTML bez CSS i JavaScriptu, nawigacja samymi strzałkami.
+Prosty HTML bez JavaScriptu i bez plików CSS (tylko mały wbudowany `<style>`, ok. 1 KB, bez flex/grid),
+nawigacja samymi strzałkami.
 
 - `/` – formularz wyszukiwania
 - `/search?q=…` – wyniki z DuckDuckGo Lite (region polski), 10 na stronę, z linkiem [Oryginał]
@@ -15,13 +16,13 @@ Serwer pobiera obrazek, zmniejsza go do 220 px szerokości (ekran ma 240 px), za
 
 - najwyżej 12 obrazków na artykuł i ok. 5 na jedną stronę czytnika,
 - pomijane: ikonki i flagi (poniżej 48 px), piksele śledzące, SVG,
-- strony z listą artykułów (np. główna serwisu) mają małe miniatury do 120 px (ok. 2 KB), najwyżej 30 na stronę
+- strony z listą artykułów (np. główna serwisu) mają małe miniatury do 80 px (ok. 2 KB) obok tytułów, najwyżej 30 na stronę
   serwisu i ok. 10 na jedną stronę czytnika,
 - gdy artykuł nie ma obrazka w treści, na początku pojawia się zdjęcie główne z `og:image`,
 - na dole artykułu link „Obrazki: wyłącz / włącz” (zapamiętany w ciasteczku).
 
 Strojenie zmiennymi środowiskowymi: `IMAGE_MAX_WIDTH` (220), `IMAGE_MAX_HEIGHT` (400), `IMAGE_QUALITY` (45),
-`THUMB_MAX_SIZE` (120).
+`THUMB_MAX_SIZE` (80).
 
 ## Wdrożenie na Render.com
 
