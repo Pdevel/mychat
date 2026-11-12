@@ -39,7 +39,7 @@ import urllib3.util.connection as urllib3_connection
 from bs4 import BeautifulSoup, SoupStrainer
 from bs4.element import CData, NavigableString, Tag
 from markupsafe import Markup, escape
-from flask import Flask, Response, abort, redirect, render_template, request, send_file, url_for
+from flask import Flask, Response, abort, make_response, redirect, render_template, request, send_file, url_for
 from jinja2 import DictLoader
 from PIL import Image, ImageDraw, ImageOps
 
@@ -2969,6 +2969,52 @@ def note_player(src, ok):
     player_memory.set("h:" + player_host(src), (fails + (not ok), oks + bool(ok)))
 
 
+# Strony z filmami: czy film z danej strony udało się obejrzeć. Zapisane w telefonie (ciasteczko – przetrwa restart
+# darmowego serwera) i na serwerze. Wyszukiwanie filmów ukrywa strony, na których filmy nie działają.
+VIDEO_SITES_COOKIE = "filmy"
+VIDEO_SITES_MAX = 80
+VIDEO_SITES_BYTES = 1500
+VIDEO_QUERY = re.compile(
+    r"\b(?:hentai|film\w*|video\w*|wideo\w*|odcin\w*|episode\w*|serial\w*|anime|porn\w*|xxx|sex\w*|seks\w*|"
+    r"obejrz\w*|ogl[aą]d\w*|watch|stream\w*|bajk\w*|kresk[oó]wk\w*|teledys\w*|klip\w*)\b", re.I)
+
+
+def read_video_sites():
+    """[(host, działa)] z ciasteczka, najnowsze pierwsze."""
+    raw = request.cookies.get(VIDEO_SITES_COOKIE) or ""
+    try:
+        data = json.loads(zlib.decompress(base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4))).decode("utf-8"))
+    except (ValueError, zlib.error, TypeError):
+        return []
+    if not isinstance(data, list):
+        return []
+    return [(h, bool(ok)) for h, ok in data if isinstance(h, str) and len(h) < 100][:VIDEO_SITES_MAX]
+
+
+def encode_video_sites(items):
+    items = items[:VIDEO_SITES_MAX]
+    while True:
+        raw = base64.urlsafe_b64encode(zlib.compress(json.dumps([[h, int(ok)] for h, ok in items]).encode(), 9)).decode().rstrip("=")
+        if len(raw) <= VIDEO_SITES_BYTES or not items:
+            return raw
+        items = items[:-1]
+
+
+def site_videos_work(host, sites):
+    """True – filmy z tej strony działały, False – nie działały (i żaden się nie udał), None – nie wiadomo.
+    Sprawdza też domenę nadrzędną (pl.serwis.com -> serwis.com)."""
+    host = (host or "").lower()
+    host = host[4:] if host.startswith("www.") else host
+    while host.count(".") >= 1:
+        if host in sites:
+            return sites[host]
+        known = player_memory.get("s:" + host)
+        if known is not None:
+            return known
+        host = host.split(".", 1)[1]
+    return None
+
+
 def dead_player(url):
     if player_memory.get("u:" + player_key(url)):
         return True
@@ -3036,9 +3082,10 @@ def video_job(key, src, referer, fmt, part, auto=False):
                 os.remove(path)  # zacznie się od nowa, gdy ktoś poprosi o tę część
     except FetchError as err:
         log.warning("film nieudany: %s – %s", src, err.message)
-        if err.status == 415 and part == 0:  # nie ma tu filmu, który dałoby się wziąć – kafelek jest martwy
+        dead = err.status == 415  # nie ma tu filmu, który dałoby się wziąć – kafelek jest martwy
+        if dead and part == 0:
             note_player(src, False)
-        status.update(state="error", message=err.message, blocked=err.blocked)
+        status.update(state="error", message=err.message, blocked=err.blocked, dead=dead)
         write_status(key, status)
     except Exception:
         log.exception("film nieudany: %s", src)
@@ -3342,6 +3389,7 @@ DARK_STYLE = (
     ".dk .m{color:#9aa0a6}.dk .r{border-color:#3c4043}.dk .h{color:#9aa0a6}.dk .s{color:#bdc1c6}.dk h2{color:#e8eaed}"
     ".dk .b{background:#303134;border-color:#5f6368;color:#8ab4f8}.dk .e{background:#3b2a1a;border-color:#8a6d3b;color:#f6d7a7}"
     ".dk .u,.dk .q{background:#303134;color:#e8eaed;border-color:#5f6368}"
+    ".ok{color:#81c995;font-size:12px;white-space:nowrap}"
     ".dk input[type=submit]{background:#8ab4f8;color:#202124}"
 )
 
@@ -3463,10 +3511,11 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 <div class="w">
 {% if error %}<div class="e">{{ error }}</div>
 {% endif %}{% for r in results %}<div class="r"><a class="t" href="{{ url_for('read', url=r.url, q=q, rp=page) }}">{{ r.title }}</a><br>
-<span class="h">{{ r.host }}</span>{% if r.snippet %}<br><span class="s">{{ r.snippet }}</span>{% endif %} <a class="o" href="{{ r.url }}">[Oryginał]</a></div>
-{% endfor %}{% if not results and not error %}<p>Brak wyników.</p>
-{% endif %}{% if has_more %}<a class="b" href="{{ url_for('search', q=q, p=page + 1) }}" accesskey="3">Następna strona &raquo;</a>
-{% endif %}{% if page > 1 %}<a class="b" href="{{ url_for('search', q=q, p=page - 1) }}" accesskey="1">&laquo; Poprzednia strona</a>
+<span class="h">{{ r.host }}</span>{% if r.works %} <span class="ok">&#9654; filmy działają</span>{% endif %}{% if r.snippet %}<br><span class="s">{{ r.snippet }}</span>{% endif %} <a class="o" href="{{ r.url }}">[Oryginał]</a></div>
+{% endfor %}{% if hidden %}<p class="m">Ukryto {{ hidden }} {{ "stronę" if hidden == 1 else ("strony" if hidden % 10 in (2, 3, 4) and hidden % 100 not in (12, 13, 14) else "stron") }}, na których filmy nie działają. <a href="{{ url_for('search', q=q, p=page, all=1) }}">Pokaż</a></p>
+{% endif %}{% if not results and not error %}<p>Brak wyników.</p>
+{% endif %}{% if has_more %}<a class="b" href="{{ url_for('search', q=q, p=page + 1, all=1 if show_all else None) }}" accesskey="3">Następna strona &raquo;</a>
+{% endif %}{% if page > 1 %}<a class="b" href="{{ url_for('search', q=q, p=page - 1, all=1 if show_all else None) }}" accesskey="1">&laquo; Poprzednia strona</a>
 {% endif %}<p class="m"><a href="{{ url_for('home') }}" accesskey="0">Nowe szukanie</a> &middot; skróty: 3 dalej, 1 wstecz, 0 nowe szukanie</p></div>
 {% endblock %}
 """,
@@ -3738,12 +3787,18 @@ def search():
         results, has_more = ddg_search(query, page)
     except FetchError as err:
         error = err.message
-    items = [dict(r, host=host_of(r["url"])) for r in results]
-    if results and PREFETCH_RESULTS:
-        prefetch_articles([r["url"] for r in results[:PREFETCH_RESULTS] if not is_video_url(r["url"])])
+    sites = dict(reversed(read_video_sites()))
+    items = [dict(r, host=host_of(r["url"]), works=site_videos_work(urlparse(r["url"]).hostname, sites)) for r in results]
+    show_all = bool(request.args.get("all"))
+    hidden = 0
+    if VIDEO_QUERY.search(query) and not show_all:  # szukanie filmów: bez stron, na których filmy nie działają
+        hidden = sum(1 for r in items if r["works"] is False)
+        items = [r for r in items if r["works"] is not False]
+    if items and PREFETCH_RESULTS:
+        prefetch_articles([r["url"] for r in items[:PREFETCH_RESULTS] if not is_video_url(r["url"])])
     body = render_template(
         "search.html", q=query, page=page, offset=(page - 1) * RESULTS_PER_PAGE,
-        results=items, has_more=has_more, error=error,
+        results=items, has_more=has_more, error=error, hidden=hidden, show_all=show_all,
     )
     return body, (502 if error else 200)
 
@@ -3792,13 +3847,19 @@ def read():
         film = video_progress(videos[chosen - 1]["url"], article["url"], fmt,
                               clamp_int(request.args.get("wc"), 1, 1, VIDEO_MAX_PARTS), retry=bool(request.args.get("znowu")))
         film["index"] = chosen
+    verdict = None
+    if film:
+        if film["mode"] == "done":
+            verdict = True
+        elif film["mode"] == "error" and (film["status"] or {}).get("dead"):
+            verdict = False
     shown = 0
     for number, video in enumerate(videos, 1):
         video["hide"] = number != chosen and dead_player(video["url"])  # wybrany zostaje – pokazuje swój komunikat
         if not video["hide"]:
             shown += 1
             video["n"] = shown
-    return render_template(
+    resp = make_response(render_template(
         "read.html", title=article["title"], url=url, original=article["url"], host=host_of(article["url"]),
         items=page_items(pages[page - 1]), page=page, pages=len(pages), images=images_enabled(),
         has_images=any(b[0] in ("img", "gi", "thumb") or (b[0] == "ib" and '"img"' in b[1]) for p in pages for b in p),
@@ -3808,7 +3869,16 @@ def read():
         links=links_enabled(), has_links=any(b[0] in ("pl", "ib") for p in pages for b in p),
         crumbs=article.get("crumbs") or [], site_name=article.get("site_name"), bookmark_url=article["url"],
         bookmarked=is_bookmarked(article["url"]), **common,
-    ), 200, {"Server-Timing": server_timing(article, time.monotonic() - started)}
+    ))
+    resp.headers["Server-Timing"] = server_timing(article, time.monotonic() - started)
+    if verdict is not None:
+        site = player_host(article["url"])
+        sites = read_video_sites()
+        if not any(h == site and ok == verdict for h, ok in sites[:1]) and (verdict or (site, True) not in sites):
+            player_memory.set("s:" + site, verdict)  # strona, na której film kiedyś działał, nie staje się „martwa”
+            resp.set_cookie(VIDEO_SITES_COOKIE, encode_video_sites([(site, verdict)] + [i for i in sites if i[0] != site]),
+                            max_age=365 * 24 * 3600, samesite="Lax")
+    return resp
 
 
 @app.route("/film")
