@@ -655,6 +655,46 @@ def read():
     )
 
 
+DIAG_TARGETS = ["example.com", "lite.duckduckgo.com", "1.1.1.1"]  # stała lista – strona nie przyjmuje adresów z zewnątrz
+
+
+@app.route("/diag")
+def diag():
+    """Diagnostyka sieci serwera (DNS i połączenia TCP przez IPv4 i IPv6) – zwykły tekst, do szukania przyczyny timeoutów."""
+    lines = [f"FORCE_IPV4={FORCE_IPV4}"]
+    proxy_vars = sorted(k for k in os.environ if k.lower() in ("http_proxy", "https_proxy", "all_proxy", "no_proxy"))
+    lines.append("zmienne proxy: " + (", ".join(proxy_vars) if proxy_vars else "brak"))
+    for host in DIAG_TARGETS:
+        for family, name in ((socket.AF_INET, "IPv4"), (socket.AF_INET6, "IPv6")):
+            started = time.monotonic()
+            try:
+                addrs = sorted({i[4][0] for i in socket.getaddrinfo(host, 443, family, socket.SOCK_STREAM)})
+            except socket.gaierror as err:
+                lines.append(f"{host} {name}: DNS brak adresu ({err.strerror})")
+                continue
+            dns_ms = int((time.monotonic() - started) * 1000)
+            sock = socket.socket(family, socket.SOCK_STREAM)
+            sock.settimeout(3)
+            started = time.monotonic()
+            try:
+                sock.connect((addrs[0], 443))
+                result = "OK"
+            except OSError as err:
+                result = f"BŁĄD {type(err).__name__}"
+            finally:
+                sock.close()
+            tcp_ms = int((time.monotonic() - started) * 1000)
+            lines.append(f"{host} {name} {addrs[0]}: DNS {dns_ms} ms, TCP {result} {tcp_ms} ms")
+    started = time.monotonic()
+    try:
+        resp = requests.get("https://example.com/", timeout=(5, 5), headers={"User-Agent": USER_AGENT})
+        result = f"HTTP {resp.status_code}"
+    except requests.exceptions.RequestException as err:
+        result = f"BŁĄD {type(err).__name__}"
+    lines.append(f"requests example.com: {result} {int((time.monotonic() - started) * 1000)} ms")
+    return Response("\n".join(lines) + "\n", mimetype="text/plain")
+
+
 @app.route("/healthz")
 def healthz():
     return "ok"
