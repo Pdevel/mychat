@@ -1170,7 +1170,7 @@ def extract_article(html, url, videos=None, posters=None):
     gallery = gallery_images(soup, url)  # przed czyszczeniem – readability wycina galerie
     embedded = json_listing(soup, url)
     if videos is not None:
-        videos.extend(find_videos(soup, url, posters=posters))  # przed czyszczeniem – readability usuwa znaczniki <video>
+        videos.extend(find_videos(soup, url, posters=posters, raw=html))  # przed czyszczeniem – readability usuwa <video>
         lead = lead_image(soup, url)
         if posters is not None and lead:
             posters[""] = lead[0]  # zdjęcie strony – zapasowa miniatura filmu
@@ -1764,7 +1764,11 @@ def first_image_url(value):
     return value if isinstance(value, str) else None
 
 
-def find_videos(soup, base_url, deep=False, posters=None):
+VIDEO_IN_HTML = re.compile(r"\.(?:mp4|m4v|webm|m3u8|mov|3gp|mkv|avi|flv|mpe?g)\b|<video|og:video|twitter:player|VideoObject|"
+                           r"player\.vimeo|jwplayer|jwplatform|wistia|kaltura|<iframe", re.I)
+
+
+def find_videos(soup, base_url, deep=False, posters=None, raw=None):
     """Filmy na stronie, w kolejności: pliki i strumienie podane wprost (<video>, og:video, JSON-LD, atrybuty data-…,
     linki), adresy z konfiguracji odtwarzaczy w skryptach, a na końcu strony odtwarzaczy (iframe, og:video,
     twitter:player) – te otwieramy dopiero przy przygotowaniu filmu i szukamy w nich dalej.
@@ -1781,6 +1785,9 @@ def find_videos(soup, base_url, deep=False, posters=None):
         if posters is not None and meta_image:
             posters[base_url] = urljoin(base_url, meta_image)
         return [base_url]  # sama strona to odtwarzacz: film weźmiemy z jego API w najlepszej dla telefonu jakości
+    if raw is not None and not VIDEO_IN_HTML.search(raw):
+        return []  # w kodzie strony nie ma śladu filmu – pomijamy kosztowne przeglądanie (większość stron)
+    has_file = raw is None or re.search(r"\.(?:mp4|m4v|webm|m3u8|mov|3gp)\b", raw, re.I) is not None
     direct, players = [], []
 
     def add(value, target=None, need_ext=False, poster=None):
@@ -1838,7 +1845,8 @@ def find_videos(soup, base_url, deep=False, posters=None):
                     if isinstance(item.get("embedUrl"), str):
                         add(item["embedUrl"], poster=thumb)
                 stack.extend(v for v in item.values() if isinstance(v, (list, dict)))
-    for tag in soup.find_all(True):  # atrybuty typu data-video-src="…mp4", data-hls="…m3u8", <param value="…">
+    for tag in soup.find_all(True) if has_file or (raw is not None and "wistia_async" in raw) else []:
+        # atrybuty typu data-video-src="…mp4", data-hls="…m3u8", <param value="…">
         for name, value in tag.attrs.items():
             if (isinstance(value, str) and (name.startswith("data-") or name in ("value", "content")) and "/" in value
                     and VIDEO_HINT.search(value)):  # sama nazwa wariantu (np. „480p.vp9.webm”) to nie adres
@@ -1849,7 +1857,7 @@ def find_videos(soup, base_url, deep=False, posters=None):
         wistia = re.search(r"wistia_async_([a-z0-9]{10})", classes)
         if wistia:
             add(f"https://fast.wistia.net/embed/iframe/{wistia.group(1)}", players)
-    for link in soup.find_all("a", href=True):
+    for link in soup.find_all("a", href=True) if has_file else []:
         add(link["href"], direct, need_ext=True)
     frames = [f.get("src") or f.get("data-src") or f.get("data-lazy-src") for f in soup.find_all("iframe")]
     for value in filter(None, frames):
@@ -1868,9 +1876,9 @@ def find_videos(soup, base_url, deep=False, posters=None):
             del direct[before + 1:]  # w skryptach to zwykle ten sam film w kilku jakościach – w czytniku wystarczy jeden
         for match in SCRIPT_PLAYER.finditer(scripts):  # JW Player, Wistia, Vimeo wstawiane skryptem
             add(match.group(), players)
-        page = str(soup)
-        partner, entry = KALTURA_PARTNER.search(page), KALTURA_ENTRY.search(page)
-        if partner and entry and "kaltura" in page.lower():  # Kaltura (m.in. uczelniane serwisy wideo)
+        page = raw if raw is not None else str(soup)
+        partner, entry = (KALTURA_PARTNER.search(page), KALTURA_ENTRY.search(page)) if "kaltura" in page.lower() else (None, None)
+        if partner and entry:  # Kaltura (m.in. uczelniane serwisy wideo)
             pid, eid = partner.group(1), entry.group(1)
             add(f"https://cdnapisec.kaltura.com/p/{pid}/sp/{pid}00/playManifest/entryId/{eid}"
                 f"/format/applehttp/protocol/https/a.m3u8", direct)
@@ -2269,7 +2277,7 @@ def prepare_source(src, referer, part, report, depth=0, seen=None):
                            "Otwórz [Oryginał].", 415)
         if depth >= 3:
             raise error
-        found = find_videos(BeautifulSoup(CONTROL_CHARS.sub("", html), "lxml"), final_url, deep=True)
+        found = find_videos(BeautifulSoup(CONTROL_CHARS.sub("", html), "lxml"), final_url, deep=True, raw=html)
         for candidate in [c for c in found if c not in seen][: 6 if depth == 0 else 3]:
             try:
                 return prepare_source(candidate, final_url, part, report, depth + 1, seen)
@@ -2590,7 +2598,7 @@ def poster_sources(url, referer, depth=0):
     html = CONTROL_CHARS.sub("", decode_html(read_body(resp), resp))
     soup = BeautifulSoup(html, "lxml")
     posters = {}
-    found = find_videos(soup, final_url, deep=True, posters=posters)
+    found = find_videos(soup, final_url, deep=True, posters=posters, raw=html)
     # kolejność: miniatura od strony -> klatka z filmu -> zdjęcie strony i obrazki z konfiguracji odtwarzacza
     sources = [posters[f] for f in found if f in posters]
     if found and is_video_url(found[0]):
