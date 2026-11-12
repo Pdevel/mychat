@@ -87,6 +87,9 @@ IMAGE_WEIGHT = 600  # obrazek zajmuje na stronie czytnika tyle „znaków” z l
 THUMB_MAX_SIZE = int(os.environ.get("THUMB_MAX_SIZE", "80"))  # najdłuższy bok miniatury w px (stoi obok tytułu)
 THUMBS_PER_LISTING = 30
 THUMB_WEIGHT = 300  # ok. 10 miniatur na jedną stronę czytnika
+# Galeria (kilka obrazków z rzędu, np. strony komiksu, zdjęcia z relacji): po dwa obok siebie, jak w oryginale.
+GRID_IMAGE_SIZE = (160, 240)  # najdłuższe boki obrazka w siatce; kliknięcie otwiera pełny obrazek
+GRID_WEIGHT = 300  # ok. 10 obrazków galerii na jedną stronę czytnika
 Image.MAX_IMAGE_PIXELS = 25_000_000  # ochrona przed „bombami” (ogromne wymiary w małym pliku)
 
 # Filmy: serwer pobiera plik (albo strumień HLS .m3u8), przekodowuje go ffmpegiem do małego pliku, który odtwarzacz
@@ -1738,7 +1741,10 @@ def infobox_weight(text):
 def paginate(blocks, budget):
     """Rozkłada bloki na strony po ~budget znaków; nagłówek nie zostaje sam na końcu strony."""
     pages, size = [[]], 0
-    weights = {"img": IMAGE_WEIGHT, "thumb": THUMB_WEIGHT}
+    weights = {"img": IMAGE_WEIGHT, "thumb": THUMB_WEIGHT, "gi": GRID_WEIGHT}
+    is_img = [b[0] == "img" for b in blocks]
+    blocks = [("gi",) + tuple(b[1:]) if is_img[i] and ((i and is_img[i - 1]) or (i + 1 < len(blocks) and is_img[i + 1])) else b
+              for i, b in enumerate(blocks)]  # obrazki stojące po kilka z rzędu to galeria
     weight = lambda block: weights.get(block[0], infobox_weight(block[1]) if block[0] == "ib" else len(visible(block[1])))
     for kind, text, href in blocks:
         is_image = kind in weights
@@ -3279,6 +3285,8 @@ STYLE = (
     ".it img{float:left;width:76px;margin:0 8px 0 0;border-radius:6px}"
     ".it a,.r a.t,.v a,.f a{font-weight:bold}.it a.n{display:block;margin-left:84px}"
     ".ph{margin:6px 0 12px}.ph img{max-width:100%;border-radius:8px}"
+    ".gr{margin:6px 0 12px}.gr a{display:inline-block;width:49%;margin:0 0 6px;text-align:center;vertical-align:top}"
+    ".gr a:nth-child(even){margin-left:2%}.gr img{max-width:100%;border-radius:6px}"
     ".ib{border:1px solid #dadce0;background:#f8f9fa;padding:8px 10px;margin:6px 0 12px;font-size:13px;line-height:1.4;"
     "border-radius:10px}"
     ".bc{font-size:12px;margin:8px 0 0;color:#5f6368}.ibt{font-weight:bold;text-align:center;margin:2px 0 6px}"
@@ -3471,7 +3479,8 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 {% else %}{{ f.status.message }}<br>{% if f.status.blocked %}<a href="{{ original }}">Otwórz bezpośrednio w Operze</a>{% else %}<a href="{{ url_for('read', url=url, q=q, rp=rp, wf=i, wfmt=f.fmt, wc=f.part, znowu=1) }}#film{{ i }}">Spróbuj ponownie</a>{% if f.other %} &middot; <a href="{{ url_for('read', url=url, q=q, rp=rp, wf=i, wfmt=f.other, wc=f.part) }}#film{{ i }}">{{ formats[f.other].name }}</a>{% endif %}{% endif %}
 {% endif %}{% else %}<a href="{{ start }}"{% if i == 1 %} accesskey="5"{% endif %}>{% if v.audio %}Nagranie{% else %}Film{% endif %}{% if videos|length > 1 %} {{ i }}{% endif %}: {{ "posłuchaj" if v.audio else "obejrzyj" }} na telefonie</a>{% endif %}</div>
 {% endfor %}{% endif %}{% for it in items %}{% if it.kind == "item" %}<div class="it">{% if it.img and images %}<img src="{{ url_for('image', u=it.img, r=site, t=1) }}" alt="">{% endif %}<a{% if it.img and images %} class="n"{% endif %} href="{{ url_for('read', url=it.href, q=q, rp=rp) }}">{{ it.text }}</a></div>
-{% elif it.kind == "img" %}{% if images %}<div class="ph"><a href="{{ url_for('image', u=it.href, r=site, hq=1) }}" target="_blank"><img src="{{ url_for('image', u=it.href, r=site) }}" alt="{{ it.text or 'obrazek' }}"></a></div>
+{% elif it.kind == "grid" %}{% if images %}<div class="gr">{% for im in it.imgs %}<a href="{{ url_for('image', u=im.src, r=site, hq=1) }}" target="_blank"><img src="{{ url_for('image', u=im.src, r=site, t=2) }}" alt="{{ im.alt or 'obrazek' }}"></a>{% endfor %}</div>
+{% endif %}{% elif it.kind == "img" %}{% if images %}<div class="ph"><a href="{{ url_for('image', u=it.href, r=site, hq=1) }}" target="_blank"><img src="{{ url_for('image', u=it.href, r=site) }}" alt="{{ it.text or 'obrazek' }}"></a></div>
 {% endif %}{% elif it.kind == "h" %}<h2>{{ it.text }}</h2>
 {% elif it.kind == "pl" %}<p>{{ tl(it.text) }}</p>
 {% elif it.kind == "ib" %}<div class="ib">{% for r in infobox_rows(it.text) %}{% if r.img %}{% if images %}<div class="ibi">{% for im in r.img %}<span class="{{ 'ib2' if r.img|length > 1 else 'ib1' }}"><a href="{{ url_for('image', u=im.src, r=site, hq=1) }}" target="_blank"><img src="{{ url_for('image', u=im.src, r=site, t=1 if r.img|length > 1 else None) }}" alt=""></a>{% if im.cap %}<br>{{ tl(im.cap) }}{% endif %}</span>{% endfor %}</div>
@@ -3603,6 +3612,10 @@ def page_items(blocks):
             continue
         if href and kind in ("h", "p"):
             items.append({"kind": "item", "text": text[2:] if text.startswith("• ") else text, "href": href, "img": thumb})
+        elif kind == "gi":
+            if not items or items[-1]["kind"] != "grid":
+                items.append({"kind": "grid", "imgs": []})
+            items[-1]["imgs"].append({"src": href, "alt": text})
         else:
             items.append({"kind": kind, "text": text, "href": href})
         thumb = None
@@ -3770,7 +3783,7 @@ def read():
     return render_template(
         "read.html", title=article["title"], url=url, original=article["url"], host=host_of(article["url"]),
         items=page_items(pages[page - 1]), page=page, pages=len(pages), images=images_enabled(),
-        has_images=any(b[0] in ("img", "thumb") or (b[0] == "ib" and '"img"' in b[1]) for p in pages for b in p),
+        has_images=any(b[0] in ("img", "gi", "thumb") or (b[0] == "ib" and '"img"' in b[1]) for p in pages for b in p),
         site=f"{parts.scheme}://{parts.netloc}",
         videos=videos, film=film, formats=VIDEO_FORMATS, theme=theme_cache.get(parts.hostname or "") or article.get("theme"),
         tick=int(time.time()) % 100000,
@@ -3853,6 +3866,7 @@ def image():
     url = (request.args.get("u") or "").strip()
     referer = (request.args.get("r") or "").strip()
     thumb = request.args.get("t") == "1"  # miniatura ze strony z listą artykułów
+    grid = request.args.get("t") == "2"  # obrazek w galerii (dwa obok siebie)
     hq = request.args.get("hq") == "1"  # powiększenie otwierane z czytnika
     if not re.match(r"^https?://", url, re.I) or len(url) > MAX_URL_LENGTH:
         return Response("", status=400)
@@ -3863,7 +3877,7 @@ def image():
         mode = "ic" + icon_bg.lower()
     else:
         icon_bg = ""
-        mode = "hq" if hq else thumb
+        mode = "hq" if hq else ("g" if grid else thumb)
     data = image_cache.get((url, mode))
     if data is None:
         headers = {"Accept": "image/avif,image/webp,image/jpeg,image/png,image/*;q=0.8"}
@@ -3888,7 +3902,7 @@ def image():
             elif hq:
                 data = shrink_image(read_body(resp, limit=IMAGE_HQ_MAX_BYTES), IMAGE_HQ_WIDTH, IMAGE_HQ_HEIGHT, IMAGE_HQ_QUALITY)
             else:
-                size = (THUMB_MAX_SIZE, THUMB_MAX_SIZE) if thumb else (IMAGE_MAX_WIDTH, IMAGE_MAX_HEIGHT)
+                size = (THUMB_MAX_SIZE, THUMB_MAX_SIZE) if thumb else GRID_IMAGE_SIZE if grid else (IMAGE_MAX_WIDTH, IMAGE_MAX_HEIGHT)
                 data = shrink_image(read_body(resp, limit=IMAGE_MAX_BYTES), *size)
         except FetchError as err:
             return Response("", status=err.status)
