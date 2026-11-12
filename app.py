@@ -316,15 +316,19 @@ def parse_ddg_html(html):
 
 
 def parse_frogfind(html):
-    """Wyniki z frogfind.com: <a href="/read.php?a=ADRES&rut=…"><b>tytuł</b>…</a>, za nim opis aż do <hr>."""
+    """Wyniki z frogfind.com: <a href=…><b>tytuł</b>…</a>, za nim opis aż do <hr>.
+
+    Link bywa w trzech postaciach: /read.php?a=ADRES (czytnik FrogFind), //duckduckgo.com/l/?uddg=ADRES
+    albo po prostu bezpośredni adres – FrogFind przepisuje tylko stary format linków DuckDuckGo.
+    """
     soup = BeautifulSoup(html, "lxml")
     results = []
     for link in soup.find_all("a", href=True):
-        href = link["href"]
-        if "read.php?a=" not in href:
-            continue
-        url = clean_result_url((parse_qs(urlparse(href).query).get("a") or [None])[0])
-        if not url:
+        href = link["href"].strip()
+        if "read.php?a=" in href:
+            href = (parse_qs(urlparse(href).query).get("a") or [""])[0]
+        url = clean_result_url(href)  # odrzuca też linki wewnętrzne FrogFind (np. logo „/”) i reklamy DuckDuckGo
+        if not url or link.find(["b", "font"]) is None:
             continue
         bold = link.find("b")
         title = node_text(bold) or node_text(link) or url
@@ -757,6 +761,8 @@ def diag():
         lines.append(f"frogfind 'wikipedia': HTTP {resp.status_code}, {len(body)} B, linków read.php: "
                      f"{body.count('read.php?a=')}, wyników odczytanych: {len(parse_frogfind(body))}, "
                      f"{int((time.monotonic() - started) * 1000)} ms")
+        hrefs = [a["href"][:80] for a in BeautifulSoup(body, "lxml").find_all("a", href=True)][:4]
+        lines.append(f"frogfind linki: {hrefs}")
         lines.append(f"frogfind tekst: {text[:300]}")
     except requests.exceptions.RequestException as err:
         lines.append(f"frogfind: BŁĄD {type(err).__name__} {int((time.monotonic() - started) * 1000)} ms")
