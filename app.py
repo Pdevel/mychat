@@ -11,6 +11,7 @@ Strony to czysty HTML: bez CSS, bez JavaScriptu, z jak najmniejszą liczbą link
   /read    – czytnik: pobiera stronę, zostawia sam tekst (tytuł, nagłówki, akapity) i dzieli go na strony
 """
 
+import io
 import ipaddress
 import json
 import logging
@@ -27,6 +28,7 @@ import urllib3.util.connection as urllib3_connection
 from bs4 import BeautifulSoup
 from flask import Flask, Response, redirect, render_template, request, url_for
 from jinja2 import DictLoader
+from PIL import Image, ImageOps
 
 try:  # readability daje najlepszy wybór treści; bez niego działa prostsza metoda zapasowa
     from readability import Document
@@ -48,6 +50,17 @@ MAX_RESULT_PAGES = 30
 SNIPPET_CHARS = 220
 ARTICLE_PAGE_CHARS = int(os.environ.get("ARTICLE_PAGE_CHARS", "3000"))  # tyle tekstu na jedną stronę w telefonie
 ARTICLE_MAX_CHARS = 150_000  # dłuższe artykuły są przycinane
+
+# Obrazki dla Nokii 235 4G / 3210 4G (ekran 240×320, 64 MB RAM): serwer zmniejsza je do szerokości ekranu i zapisuje
+# jako lekki JPEG (zwykle kilka–kilkanaście KB), więc telefon nie pobiera ani nie dekoduje wielkich plików.
+IMAGE_MAX_WIDTH = int(os.environ.get("IMAGE_MAX_WIDTH", "220"))  # ekran 240 px minus marginesy Opera Mini
+IMAGE_MAX_HEIGHT = int(os.environ.get("IMAGE_MAX_HEIGHT", "400"))  # wysokie grafiki też się zmieszczą
+IMAGE_QUALITY = int(os.environ.get("IMAGE_QUALITY", "45"))  # JPEG: mały plik, wciąż czytelny na tym ekranie
+IMAGE_MAX_BYTES = 4_000_000  # większych plików nie pobieramy
+IMAGE_MIN_SIZE = 48  # mniejsze to ikonki, flagi i piksele śledzące – na ekranie 240 px to tylko szum
+IMAGES_PER_ARTICLE = 12  # więcej obrazków to zbyt dużo danych i pracy dla telefonu i darmowego serwera
+IMAGE_WEIGHT = 600  # obrazek zajmuje na stronie czytnika tyle „znaków” z limitu ARTICLE_PAGE_CHARS
+Image.MAX_IMAGE_PIXELS = 25_000_000  # ochrona przed „bombami” (ogromne wymiary w małym pliku)
 
 DDG_LITE = "https://lite.duckduckgo.com/lite/"
 DDG_HTML = "https://html.duckduckgo.com/html/"
@@ -110,6 +123,7 @@ class TTLCache:
 
 search_cache = TTLCache(maxsize=100, ttl=300)
 article_cache = TTLCache(maxsize=20, ttl=900)
+image_cache = TTLCache(maxsize=80, ttl=1800)  # gotowe, zmniejszone JPEG-i (ok. 10 KB każdy)
 
 
 # ---------- Pobieranie stron (z ochroną przed adresami wewnętrznymi) ----------
@@ -490,10 +504,11 @@ def ddg_search(query, page):
 BLOCK_TAGS = ["h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "pre", "blockquote", "dd", "dt"]
 CONTAINER_TAGS = {"p", "li", "pre", "blockquote", "dd", "dt"}
 JUNK_TAGS = [
-    "script", "style", "noscript", "template", "iframe", "object", "embed", "svg", "canvas", "img",
-    "picture", "video", "audio", "source", "figure", "form", "button", "input", "select", "textarea",
+    "script", "style", "noscript", "template", "iframe", "object", "embed", "svg", "canvas",
+    "video", "audio", "form", "button", "input", "select", "textarea",
     "nav", "header", "footer", "aside", "menu", "dialog",
 ]
+IMG_PLACEHOLDER = re.compile(r"^data:|blank\.gif|spacer\.|pixel\.|1x1|transparent\.", re.I)
 JUNK_HINT = re.compile(
     r"(^|[-_ ])(nav|menu|footer|header|sidebar|cookie|consent|banner|advert|ads?|promo|social|share|"
     r"related|newsletter|comment|popup|modal|breadcrumb)([-_ ]|$)",
@@ -520,11 +535,55 @@ def primary_link(node, base_url):
     return None
 
 
-def collect_blocks(root, base_url):
+def image_source(img, base_url, check_size=True):
+    """Adres obrazka: src, a gdy to zaślepka – data-src/data-lazy-src/data-original albo srcset (także z <picture>)."""
+    for attr in ("data-src", "data-lazy-src", "data-original", "src"):
+        value = (img.get(attr) or "").strip()
+        if value and not IMG_PLACEHOLDER.search(value):
+            break
+    else:
+        value = ""
+    if not value:
+        sets = [img.get("data-srcset"), img.get("srcset")]
+        picture = img.find_parent("picture")
+        if picture is not None:
+            sets += [source.get("srcset") or source.get("data-srcset") for source in picture.find_all("source")]
+        for candidates in filter(None, sets):
+            value = candidates.split(",")[0].strip().split(" ")[0]  # pierwszy wariant zwykle najmniejszy
+            if value:
+                break
+    if not value:
+        return None
+    src = urljoin(base_url, value)
+    parts = urlparse(src)
+    if parts.scheme not in ("http", "https") or parts.path.lower().endswith(".svg"):
+        return None
+    if check_size and is_small_image(img):
+        return None  # ikonka albo piksel śledzący
+    return src
+
+
+def is_small_image(img):
+    """Czy znacznik <img> deklaruje wymiary mniejsze niż IMAGE_MIN_SIZE (ikonki, flagi, piksele śledzące)."""
+    for attr in ("width", "height"):
+        size = re.match(r"\d+", str(img.get(attr) or ""))
+        if size and int(size.group()) < IMAGE_MIN_SIZE:
+            return True
+    return False
+
+
+def collect_blocks(root, base_url, with_images=False, skip_images=frozenset()):
     """Zbiera z drzewa nagłówki i akapity w kolejności występowania, bez powtarzania zagnieżdżonych.
-    Blok to (rodzaj, tekst, adres_linku_lub_None); ten sam adres linkujemy tylko raz."""
-    blocks, linked = [], set()
-    for node in root.find_all(BLOCK_TAGS):
+    Blok to (rodzaj, tekst, adres_linku_lub_None); ten sam adres linkujemy tylko raz.
+    Z with_images=True dochodzą bloki ("img", opis, adres_obrazka) – najwyżej IMAGES_PER_ARTICLE."""
+    blocks, linked, images = [], set(), set()
+    for node in root.find_all(BLOCK_TAGS + (["img"] if with_images else [])):
+        if node.name == "img":
+            src = image_source(node, base_url)
+            if src and src not in images and src not in skip_images and len(images) < IMAGES_PER_ARTICLE:
+                images.add(src)
+                blocks.append(("img", shorten(squash(node.get("alt") or ""), 80), src))
+            continue
         if any(parent.name in CONTAINER_TAGS for parent in node.parents):
             continue  # np. <p> wewnątrz <li> – tekst trafi już z rodzica
         text = node_text(node)
@@ -569,26 +628,50 @@ def extract_article(html, url):
     html = CONTROL_CHARS.sub("", html)
     soup = BeautifulSoup(html, "lxml")
     title = node_text(soup.title) or host_of(url)
+    # readability usuwa z obrazków width/height – ikonki rozpoznajemy po wymiarach z oryginalnej strony
+    small_images = {image_source(img, url, check_size=False) for img in soup.find_all("img") if is_small_image(img)}
     blocks = []
     if Document is not None:
         try:
             doc = Document(html, url=url)
             title = squash(doc.short_title()) or title
-            blocks = collect_blocks(BeautifulSoup(doc.summary(html_partial=True), "lxml"), url)
+            blocks = collect_blocks(
+                BeautifulSoup(doc.summary(html_partial=True), "lxml"), url, with_images=True, skip_images=small_images
+            )
         except Exception as err:
             log.info("readability nie poradził sobie z %s: %s", url, str(err)[:120])
             blocks = []
     # Gdy readability znalazła mało tekstu, to zwykle strona z listą artykułów (np. główna serwisu): readability wycina
     # bloki gęste od linków, czyli właśnie tytuły. Wtedy bierzemy całą treść strony (bez menu i stopki) z tytułami-linkami.
     # Artykuły i Wikipedia mają w readability tysiące znaków – zostają przy niej (bez list „czytaj też”).
-    readability_chars = sum(len(b[1]) for b in blocks)
+    # Strony z listą zostają bez obrazków: dziesiątki miniatur to za dużo dla telefonu i darmowego serwera.
+    readability_chars = sum(len(b[1]) for b in blocks if b[0] != "img")
     if readability_chars < 1500:
         fallback = fallback_blocks(soup, url)
         if sum(len(b[1]) for b in fallback) > readability_chars:
             blocks = fallback
     if blocks and blocks[0][0] == "h" and blocks[0][1] == title:
         blocks = blocks[1:]  # tytuł pokazujemy osobno
+    # Zdjęcie główne serwisów informacyjnych stoi zwykle w nagłówku, poza treścią wybraną przez readability.
+    # Strony podają je w znaczniku og:image – dokładamy je na początek, gdy w treści artykułu nie ma żadnego obrazka.
+    if blocks and blocks[0][2] is None and not any(b[0] == "img" for b in blocks) and readability_chars >= 1500:
+        lead = lead_image(soup, url)
+        if lead:
+            blocks.insert(0, ("img", lead[1], lead[0]))
     return title, blocks
+
+
+def lead_image(soup, base_url):
+    """Zdjęcie główne strony z og:image / twitter:image: (adres, opis) albo None."""
+    for attrs in ({"property": "og:image"}, {"name": "og:image"}, {"name": "twitter:image"}, {"property": "twitter:image"}):
+        meta = soup.find("meta", attrs=attrs)
+        if meta is not None and (meta.get("content") or "").strip():
+            src = urljoin(base_url, meta["content"].strip())
+            parts = urlparse(src)
+            if parts.scheme in ("http", "https") and not parts.path.lower().endswith(".svg"):
+                alt = soup.find("meta", attrs={"property": "og:image:alt"})
+                return src, shorten(squash(alt.get("content") if alt is not None else ""), 80)
+    return None
 
 
 def split_long(text, limit):
@@ -611,14 +694,17 @@ def split_long(text, limit):
 def paginate(blocks, budget):
     """Rozkłada bloki na strony po ~budget znaków; nagłówek nie zostaje sam na końcu strony."""
     pages, size = [[]], 0
+    weight = lambda block: IMAGE_WEIGHT if block[0] == "img" else len(block[1])
     for kind, text, href in blocks:
-        for number, piece in enumerate(split_long(text, budget)):
-            if size and size + len(piece) > budget:
+        pieces = [text] if kind == "img" else split_long(text, budget)
+        for number, piece in enumerate(pieces):
+            block = (kind, piece, href if number == 0 or kind == "img" else None)
+            if size and size + weight(block) > budget:
                 carry = [pages[-1].pop()] if pages[-1] and pages[-1][-1][0] == "h" else []
                 pages.append(carry)
-                size = sum(len(b[1]) for b in carry)
-            pages[-1].append((kind, piece, href if number == 0 else None))
-            size += len(piece)
+                size = sum(weight(b) for b in carry)
+            pages[-1].append(block)
+            size += weight(block)
     return [page for page in pages if page]
 
 
@@ -645,7 +731,7 @@ def get_article(url):
         raise FetchError("Nie udało się wydobyć tekstu z tej strony. Otwórz [Oryginał].", 422)
     truncated, total, kept = False, 0, []
     for block in blocks:
-        total += len(block[1])
+        total += len(block[1]) if block[0] != "img" else 0
         if total > ARTICLE_MAX_CHARS:
             truncated = True
             break
@@ -655,6 +741,35 @@ def get_article(url):
     article = {"title": title, "url": final_url, "pages": paginate(kept, ARTICLE_PAGE_CHARS)}
     article_cache.set(url, article)
     return article
+
+
+# ---------- Obrazki dopasowane do telefonu ----------
+def shrink_image(raw):
+    """Zmniejsza obrazek do ekranu telefonu i zapisuje jako lekki JPEG (bez przezroczystości i metadanych).
+    Zwraca None dla ikonek/pikseli śledzących i plików, których nie da się odczytać."""
+    try:
+        with Image.open(io.BytesIO(raw)) as source:
+            if source.width < IMAGE_MIN_SIZE or source.height < IMAGE_MIN_SIZE:
+                return None
+            source.draft("RGB", (IMAGE_MAX_WIDTH * 2, IMAGE_MAX_HEIGHT * 2))  # JPEG: dekodowanie od razu w mniejszej skali
+            image = ImageOps.exif_transpose(source)  # zdjęcia z telefonów bywają obrócone w metadanych
+            if image.mode in ("RGBA", "LA") or (image.mode == "P" and "transparency" in image.info):
+                rgba = image.convert("RGBA")
+                image = Image.new("RGB", rgba.size, (255, 255, 255))
+                image.paste(rgba, mask=rgba.getchannel("A"))  # przezroczystość na białym tle
+            else:
+                image = image.convert("RGB")
+            image.thumbnail((IMAGE_MAX_WIDTH, IMAGE_MAX_HEIGHT), Image.Resampling.LANCZOS)
+            out = io.BytesIO()
+            image.save(out, "JPEG", quality=IMAGE_QUALITY, optimize=True, progressive=False)  # zwykły JPEG – najlżejszy do dekodowania
+            return out.getvalue()
+    except (OSError, ValueError, Image.DecompressionBombError) as err:
+        log.info("nie da się przetworzyć obrazka: %s", str(err)[:120])
+        return None
+
+
+def images_enabled():
+    return request.cookies.get("obrazki") != "0"
 
 
 # ---------- Szablony (czysty HTML: bez CSS i JavaScriptu) ----------
@@ -700,11 +815,12 @@ TEMPLATES = {
 {% block body %}{% include "_nav.html" %}
 <h2>{{ title }}</h2>
 {% if pages > 1 %}<p>Strona {{ page }} z {{ pages }}</p>
-{% endif %}{% for kind, text, href in blocks %}{% if href %}{% set link %}<a href="{{ url_for('read', url=href, q=q, rp=rp) }}">{{ text }}</a>{% endset %}{% else %}{% set link = text %}{% endif %}{% if kind == "h" %}<h3>{{ link }}</h3>
+{% endif %}{% for kind, text, href in blocks %}{% if kind == "img" %}{% if images %}<p><img src="{{ url_for('image', u=href, r=site) }}" alt="{{ text or 'obrazek' }}"></p>
+{% endif %}{% elif href %}{% set link %}<a href="{{ url_for('read', url=href, q=q, rp=rp) }}">{{ text }}</a>{% endset %}{% else %}{% set link = text %}{% endif %}{% if kind == "h" %}<h3>{{ link }}</h3>
 {% else %}<p>{{ link }}</p>
 {% endif %}{% endfor %}<p>{% if page < pages %}<a href="{{ url_for('read', url=url, q=q, rp=rp, page=page + 1) }}">Dalej &raquo;</a> ({{ page }}/{{ pages }})<br>{% endif %}
 {% if page > 1 %}<a href="{{ url_for('read', url=url, q=q, rp=rp, page=page - 1) }}">&laquo; Wstecz</a>{% endif %}</p>
-{% include "_nav.html" %}<p><a href="{{ original }}">[Oryginał]</a></p>
+{% include "_nav.html" %}<p><a href="{{ original }}">[Oryginał]</a>{% if has_images %}<br><a href="{{ url_for('toggle_images', wl=0 if images else 1, next=request.full_path) }}">Obrazki: {{ "wyłącz" if images else "włącz" }}</a>{% endif %}</p>
 {% endblock %}
 """,
     "error.html": """{% extends "base.html" %}
@@ -763,10 +879,49 @@ def read():
         return render_template("error.html", message=err.message, original=url, retry=request.full_path, **common), err.status
     pages = article["pages"]
     page = min(page, len(pages))
+    parts = urlparse(article["url"])
     return render_template(
         "read.html", title=article["title"], url=url, original=article["url"],
-        blocks=pages[page - 1], page=page, pages=len(pages), **common,
+        blocks=pages[page - 1], page=page, pages=len(pages), images=images_enabled(),
+        has_images=any(b[0] == "img" for p in pages for b in p), site=f"{parts.scheme}://{parts.netloc}", **common,
     )
+
+
+@app.route("/img")
+def image():
+    """Obrazek z artykułu zmniejszony dla telefonu. r = adres serwisu (Referer – część serwerów obrazków go wymaga)."""
+    url = (request.args.get("u") or "").strip()
+    referer = (request.args.get("r") or "").strip()
+    if not re.match(r"^https?://", url, re.I) or len(url) > MAX_URL_LENGTH:
+        return Response("", status=400)
+    data = image_cache.get(url)
+    if data is None:
+        headers = {"Accept": "image/avif,image/webp,image/jpeg,image/png,image/*;q=0.8"}
+        if re.match(r"^https?://[^/\s]+$", referer):
+            headers["Referer"] = referer + "/"
+        try:
+            _, resp = http_request(url, extra_headers=headers)
+            if resp.status_code >= 400 or not resp.headers.get("Content-Type", "").lower().startswith("image/"):
+                resp.close()
+                return Response("", status=404)
+            data = shrink_image(read_body(resp, limit=IMAGE_MAX_BYTES))
+        except FetchError as err:
+            return Response("", status=err.status)
+        if data is None:
+            return Response("", status=404)
+        image_cache.set(url, data)
+    return Response(data, mimetype="image/jpeg", headers={"Cache-Control": "public, max-age=86400"})
+
+
+@app.route("/obrazki")
+def toggle_images():
+    """Włącza/wyłącza obrazki w czytniku (zapamiętane w ciasteczku na rok) i wraca na tę samą stronę."""
+    target = request.args.get("next") or "/"
+    if not target.startswith("/") or target.startswith("//"):
+        target = "/"  # tylko adresy w tej aplikacji
+    resp = redirect(target)
+    resp.set_cookie("obrazki", "0" if request.args.get("wl") == "0" else "1", max_age=365 * 24 * 3600, samesite="Lax")
+    return resp
 
 
 DIAG_TARGETS = [("example.com", 443), ("lite.duckduckgo.com", 443), ("frogfind.com", 80), ("1.1.1.1", 443)]  # stała lista

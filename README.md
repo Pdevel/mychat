@@ -6,6 +6,19 @@ Czysty HTML bez CSS i JavaScriptu, nawigacja samymi strzałkami.
 - `/` – formularz wyszukiwania
 - `/search?q=…` – wyniki z DuckDuckGo Lite (region polski), 10 na stronę, z linkiem [Oryginał]
 - `/read?url=…` – czytnik: sam tekst strony (tytuł, nagłówki, akapity), podzielony na strony po ok. 3000 znaków
+- `/img?u=…` – obrazki z artykułów zmniejszone dla telefonu (szczegóły niżej)
+
+## Obrazki dla Nokii 235 4G / 3210 4G
+
+Serwer pobiera obrazek, zmniejsza go do 220 px szerokości (ekran ma 240 px), zapisuje jako zwykły JPEG
+(jakość 45, bez metadanych, przezroczystość na białym tle) i dopiero taki wysyła. Typowe zdjęcie waży 5–10 KB.
+
+- najwyżej 12 obrazków na artykuł i ok. 5 na jedną stronę czytnika,
+- pomijane: ikonki i flagi (poniżej 48 px), piksele śledzące, SVG; strony z listą artykułów są bez miniatur,
+- gdy artykuł nie ma obrazka w treści, na początku pojawia się zdjęcie główne z `og:image`,
+- na dole artykułu link „Obrazki: wyłącz / włącz” (zapamiętany w ciasteczku).
+
+Strojenie zmiennymi środowiskowymi: `IMAGE_MAX_WIDTH` (220), `IMAGE_MAX_HEIGHT` (400), `IMAGE_QUALITY` (45).
 
 ## Wdrożenie na Render.com
 
