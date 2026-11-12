@@ -1125,7 +1125,7 @@ CLUTTER_CLASS = re.compile(r"(^|\s)(mw-editsection|navbox|vertical-navbox|mw-jum
 FOOTNOTE = re.compile(r"\[\s*[\w.,–-]{1,8}\s*\]")
 
 
-def clean_document(soup):
+def clean_document(soup, base_url):
     """Usuwa z dokumentu to, co na telefonie tylko przeszkadza: znaczniki przypisów („[1]”, „[a]”), linki „edytuj”,
     szablony nawigacyjne i spisy treści. Zwraca wiersze tabeli informacyjnej (infobox) jako [(etykieta, wartość)];
     sama tabela znika z treści – pokazujemy ją zwięźle po pierwszym akapicie, jak w mobilnej wersji serwisów."""
@@ -1142,23 +1142,101 @@ def clean_document(soup):
     for box in soup.find_all(["table", "aside", "div"], class_=INFOBOX_CLASS):
         if box.attrs is None:
             continue  # już usunięte razem z nadrzędną tabelą
-        has_headers = box.find("th") is not None
-        for row in box.find_all("tr"):
-            cells = row.find_all(["th", "td"], recursive=False)
-            if len(cells) >= 2 and (cells[0].name == "th" or not has_headers):  # nie podpisy pod herbem i flagą
-                label, value = node_text(cells[0]).rstrip(":"), node_text(cells[1])
-                if label and value:
-                    rows.append((shorten(label, 40), shorten(value, 160)))
-            elif len(cells) == 1 and cells[0].find("img") is None:
-                text = node_text(cells[0])
-                if text and len(text) <= 160:
-                    rows.append(("", text))
-        for item in box.select(".pi-data"):  # infobox z serwisów Fandom
+        caption = box.find("caption")
+        if caption is not None and node_text(caption):
+            rows.append({"t": shorten(node_text(caption), 80)})
+        if box.name == "table":
+            infobox_table_rows(box, base_url, rows)
+        title = box.select_one(".pi-title")  # infobox z serwisów Fandom
+        if title is not None:
+            rows.append({"t": shorten(node_text(title), 80)})
+        for figure in box.select(".pi-image"):
+            images = infobox_images(figure, base_url)
+            if images:
+                rows.append({"img": [{"src": images[0], "cap": node_segments(figure, base_url)[0]}]})
+        for item in box.select(".pi-data"):
             label, value = item.select_one(".pi-data-label"), item.select_one(".pi-data-value")
             if label and value and node_text(value):
-                rows.append((shorten(node_text(label), 40), shorten(node_text(value), 160)))
+                rows.append({"l": shorten(node_text(label), 40), "v": infobox_value(node_segments(value, base_url)[0])})
         box.decompose()
-    return rows[:40]
+    return rows[:50]
+
+
+BR_MARK = "\x04"
+
+
+def infobox_images(cell, base_url):
+    """Zdjęcia z komórki tabeli informacyjnej (bez ikonek, np. małych flag przy nazwie państwa)."""
+    found = []
+    for img in cell.find_all("img"):
+        src = image_source(img, base_url, check_size=False)
+        if src and not is_small_image(img) and src not in found:
+            found.append(src)
+    return found
+
+
+def infobox_value(text):
+    return text if len(visible(text)) <= 220 else shorten(visible(text), 220)
+
+
+def cell_parts(cell, base_url):
+    """Tekst komórki (z linkami) podzielony w miejscach <br> – np. „liczba ludności” i „gęstość” w jednej komórce."""
+    if cell.find("br") is None:
+        return [node_segments(cell, base_url)[0]]
+    fragment = BeautifulSoup(re.sub(r"<br\s*/?>", BR_MARK, str(cell), flags=re.I), "lxml")
+    text = node_segments(fragment.body or fragment, base_url)[0]
+    return [" ".join(part.split()) for part in text.split(BR_MARK)]
+
+
+def infobox_table_rows(table, base_url, rows):
+    """Wiersze tabeli informacyjnej: tytuły, zdjęcia (z podpisami także z następnego wiersza), etykieta: wartość."""
+    trs = [tr for tr in table.find_all("tr") if tr.find_parent("table") is table]
+    has_headers = any(tr.find("th", recursive=False) is not None for tr in trs)
+    index = 0
+    while index < len(trs):
+        cells = trs[index].find_all(["th", "td"], recursive=False)
+        index += 1
+        nested = [cell.find("table") for cell in cells if cell.find("table") is not None]
+        if nested:  # np. herb i flaga w osobnej tabelce
+            for inner in nested:
+                infobox_table_rows(inner, base_url, rows)
+            continue
+        images = [infobox_images(cell, base_url) for cell in cells]
+        if any(images):
+            entry = [{"src": found[0], "cap": node_segments(cell, base_url)[0]} for cell, found in zip(cells, images) if found]
+            if index < len(trs):  # podpisy w następnym wierszu („Herb”, „Flaga”)
+                below = trs[index].find_all(["th", "td"], recursive=False)
+                if (len(below) == len(cells) and not any(infobox_images(c, base_url) for c in below)
+                        and all(len(node_text(c)) <= 60 for c in below)):
+                    captions = [node_segments(c, base_url)[0] for c, found in zip(below, images) if found]
+                    for item, caption in zip(entry, captions):
+                        item["cap"] = item["cap"] or caption
+                    index += 1
+            for item in entry:
+                item["cap"] = infobox_value(item["cap"])
+            rows.append({"img": entry})
+            continue
+        if len(cells) >= 2 and (cells[0].name == "th" or not has_headers):
+            labels = [visible(part) for part in cell_parts(cells[0], base_url) if visible(part)]
+            values = [part for part in cell_parts(cells[1], base_url) if visible(part)]
+            if not labels or not values:
+                continue
+            if len(labels) > 1 and len(values) == len(labels) - 1:
+                rows.append({"t2": shorten(labels[0], 60)})  # nagłówek grupy, np. „Populacja (30.06.2026)”
+                labels = labels[1:]
+            if len(labels) == len(values) and len(labels) > 1:
+                for label, value in zip(labels, values):
+                    rows.append({"l": shorten(label.lstrip("• ").rstrip(":"), 40), "v": infobox_value(value)})
+            else:
+                rows.append({"l": shorten(" ".join(labels).rstrip(":"), 40), "v": infobox_value(" ".join(values))})
+        elif len(cells) == 1:
+            text = node_segments(cells[0], base_url)[0]
+            if not visible(text):
+                continue
+            if cells[0].name == "th" and len(visible(text)) <= 80:
+                rows.append({"t": visible(text)})
+            elif len(visible(text)) <= 300:
+                rows.append({"v": text})
 
 
 def extract_article(html, url, videos=None, posters=None):
@@ -1177,7 +1255,7 @@ def extract_article(html, url, videos=None, posters=None):
     # readability usuwa z obrazków width/height – ikonki rozpoznajemy po wymiarach z oryginalnej strony
     small_images = {image_source(img, url, check_size=False) for img in soup.find_all("img") if is_small_image(img)}
     heading = node_text(soup.find("h1"))
-    infobox = clean_document(soup)
+    infobox = clean_document(soup, url)
     blocks = []
     if Document is not None:
         try:
@@ -1213,9 +1291,9 @@ def extract_article(html, url, videos=None, posters=None):
         title = heading
     if blocks and blocks[0][0] == "h" and blocks[0][1] == title:
         blocks = blocks[1:]  # tytuł pokazujemy osobno
-    if infobox and not listing:  # tabela informacyjna po pierwszym akapicie, jak w mobilnej Wikipedii
+    if infobox:  # tabela informacyjna po pierwszym akapicie, jak w mobilnej Wikipedii (także w krótkich hasłach)
         position = next((i + 1 for i, b in enumerate(blocks) if b[0] in ("p", "pl")), 0)
-        blocks.insert(position, ("ib", "\n".join(f"{label}\x1f{value}" for label, value in infobox), None))
+        blocks.insert(position, ("ib", json.dumps(infobox, ensure_ascii=False), None))
     # Zdjęcie główne serwisów informacyjnych stoi zwykle w nagłówku, poza treścią wybraną przez readability.
     # Strony podają je w znaczniku og:image – dokładamy je na początek, gdy w treści artykułu nie ma żadnego obrazka.
     if blocks and blocks[0][2] is None and not any(b[0] in ("img", "thumb") for b in blocks) and readability_chars >= 1500:
@@ -1413,7 +1491,10 @@ def inline_links(text, q, rp):
 
 
 def infobox_rows(text):
-    return [tuple(row.split("\x1f", 1)) if "\x1f" in row else ("", row) for row in text.split("\n")]
+    try:
+        return json.loads(text)
+    except ValueError:
+        return []
 
 
 # ---------- Wygląd strony źródłowej ----------
@@ -2659,6 +2740,8 @@ STYLE = (
     ".it a{font-weight:bold;text-decoration:none}.it a.n{display:block;margin-left:86px}"
     ".ph{margin:4px 0 10px}.ph img{max-width:100%;border:0}"
     ".ib{border:1px solid #c8ccd1;background:#f8f9fa;padding:5px 7px;margin:4px 0 10px;font-size:13px;line-height:1.3}"
+    ".ibt{font-weight:bold;text-align:center;margin:2px 0 4px}.ibi{text-align:center;margin:4px 0 6px}.ib img{border:0}"
+    ".ib1 img{max-width:100%}.ib2{display:inline-block;width:48%;vertical-align:top;text-align:center}"
     ".v{margin:6px 0 10px;padding:4px;text-align:center;background:#eef3fd;border:1px solid #c6d5f5}"
     ".v img{max-width:100%;margin:0 0 4px;border:0}.v a{font-weight:bold}"
     ".r{border-bottom:1px solid #e3e3e3;padding:6px 0}"
@@ -2773,6 +2856,7 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 """,
     "read.html": """{% extends "base.html" %}
 {% block title %}{{ title }}{% endblock %}
+{% macro tl(text) %}{% if links %}{{ inline_links(text, q, rp) }}{% else %}{{ visible(text) }}{% endif %}{% endmacro %}
 {% block head %}{% if film and film.mode in ("work", "busy") %}<meta http-equiv="refresh" content="{{ 8 if film.mode == 'work' else 15 }};url={{ url_for('read', url=url, q=q, rp=rp, wf=film.index, wfmt=film.fmt, wc=film.part, n=tick) }}#film{{ film.index }}">{% endif %}{% endblock %}
 {% block body %}{% include "_nav.html" %}<div class="w">
 <h1>{{ title }}</h1>
@@ -2792,9 +2876,13 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 {% endfor %}{% endif %}{% for it in items %}{% if it.kind == "item" %}<div class="it">{% if it.img and images %}<img src="{{ url_for('image', u=it.img, r=site, t=1) }}" alt="">{% endif %}<a{% if it.img and images %} class="n"{% endif %} href="{{ url_for('read', url=it.href, q=q, rp=rp) }}">{{ it.text }}</a></div>
 {% elif it.kind == "img" %}{% if images %}<div class="ph"><a href="{{ url_for('image', u=it.href, r=site, hq=1) }}" target="_blank"><img src="{{ url_for('image', u=it.href, r=site) }}" alt="{{ it.text or 'obrazek' }}"></a></div>
 {% endif %}{% elif it.kind == "h" %}<h2>{{ it.text }}</h2>
-{% elif it.kind == "pl" %}<p>{% if links %}{{ inline_links(it.text, q, rp) }}{% else %}{{ visible(it.text) }}{% endif %}</p>
-{% elif it.kind == "ib" %}<div class="ib">{% for label, value in infobox_rows(it.text) %}{% if label %}<b>{{ label }}:</b> {% endif %}{{ value }}<br>
-{% endfor %}</div>
+{% elif it.kind == "pl" %}<p>{{ tl(it.text) }}</p>
+{% elif it.kind == "ib" %}<div class="ib">{% for r in infobox_rows(it.text) %}{% if r.img %}{% if images %}<div class="ibi">{% for im in r.img %}<span class="{{ 'ib2' if r.img|length > 1 else 'ib1' }}"><a href="{{ url_for('image', u=im.src, r=site, hq=1) }}" target="_blank"><img src="{{ url_for('image', u=im.src, r=site, t=1 if r.img|length > 1 else None) }}" alt=""></a>{% if im.cap %}<br>{{ tl(im.cap) }}{% endif %}</span>{% endfor %}</div>
+{% endif %}{% elif r.t %}<div class="ibt">{{ r.t }}</div>
+{% elif r.t2 %}<b>{{ r.t2 }}</b><br>
+{% elif r.l %}<b>{{ r.l }}:</b> {{ tl(r.v) }}<br>
+{% else %}{{ tl(r.v) }}<br>
+{% endif %}{% endfor %}</div>
 {% else %}<p>{{ it.text }}</p>
 {% endif %}{% endfor %}{% if page < pages %}<a class="b" href="{{ url_for('read', url=url, q=q, rp=rp, page=page + 1) }}">Dalej &raquo; ({{ page }}/{{ pages }})</a>
 {% endif %}{% if page > 1 %}<a class="b" href="{{ url_for('read', url=url, q=q, rp=rp, page=page - 1) }}">&laquo; Wstecz</a>
@@ -3079,7 +3167,8 @@ def read():
     return render_template(
         "read.html", title=article["title"], url=url, original=article["url"], host=host_of(article["url"]),
         items=page_items(pages[page - 1]), page=page, pages=len(pages), images=images_enabled(),
-        has_images=any(b[0] in ("img", "thumb") for p in pages for b in p), site=f"{parts.scheme}://{parts.netloc}",
+        has_images=any(b[0] in ("img", "thumb") or (b[0] == "ib" and '"img"' in b[1]) for p in pages for b in p),
+        site=f"{parts.scheme}://{parts.netloc}",
         videos=videos, film=film, formats=VIDEO_FORMATS, theme=theme_cache.get(parts.hostname or "") or article.get("theme"),
         tick=int(time.time()) % 100000,
         links=links_enabled(), has_links=any(b[0] == "pl" for p in pages for b in p), **common,

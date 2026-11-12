@@ -19,8 +19,9 @@ nawigacja samymi strzałkami.
 - tytuł z nagłówka strony (`<h1>`), bez dopisku serwisu („Polska”, a nie „Polska – Wikipedia, wolna encyklopedia”),
 - linki w tekście akapitów (przez czytnik); na dole przełącznik „Linki w tekście: wyłącz/włącz” – na klawiaturze każdy
   link to dodatkowy przystanek strzałki,
-- tabela informacyjna (infobox, także Fandom) jako zwarta ramka „Etykieta: wartość” zaraz po pierwszym akapicie, jak w
-  mobilnej Wikipedii,
+- tabela informacyjna (infobox, także Fandom) jako ramka zaraz po pierwszym akapicie, jak w mobilnej Wikipedii: tytuł,
+  zdjęcia z podpisami (herb i flaga obok siebie, powiększenie po wybraniu), „Etykieta: wartość” z linkami, wiersze
+  rozdzielone `<br>` (np. populacja: liczba ludności, gęstość) jako osobne pozycje; pokazywana także w krótkich hasłach,
 - bez znaczników przypisów („[1]”, „[a]”), linków „edytuj”, szablonów nawigacyjnych i spisów treści,
 - odstępy jak w przeglądarce (bez „Polska , Rzeczpospolita”).
 
