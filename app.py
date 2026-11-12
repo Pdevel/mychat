@@ -116,10 +116,24 @@ log = logging.getLogger("szukajka")
 class FetchError(Exception):
     """Błąd z komunikatem dla użytkownika (po polsku) i kodem HTTP odpowiedzi."""
 
-    def __init__(self, message, status=502):
+    def __init__(self, message, status=502, blocked=False):
         super().__init__(message)
         self.message = message
         self.status = status
+        self.blocked = blocked  # strona blokuje serwer Szukajki – pomoże otwarcie wprost w Operze
+
+
+BLOCKED_MESSAGE = "Ta strona blokuje serwer Szukajki (ochrona przed botami). Otwórz ją bezpośrednio w Operze – często działa."
+CHALLENGE_TITLE = re.compile(r"<title>\s*(Just a moment|Attention Required|Access denied|Checking your browser|DDoS-Guard)", re.I)
+
+
+def is_blocked(resp):
+    """Odmowa dostępu dla serwera: 401/403/429 albo ekran sprawdzania przeglądarki (np. Cloudflare)."""
+    if resp.status_code in (401, 403, 429):
+        return True
+    return resp.status_code == 503 and (
+        "challenge" in resp.headers.get("cf-mitigated", "").lower() or "cloudflare" in resp.headers.get("Server", "").lower()
+    )
 
 
 class TTLCache:
@@ -798,6 +812,8 @@ def get_article(url):
     if resp.status_code >= 400:
         resp.close()
         log.warning("strona zwróciła %s: %s", resp.status_code, final_url)
+        if is_blocked(resp):
+            raise FetchError(BLOCKED_MESSAGE, 403, blocked=True)
         raise FetchError(f"Strona zwróciła błąd {resp.status_code}.", 502)
     content_type = resp.headers.get("Content-Type", "").split(";")[0].strip().lower()
     if is_video_response(content_type, final_url):
@@ -807,6 +823,9 @@ def get_article(url):
         resp.close()
         raise FetchError("To nie jest strona z tekstem (np. PDF albo obrazek). Otwórz [Oryginał].", 415)
     text = decode_html(read_body(resp), resp)
+    if CHALLENGE_TITLE.search(text[:5000]) and len(text) < 60_000:
+        log.warning("strona pokazała sprawdzanie przeglądarki: %s", final_url)
+        raise FetchError(BLOCKED_MESSAGE, 403, blocked=True)
     videos, posters = [], {}
     if content_type == "text/plain":
         title = host_of(final_url)
@@ -1204,6 +1223,8 @@ def open_media(url, headers):
     if resp.status_code >= 400:
         resp.close()
         log.warning("serwer filmu zwrócił %s: %s", resp.status_code, url)
+        if is_blocked(resp):
+            raise FetchError("Serwer filmu blokuje Szukajkę. Otwórz stronę z filmem bezpośrednio w Operze.", 403, blocked=True)
         raise FetchError(f"Serwer filmu zwrócił błąd {resp.status_code}.", 502)
     return resp
 
@@ -1552,7 +1573,7 @@ def video_job(key, src, referer, fmt, part):
         log.info("film gotowy: %s część %s (%s, %d B)", src, part + 1, fmt, status["size"])
     except FetchError as err:
         log.warning("film nieudany: %s – %s", src, err.message)
-        report(state="error", message=err.message)
+        report(state="error", message=err.message, blocked=err.blocked)
     except Exception:
         log.exception("film nieudany: %s", src)
         report(state="error", message="Nie udało się przygotować filmu. Spróbuj ponownie albo wybierz inny format.")
@@ -1916,7 +1937,10 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 {% endif %}{% if part > 1 %}<a class="b" href="{{ link(f=fmt, c=part - 1) }}">&laquo; Poprzednia część</a>
 {% endif %}<p><a href="{{ link(f=other, c=part) }}">Nie działa? Spróbuj {{ formats[other].name }}</a></p>
 {% else %}<div class="e">{{ status.message }}</div>
-<a class="b" href="{{ link(f=fmt, c=part, znowu=1) }}">Spróbuj ponownie</a>
+{% if status.blocked %}<a class="b" href="{{ referer or src }}">Otwórz bezpośrednio w Operze</a>
+<p><a href="{{ link(f=fmt, c=part, znowu=1) }}">Spróbuj ponownie w Szukajce</a></p>
+{% else %}<a class="b" href="{{ link(f=fmt, c=part, znowu=1) }}">Spróbuj ponownie</a>
+{% endif %}
 <p><a href="{{ link(f=other, c=part) }}">Spróbuj {{ formats[other].name }}</a></p>
 {% endif %}</div>
 <div class="f"><a href="{{ src }}">[Oryginał filmu]</a></div>
@@ -1926,7 +1950,10 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 {% block title %}Błąd{% endblock %}
 {% block body %}{% include "_nav.html" %}<div class="w">
 <div class="e">{{ message }}</div>
-{% if original %}<a class="b" href="{{ retry }}">Spróbuj ponownie</a>
+{% if original and blocked %}<a class="b" href="{{ original }}">Otwórz bezpośrednio w Operze</a>
+<p class="m">Opera Mini otworzy pełną wersję strony przez własne serwery, które strony często wpuszczają.</p>
+<p><a href="{{ retry }}">Spróbuj ponownie w Szukajce</a></p>
+{% elif original %}<a class="b" href="{{ retry }}">Spróbuj ponownie</a>
 <p><a href="{{ original }}">[Oryginał]</a></p>
 {% endif %}</div>
 {% endblock %}
@@ -2062,7 +2089,8 @@ def read():
     except VideoLink as found:
         return redirect(url_for("video", u=found.url, q=query or None, rp=results_page))
     except FetchError as err:
-        return render_template("error.html", message=err.message, original=url, retry=request.full_path, **common), err.status
+        return render_template("error.html", message=err.message, original=url, retry=request.full_path, blocked=err.blocked,
+                               **common), err.status
     pages = article["pages"]
     phrase = squash(request.args.get("s", ""))[:100]
     if phrase:  # szukanie na tej stronie

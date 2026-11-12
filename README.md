@@ -30,6 +30,12 @@ Serwer pobiera obrazek, zmniejsza go do 220 px szerokości (ekran ma 240 px), za
 Strojenie zmiennymi środowiskowymi: `IMAGE_MAX_WIDTH` (220), `IMAGE_MAX_HEIGHT` (400), `IMAGE_QUALITY` (45),
 `THUMB_MAX_SIZE` (80).
 
+## Strony, które blokują serwer
+
+Gdy strona odmawia dostępu serwerowi Szukajki (403/401/429 albo ekran sprawdzania przeglądarki, np. Cloudflare
+„Just a moment…”), czytnik pokazuje komunikat i duży przycisk „Otwórz bezpośrednio w Operze” – Opera Mini otwiera
+wtedy pełną stronę przez własne serwery. Tak samo przy filmach z zablokowanego serwera.
+
 ## Filmy dla Nokii 235 4G / 3210 4G
 
 Czytnik wykrywa filmy na każdej stronie: `<video>`, `og:video`, `twitter:player`, JSON-LD, atrybuty `data-…`, linki
