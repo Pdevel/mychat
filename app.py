@@ -2150,8 +2150,9 @@ def theme_css(theme):
         f".bar{{background:{t['bar']};color:{t['bar_text']}}}.bar a{{color:{t['bar_text']}}}"
         f".m,.h,.f{{color:{t['muted']}}}.it,.r{{border-color:{t['line']}}}.f{{border-color:{t['line']}}}"
         f".b,.v{{background:{t['button']};border-color:{t['button_line']};color:{t['link']}}}"
-        f".s{{color:{t['text']}}}.ic{{vertical-align:middle;margin:0 4px 0 0}}"
+        f".s{{color:{t['text']}}}"
         f".ib{{background:{t['button']};border-color:{t['line']}}}"
+        f"input[type=submit]{{background:{t['bar']};color:{t['bar_text']}}}"
     )
 
 
@@ -3261,54 +3262,72 @@ def megabytes(size):
 # Prosty HTML z małym, wbudowanym blokiem stylów (ok. 1 KB, bez plików CSS, flexboxa, grida i JavaScriptu): tylko
 # kolory, odstępy, ramki i opływanie miniatury tekstem – to Opera Mini na telefonach z klawiaturą obsługuje dobrze.
 STYLE = (
-    "body{margin:0;font-family:sans-serif;font-size:14px;line-height:1.35;color:#222;background:#fff}"
-    "a{color:#0b57d0}"
-    ".bar{background:#0b57d0;color:#fff;padding:5px 6px;font-size:12px}.bar a{color:#fff}"
-    ".w{padding:4px 6px}"
-    "h1{font-size:17px;line-height:1.25;margin:6px 0 2px}"
-    "h2{font-size:15px;line-height:1.25;margin:12px 0 4px}"
-    "p{margin:0 0 8px}"
-    ".m{color:#777;font-size:12px;margin:0 0 8px}"
-    ".it{border-bottom:1px solid #e3e3e3;padding:6px 0;overflow:hidden}"
-    ".it img{float:left;width:80px;margin:0 6px 0 0}"
-    ".it a{font-weight:bold;text-decoration:none}.it a.n{display:block;margin-left:86px}"
-    ".ph{margin:4px 0 10px}.ph img{max-width:100%;border:0}"
-    ".ib{border:1px solid #c8ccd1;background:#f8f9fa;padding:5px 7px;margin:4px 0 10px;font-size:13px;line-height:1.3}"
-    ".bc{font-size:12px;margin:6px 0 0}.ibt{font-weight:bold;text-align:center;margin:2px 0 4px}.ibi{text-align:center;margin:4px 0 6px}.ib img{border:0}"
+    # Presto (Opera Mini na S30+) rozumie border-radius, box-shadow, rgba i box-sizing; starsze przeglądarki pokażą
+    # po prostu kanciaste ramki. Na szerokim ekranie treść stoi w kolumnie 680 px, na telefonie zajmuje całą szerokość.
+    "html{background:#e8eaed}"
+    "body{margin:0 auto;max-width:680px;min-height:100vh;font:14px/1.5 system-ui,Roboto,Arial,sans-serif;color:#1f1f1f;background:#fff}"
+    "a{color:#0b57d0;text-decoration:none}img{border:0}"
+    ".bar{background:#0b57d0;color:#fff;padding:5px 6px;font-size:12px;line-height:1.7;box-shadow:0 1px 3px #999}"
+    ".bar a{color:#fff;display:inline-block;padding:1px 7px;margin:1px 1px;border-radius:12px;background:rgba(128,128,128,.25)}"
+    ".ic{vertical-align:middle;margin:0 3px 0 1px;border-radius:3px}"
+    ".w{padding:6px 8px 8px}"
+    "h1{font-size:17px;line-height:1.25;margin:8px 0 3px}"
+    "h2{font-size:15px;line-height:1.3;margin:16px 0 6px}"
+    "p{margin:0 0 10px}"
+    ".m{color:#5f6368;font-size:12px;margin:0 0 10px}"
+    ".it{border-bottom:1px solid #eee;padding:8px 0;overflow:hidden}"
+    ".it img{float:left;width:76px;margin:0 8px 0 0;border-radius:6px}"
+    ".it a,.r a.t,.v a,.f a{font-weight:bold}.it a.n{display:block;margin-left:84px}"
+    ".ph{margin:6px 0 12px}.ph img{max-width:100%;border-radius:8px}"
+    ".ib{border:1px solid #dadce0;background:#f8f9fa;padding:8px 10px;margin:6px 0 12px;font-size:13px;line-height:1.4;"
+    "border-radius:10px}"
+    ".bc{font-size:12px;margin:8px 0 0;color:#5f6368}.ibt{font-weight:bold;text-align:center;margin:2px 0 6px}"
+    ".ibi{text-align:center;margin:4px 0 8px}.ib img{border-radius:6px}"
     ".ib1 img{max-width:100%}.ib2{display:inline-block;width:48%;vertical-align:top;text-align:center}"
-    ".v{margin:6px 0 10px;padding:4px;text-align:center;background:#eef3fd;border:1px solid #c6d5f5}"
-    ".v img{max-width:100%;margin:0 0 4px;border:0}.v a{font-weight:bold}"
-    ".r{border-bottom:1px solid #e3e3e3;padding:6px 0}"
-    ".r a.t{font-weight:bold;text-decoration:none}"
-    ".h{color:#1e7d32;font-size:12px}.s{color:#444}.o{font-size:12px}"
-    ".b{display:block;background:#eef3fd;border:1px solid #c6d5f5;padding:7px;margin:8px 0;"
-    "text-align:center;font-weight:bold;text-decoration:none}"
-    ".f{border-top:1px solid #e3e3e3;padding:6px;font-size:12px;color:#777}"
-    ".q{width:140px}.u{width:200px}.hl{background:#fff3a0}.e{background:#fff4e5;border:1px solid #f0c890;padding:6px;margin:6px 0}"
+    ".v{margin:8px 0 12px;padding:6px;text-align:center;background:#eef3fd;border:1px solid #d3e0fb;border-radius:12px}"
+    ".v img{max-width:100%;margin:0 0 6px;border-radius:8px}"
+    ".r{border-bottom:1px solid #eee;padding:9px 0}"
+    ".h{color:#188038;font-size:12px}.s{color:#4d5156}.o{font-size:12px}"
+    ".b{display:block;background:#eef3fd;border:1px solid #d3e0fb;padding:9px;margin:10px 0;"
+    "text-align:center;font-weight:bold;border-radius:20px}"
+    ".f{border-top:1px solid #eee;padding:8px 8px 14px;font-size:12px;line-height:2;color:#5f6368;background:#f8f9fa}"
+    ".f .m{line-height:1.6;margin:4px 0 0}"
+    ".q,.u{border:1px solid #c4c7c5;border-radius:16px;padding:5px 10px;font-size:14px;box-sizing:border-box}"
+    ".q{width:150px}.u{width:100%;margin:2px 0 6px}"
+    "input[type=submit]{background:#0b57d0;color:#fff;border:0;border-radius:16px;padding:6px 12px;font-weight:bold}"
+    ".hl{background:#fff3a0;border-radius:3px}"
+    ".e{background:#fff4e5;border:1px solid #f0c890;padding:8px 10px;margin:8px 0;border-radius:10px}"
 )
 
 # Ciemny wygląd strony głównej i wyników: duże logo, zaokrąglone pole wyszukiwania z lupą (tabela zamiast flexboxa).
 # Wysyłany tylko na tych stronach – czytnik ma barwy odwiedzanego serwisu.
 DARK_STYLE = (
+    "html.dk{background:#202124}"
     ".dk{background:#202124;color:#e8eaed}.dk a{color:#8ab4f8}"
-    ".hm{padding:44px 10px 0;text-align:center}.hm .m{margin:14px 0 0}"
-    ".logo{font-size:34px;font-weight:bold;letter-spacing:-1px;color:#fff;margin:0 0 22px}"
-    ".pill{width:100%;background:#4d5156;border-radius:24px}.pill td{padding:6px 0;vertical-align:middle}"
-    ".pl{width:28px;text-align:center}.pl a{color:#e8eaed;font-size:22px;text-decoration:none}"
-    ".pill .pq{padding:6px 0 6px 14px}.pill .pl+.pq{padding-left:2px}"
-    ".pi{width:100%;background:#4d5156;border:0;color:#e8eaed;font-size:15px;padding:4px 0}"
+    ".hm{padding:40px 10px 0;text-align:center}.hm .m{margin:12px 0 0}"
+    ".logo{font-size:34px;font-weight:bold;letter-spacing:-1px;color:#fff;margin:0 0 20px}"
+    ".logo span{color:#8ab4f8}"
+    ".pill{width:100%;background:#303134;border:1px solid #5f6368;border-radius:24px}.pill td{padding:5px 0;vertical-align:middle}"
+    ".pl{width:28px;text-align:center}.pl a{color:#e8eaed;font-size:22px}"
+    ".pill .pq{padding:5px 0 5px 14px}.pill .pl+.pq{padding-left:2px}"
+    ".pi{width:100%;background:#303134;border:0;color:#e8eaed;font-size:15px;padding:4px 0}"
     ".pr{width:36px;text-align:center}"
-    ".hb{padding:22px 12px 0;text-align:center;line-height:1.5}.hb p{margin:10px 0 0}"
+    ".hb{padding:22px 10px 10px;line-height:1.5}.hb p{margin:10px 0 0;text-align:center}"
+    ".cd{display:block;background:#303134;border-radius:14px;padding:9px 12px;margin:0 0 8px;color:#e8eaed}"
+    ".dk a.cd{color:#e8eaed}.cd b{font-size:22px;font-weight:normal;color:#fff}.cd .m{margin:0}"
+    ".ch{display:inline-block;padding:3px 9px;margin:3px 1px;border:1px solid #5f6368;border-radius:14px;font-size:13px;font-weight:bold}"
+    ".nw{white-space:nowrap}"
     ".sh{padding:8px 8px 2px}.sh .m{margin:6px 4px 0}.lg{font-size:20px;font-weight:bold;color:#fff;margin:0 0 8px 4px}"
-    ".lg a{color:#fff;text-decoration:none}"
-    ".dk .m{color:#9aa0a6}.dk .r{border-color:#3c4043}.dk .h,.dk .s{color:#bdc1c6}.dk h2{color:#e8eaed}"
+    ".lg a{color:#fff}"
+    ".dk .m{color:#9aa0a6}.dk .r{border-color:#3c4043}.dk .h{color:#9aa0a6}.dk .s{color:#bdc1c6}.dk h2{color:#e8eaed}"
     ".dk .b{background:#303134;border-color:#5f6368;color:#8ab4f8}.dk .e{background:#3b2a1a;border-color:#8a6d3b;color:#f6d7a7}"
-    ".dk .u,.dk .q{background:#303134;color:#e8eaed;border:1px solid #5f6368}"
+    ".dk .u,.dk .q{background:#303134;color:#e8eaed;border-color:#5f6368}"
+    ".dk input[type=submit]{background:#8ab4f8;color:#202124}"
 )
 
 TEMPLATES = {
     "base.html": """<!DOCTYPE html>
-<html lang="pl">
+<html lang="pl"{{ self.bodyattr() }}>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width">
@@ -3327,7 +3346,7 @@ TEMPLATES = {
 <input type="submit" value="Szukaj">
 </form>
 """,
-    "_nav.html": """<div class="bar"{% if not bottom %} id="g"{% endif %}>{% if theme and images %}<img class="ic" src="{{ url_for('image', u=theme.icon, r=theme.site, ic=theme.bar[1:]) }}" width="16" height="16" alt="">{% endif %}{% if q %}<a href="{{ url_for('search', q=q, p=rp, w=1) }}"{% if not bottom %} accesskey="7"{% endif %}>{% if request.args.get('l') %}Szukaj w sieci{% else %}&laquo; Wróć do wyników{% endif %}</a> | {% endif %}<a href="{{ url_for('home') }}"{% if not bottom %} accesskey="0"{% endif %}>Nowe szukanie</a></div>
+    "_nav.html": """<div class="bar"{% if not bottom %} id="g"{% endif %}>{% if theme and images %}<img class="ic" src="{{ url_for('image', u=theme.icon, r=theme.site, ic=theme.bar[1:]) }}" width="16" height="16" alt="">{% endif %}{% if q %}<a href="{{ url_for('search', q=q, p=rp, w=1) }}"{% if not bottom %} accesskey="7"{% endif %}>{% if request.args.get('l') %}Szukaj w sieci{% else %}&laquo; Wyniki{% endif %}</a> {% endif %}<a href="{{ url_for('home') }}"{% if not bottom %} accesskey="0"{% endif %}>Nowe szukanie</a></div>
 """,
     "_settings.html": """<div class="f" id="d"><a href="{{ original }}" accesskey="9">[Oryginał]</a>{% if bookmark_url %} &middot; {% if bookmarked %}<a href="{{ url_for('bookmark_remove', u=bookmark_url, next=request.full_path) }}" accesskey="4">Usuń z zakładek</a>{% else %}<a href="{{ url_for('bookmark_add', u=bookmark_url, t=title, next=request.full_path) }}" accesskey="4">Dodaj do zakładek</a>{% endif %}{% endif %}<br>
 {% if has_images and not saving %}<a href="{{ url_for('settings', k='obrazki', v=0 if images else 1, next=request.full_path) }}">Obrazki: {{ "wyłącz" if images else "włącz" }}</a> &middot; {% endif %}{% if has_links %}<a href="{{ url_for('settings', k='linki', v=0 if links else 1, next=request.full_path) }}">Linki w tekście: {{ "wyłącz" if links else "włącz" }}</a>{% endif %}{% if has_images and not saving or has_links %}<br>
@@ -3347,12 +3366,12 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 {% block extra_style %}<style>{{ dark_style }}</style>{% endblock %}
 {% block bodyattr %} class="dk"{% endblock %}
 {% block body %}<div class="hm">
-<div class="logo">Szukajka</div>
+<div class="logo">Szuk<span>ajka</span></div>
 {% set plus = True %}{% include "_pill.html" %}<p class="m">Wpisz hasło albo adres strony.</p>
 </div>
-<div class="hb">{% if weather %}<a href="{{ url_for('weather_page') }}">{{ weather.city }}: {{ weather.temp }}&deg;C, {{ weather.desc }}</a>{% if weather.days|length > 1 %}<br><span class="m">jutro {{ weather.days[1].min }}&hellip;{{ weather.days[1].max }}&deg;C, {{ weather.days[1].desc }}</span>{% endif %}{% else %}<a href="{{ url_for('weather_page') }}">Pogoda</a>{% endif %}
-{% if rates %}<br>{% for code, value in rates.rates %}{{ code }} {{ value }}{% if not loop.last %} &middot; {% endif %}{% endfor %} <span class="m">zł (NBP)</span>{% endif %}
-<p><a href="{{ url_for('bookmarks') }}" accesskey="4">Zakładki{% if bookmarks_count %} ({{ bookmarks_count }}){% endif %}</a> &middot; <a href="{{ url_for('settings', k='oszcz', v=0 if saving else 1, next='/') }}">Oszczędzanie danych: {{ "wyłącz" if saving else "włącz" }}</a></p>
+<div class="hb">{% if weather %}<a class="cd" href="{{ url_for('weather_page') }}"><b>{{ weather.temp }}&deg;</b> {{ weather.city }}, {{ weather.desc }}{% if weather.days|length > 1 %}<br><span class="m">jutro {{ weather.days[1].min }}&hellip;{{ weather.days[1].max }}&deg;C, {{ weather.days[1].desc }}</span>{% endif %}</a>{% else %}<a class="cd" href="{{ url_for('weather_page') }}">Pogoda</a>{% endif %}
+{% if rates %}<div class="cd"><span class="m">Kursy NBP</span><br>{% for code, value in rates.rates %}<span class="nw">{{ code }} {{ value }}</span>{% if not loop.last %} &middot; {% endif %}{% endfor %} <span class="m">zł</span></div>
+{% endif %}<p><a href="{{ url_for('bookmarks') }}" accesskey="4" class="ch">Zakładki{% if bookmarks_count %} ({{ bookmarks_count }}){% endif %}</a> <a href="{{ url_for('settings', k='oszcz', v=0 if saving else 1, next='/') }}" class="ch">Oszczędzanie danych: {{ "wyłącz" if saving else "włącz" }}</a></p>
 <p class="m">Dane z Szukajki w tym miesiącu: {{ data_mb|mb1 }} &middot; tekst:{% for size, label in (("s", "A-"), ("m", "A"), ("l", "A+"), ("xl", "A++")) %} {% if text_size == size %}<b>{{ label }}</b>{% else %}<a href="{{ url_for('settings', k='tekst', v=size, next='/') }}">{{ label }}</a>{% endif %}{% endfor %}</p></div>
 {% endblock %}
 """,
@@ -3471,7 +3490,7 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
     "film.html": """{% extends "base.html" %}
 {% block title %}{{ title }}{% endblock %}
 {% block head %}{% if refresh %}<meta http-equiv="refresh" content="{{ refresh }};url={{ here }}">{% endif %}{% endblock %}
-{% block body %}<div class="bar">{% if theme and images %}<img class="ic" src="{{ url_for('image', u=theme.icon, r=theme.site, ic=theme.bar[1:]) }}" width="16" height="16" alt="">{% endif %}{% if referer %}<a href="{{ url_for('read', url=referer, q=q, rp=rp) }}">&laquo; Wróć do strony</a> | {% elif q %}<a href="{{ url_for('search', q=q, p=rp) }}">&laquo; Wróć do wyników</a> | {% endif %}<a href="{{ url_for('home') }}">Nowe szukanie</a></div>
+{% block body %}<div class="bar">{% if theme and images %}<img class="ic" src="{{ url_for('image', u=theme.icon, r=theme.site, ic=theme.bar[1:]) }}" width="16" height="16" alt="">{% endif %}{% if referer %}<a href="{{ url_for('read', url=referer, q=q, rp=rp) }}">&laquo; Strona</a> {% elif q %}<a href="{{ url_for('search', q=q, p=rp) }}">&laquo; Wyniki</a> {% endif %}<a href="{{ url_for('home') }}">Nowe szukanie</a></div>
 <div class="w">
 <h1>{{ title }}</h1>
 <p class="m">{{ host }}{% if status and status.total %} &middot; {{ status.total|mmss }}{% endif %}{% if part_total and part_total > 1 %} &middot; część {{ part }} z {{ part_total }}{% elif part > 1 %} &middot; część {{ part }}{% endif %}</p>
