@@ -65,7 +65,9 @@ Każdy film ma miniaturę (220 px, ok. 2–4 KB) ze znakiem „odtwórz”: obra
 - **MP4** – H.264 Baseline (poziom 1.3), do 320×240 (pionowe do 240×320), 15 kl./s, AAC mono – ok. 2 MB na minutę,
 - **3GP** – H.263 176×144, dźwięk AMR – ok. 1 MB na minutę; najbardziej zgodny ze starszymi odtwarzaczami.
 
-Długie filmy są dzielone na części po 15 minut. Strona postępu odświeża się sama. Pliki można pobierać ze wznawianiem
+Filmy są dzielone na części 3, 6 i 12 min, a dalej po 15 min: pierwsza część jest gotowa szybko (na darmowym Render
+ok. 1,5 min), a każda następna przygotowuje się sama w tle, gdy oglądasz poprzednią. Film wybrany przez użytkownika
+ma pierwszeństwo – przerywa przygotowywanie w tle części innego filmu. Strona postępu odświeża się sama. Pliki można pobierać ze wznawianiem
 (Range), a gotowe filmy znikają po 3 godzinach. ffmpeg instaluje pip z pakietu `imageio-ffmpeg`, więc nie trzeba niczego
 doinstalowywać na Render.
 
@@ -74,7 +76,7 @@ odtwarzaczy, które pobierają adres filmu dopiero przez własne API z kluczem, 
 Na darmowym planie Render (słaby procesor) przygotowanie 10-minutowego filmu trwa kilka minut, a naraz
 przygotowywany jest jeden film (kolejne czekają).
 
-Strojenie: `VIDEO_PART_MINUTES` (15), `VIDEO_SOURCE_MAX_MB` (400), `VIDEO_CONVERT_MINUTES` (40), `VIDEO_JOBS` (1),
+Strojenie: `VIDEO_FIRST_PARTS_MINUTES` (3,6,12), `VIDEO_PART_MINUTES` (15), `VIDEO_SOURCE_MAX_MB` (400), `VIDEO_CONVERT_MINUTES` (40), `VIDEO_JOBS` (1),
 `VIDEO_DISK_MB` (1500), `VIDEO_DIR`.
 
 ## Wdrożenie na Render.com

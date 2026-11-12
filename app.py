@@ -84,7 +84,10 @@ Image.MAX_IMAGE_PIXELS = 25_000_000  # ochrona przed „bombami” (ogromne wymi
 # Filmy: serwer pobiera plik (albo strumień HLS .m3u8), przekodowuje go ffmpegiem do małego pliku, który odtwarzacz
 # wideo Nokii 235 4G / 3210 4G udźwignie, i podaje go do pobrania. Długie filmy dzielimy na części.
 VIDEO_DIR = os.environ.get("VIDEO_DIR") or os.path.join(tempfile.gettempdir(), "szukajka-filmy")
-VIDEO_PART_SECONDS = int(os.environ.get("VIDEO_PART_MINUTES", "15")) * 60  # długość jednej części filmu
+VIDEO_PART_SECONDS = int(os.environ.get("VIDEO_PART_MINUTES", "15")) * 60  # długość dalszych części filmu
+# Pierwsze części są krótsze, żeby oglądanie zaczęło się szybko: 3 min są gotowe po ok. minucie nawet na słabym serwerze.
+# Każda następna jest najwyżej 2× dłuższa, więc przygotowana w tle zdąży, zanim skończy się oglądanie poprzedniej.
+VIDEO_FIRST_PARTS = [int(m) * 60 for m in os.environ.get("VIDEO_FIRST_PARTS_MINUTES", "3,6,12").split(",") if m.strip()]
 VIDEO_MAX_PARTS = 20
 VIDEO_SOURCE_MAX_BYTES = int(os.environ.get("VIDEO_SOURCE_MAX_MB", "400")) * 1_000_000  # większych plików nie pobieramy
 VIDEO_DOWNLOAD_DEADLINE = 600  # s na pobranie źródła
@@ -1147,6 +1150,27 @@ VIDEO_FORMATS = {
     "3gp": {"name": "3GP", "mime": "video/3gpp", "about": "H.263, 176×144, ok. 1,2 MB na minutę – dla starszych odtwarzaczy"},
 }
 VIDEO_ACTIVE = ("download", "convert")
+
+
+class VideoCancelled(Exception):
+    """Zadanie w tle przerwane, bo ktoś zaczął oglądać inny film."""
+
+
+def part_length(index):
+    return VIDEO_FIRST_PARTS[index] if index < len(VIDEO_FIRST_PARTS) else VIDEO_PART_SECONDS
+
+
+def part_bounds(index):
+    """(początek, długość) części filmu w sekundach (części numerowane od 0)."""
+    return sum(part_length(i) for i in range(index)), part_length(index)
+
+
+def part_count(total):
+    count, start = 0, 0
+    while start < (total or 0) - 1 and count < VIDEO_MAX_PARTS:  # bez ułamka sekundy jako osobnej części
+        start += part_length(count)
+        count += 1
+    return max(count, 1)
 _ffmpeg = {}
 _video_start_lock = threading.Lock()
 
@@ -1371,13 +1395,18 @@ def write_status(key, status):
     os.replace(tmp, video_path(key + ".json"))
 
 
-def active_video_jobs():
-    count = 0
+def active_jobs():
+    jobs = []
     for name in os.listdir(VIDEO_DIR):
         if name.endswith(".json"):
             status = read_status(name[:-5])
-            count += bool(status and status.get("state") in VIDEO_ACTIVE)
-    return count
+            if status and status.get("state") in VIDEO_ACTIVE:
+                jobs.append((name[:-5], status))
+    return jobs
+
+
+def active_video_jobs():
+    return len(active_jobs())
 
 
 def cleanup_videos():
@@ -1557,11 +1586,11 @@ def prepare_hls(url, text, headers, part, report):
         if item["byterange"]:
             raise FetchError("Ten rodzaj strumienia HLS nie jest obsługiwany.", 415)
     total = sum(duration for duration, _ in playlist["segments"])
-    start = part * VIDEO_PART_SECONDS
+    start, length = part_bounds(part)
     if start >= total:
         raise FetchError("Ten film nie ma takiej części.", 404)
     base = "hls-" + hashlib.sha1(f"{url}\n{part}".encode("utf-8")).hexdigest()[:32]
-    picked = [(suffix, item) + pick_segments(item, start, start + VIDEO_PART_SECONDS) for suffix, item in lists]
+    picked = [(suffix, item) + pick_segments(item, start, start + length) for suffix, item in lists]
     download = Download(report, segments=sum(len(uris) + bool(item["init"]) for _, item, uris, _ in picked))
     inputs = []
     for suffix, item, uris, offset in picked:
@@ -1672,7 +1701,7 @@ def prepare_source(src, referer, part, report, depth=0, seen=None):
     cached = video_path("src-" + hashlib.sha1(src.encode("utf-8")).hexdigest()[:32] + ".bin")
     if os.path.isfile(cached):
         os.utime(cached)
-        return [(cached, part * VIDEO_PART_SECONDS)], None
+        return [(cached, part_bounds(part)[0])], None
     resp = open_media(src, headers)
     final_url = resp.url or src
     content_type = resp.headers.get("Content-Type", "").split(";")[0].strip().lower()
@@ -1706,7 +1735,7 @@ def prepare_source(src, referer, part, report, depth=0, seen=None):
     finally:
         if os.path.exists(tmp):
             os.remove(tmp)
-    return [(cached, part * VIDEO_PART_SECONDS)], None
+    return [(cached, part_bounds(part)[0])], None
 
 
 def probe_video(exe, path):
@@ -1747,6 +1776,10 @@ def run_ffmpeg(cmd, length, report):
                     last = time.monotonic()
                     report(progress=max(0, min(99, int(done * 100 / max(length, 1)))))
             code = proc.wait()
+        except BaseException:
+            proc.kill()  # np. zadanie przerwane – ffmpeg nie może pracować dalej
+            proc.wait()
+            raise
         finally:
             timer.cancel()
         if code != 0:
@@ -1757,11 +1790,15 @@ def run_ffmpeg(cmd, length, report):
             raise FetchError("Nie udało się przekodować filmu (nieobsługiwany format?).", 415)
 
 
-def video_job(key, src, referer, fmt, part):
-    """Zadanie w tle: pobranie źródła, przekodowanie, zapis gotowego pliku. Postęp zapisuje do <key>.json."""
-    status = {"state": "download", "fmt": fmt, "part": part, "got": 0, "progress": 0}
+def video_job(key, src, referer, fmt, part, auto=False):
+    """Zadanie w tle: pobranie źródła, przekodowanie, zapis gotowego pliku. Postęp zapisuje do <key>.json.
+    auto=True: następna część przygotowywana z wyprzedzeniem – ustępuje miejsca filmom, które ktoś właśnie wybrał."""
+    status = {"state": "download", "fmt": fmt, "part": part, "got": 0, "progress": 0, "auto": auto}
+    cancel = video_path(key + ".cancel")
 
     def report(**changes):
+        if os.path.exists(cancel):
+            raise VideoCancelled()
         status.update(changes)
         write_status(key, status)
 
@@ -1776,10 +1813,10 @@ def video_job(key, src, referer, fmt, part):
         if not has_video:
             raise FetchError("W tym pliku nie ma obrazu albo jego format nie jest obsługiwany.", 415)
         total = total or duration
-        start = part * VIDEO_PART_SECONDS
+        start, part_seconds = part_bounds(part)
         if total and start >= total:
             raise FetchError("Ten film nie ma takiej części.", 404)
-        length = min(VIDEO_PART_SECONDS, total - start) if total else VIDEO_PART_SECONDS
+        length = min(part_seconds, total - start) if total else part_seconds
         report(state="convert", progress=0, total=total, length=length)
         cmd = [exe, "-hide_banner", "-nostdin", "-y", "-loglevel", "error"]
         for path, offset in inputs:
@@ -1787,7 +1824,7 @@ def video_job(key, src, referer, fmt, part):
             if offset > 0.05:
                 cmd += ["-ss", f"{offset:.2f}"]
             cmd += ["-i", path]
-        cmd += ["-t", str(VIDEO_PART_SECONDS), "-map", "0:v:0", "-map", "1:a:0?" if len(inputs) > 1 else "0:a:0?",
+        cmd += ["-t", str(part_seconds), "-map", "0:v:0", "-map", "1:a:0?" if len(inputs) > 1 else "0:a:0?",
                 "-sn", "-dn", "-map_metadata", "-1", "-threads", "2", *encode_args(fmt),
                 "-progress", "pipe:1", "-nostats", out_tmp]
         run_ffmpeg(cmd, length, report)
@@ -1795,27 +1832,44 @@ def video_job(key, src, referer, fmt, part):
         os.replace(out_tmp, out)
         report(state="done", progress=100, size=os.path.getsize(out))
         log.info("film gotowy: %s część %s (%s, %d B)", src, part + 1, fmt, status["size"])
+        if not auto and total and part + 1 < part_count(total):  # następna część od razu, w tle
+            start_video_job(video_key(src, fmt, part + 1), src, referer, fmt, part + 1, auto=True)
+    except VideoCancelled:
+        log.info("przerwano przygotowanie w tle: %s część %s", src, part + 1)
+        for path in (video_path(key + ".json"),):
+            if os.path.exists(path):
+                os.remove(path)  # zacznie się od nowa, gdy ktoś poprosi o tę część
     except FetchError as err:
         log.warning("film nieudany: %s – %s", src, err.message)
-        report(state="error", message=err.message, blocked=err.blocked)
+        status.update(state="error", message=err.message, blocked=err.blocked)
+        write_status(key, status)
     except Exception:
         log.exception("film nieudany: %s", src)
-        report(state="error", message="Nie udało się przygotować filmu. Spróbuj ponownie albo wybierz inny format.")
+        status.update(state="error", message="Nie udało się przygotować filmu. Spróbuj ponownie albo wybierz inny format.")
+        write_status(key, status)
     finally:
-        for path in (out_tmp, video_path(key + ".claim")):
+        for path in (out_tmp, video_path(key + ".claim"), cancel):
             if os.path.exists(path):
                 os.remove(path)
 
 
-def start_video_job(key, src, referer, fmt, part):
-    """Uruchamia przygotowanie filmu w tle. False, gdy serwer zajmuje się już VIDEO_JOBS innymi filmami."""
+def start_video_job(key, src, referer, fmt, part, auto=False):
+    """Uruchamia przygotowanie filmu w tle. False, gdy serwer zajmuje się już VIDEO_JOBS innymi filmami.
+    Film wybrany przez użytkownika przerywa zadania „auto” (części przygotowywane z wyprzedzeniem)."""
     os.makedirs(VIDEO_DIR, exist_ok=True)
     with _video_start_lock:
         current = read_status(key)
         if current and current.get("state") in VIDEO_ACTIVE + ("done",):
             return True
-        if active_video_jobs() >= VIDEO_JOBS:
-            return False
+        jobs = active_jobs()
+        if len(jobs) >= VIDEO_JOBS:
+            background = [k for k, st in jobs if st.get("auto")]
+            if auto or len(jobs) - len(background) >= VIDEO_JOBS:
+                return False
+            for other in background:  # ustępują: zatrzymają się w ciągu ok. 2 s
+                open(video_path(other + ".cancel"), "w").close()
+        if os.path.exists(video_path(key + ".cancel")):
+            os.remove(video_path(key + ".cancel"))  # pozostałość po przerwanym wcześniej zadaniu
         claim = video_path(key + ".claim")  # chroni przed startem tego samego zadania w drugim procesie Gunicorna
         try:
             os.close(os.open(claim, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
@@ -1823,8 +1877,8 @@ def start_video_job(key, src, referer, fmt, part):
             if time.time() - os.path.getmtime(claim) < 30:
                 return True
             os.utime(claim)
-        write_status(key, {"state": "download", "fmt": fmt, "part": part, "got": 0, "progress": 0})
-    threading.Thread(target=video_job, args=(key, src, referer, fmt, part), daemon=True).start()
+        write_status(key, {"state": "download", "fmt": fmt, "part": part, "got": 0, "progress": 0, "auto": auto})
+    threading.Thread(target=video_job, args=(key, src, referer, fmt, part, auto), daemon=True).start()
     return True
 
 
@@ -2142,11 +2196,11 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 {% block body %}<div class="bar">{% if referer %}<a href="{{ url_for('read', url=referer, q=q, rp=rp) }}">&laquo; Wróć do strony</a> | {% elif q %}<a href="{{ url_for('search', q=q, p=rp) }}">&laquo; Wróć do wyników</a> | {% endif %}<a href="{{ url_for('home') }}">Nowe szukanie</a></div>
 <div class="w">
 <h1>{{ title }}</h1>
-<p class="m">{{ host }}{% if status and status.total %} &middot; {{ status.total|mmss }}{% endif %}{% if part > 1 or (status and status.total and status.total > part_seconds) %} &middot; część {{ part }}{% if status and status.total %} z {{ (status.total / part_seconds)|round(0, 'ceil')|int }}{% endif %}{% endif %}</p>
+<p class="m">{{ host }}{% if status and status.total %} &middot; {{ status.total|mmss }}{% endif %}{% if part_total and part_total > 1 %} &middot; część {{ part }} z {{ part_total }}{% elif part > 1 %} &middot; część {{ part }}{% endif %}</p>
 {% if poster_img and mode in ("choose", "done") %}<div class="ph"><img src="{{ poster_img }}" alt=""></div>
 {% endif %}{% if mode == "choose" %}{% for f, info in formats.items() %}<a class="b" href="{{ link(f=f) }}">{{ info.name }}{% if ready[f] %} &ndash; gotowy{% endif %}</a>
 <p class="m">{{ info.about }}</p>
-{% endfor %}<p>Serwer pobiera film i zmniejsza go dla telefonu. Krótki film jest gotowy po chwili, długi po kilku minutach. Gotowy plik otworzy odtwarzacz telefonu. Długie filmy są dzielone na części po {{ part_minutes }} min.</p>
+{% endfor %}<p>Serwer pobiera film i zmniejsza go dla telefonu. Pierwsza część ({{ first_minutes }} min) jest gotowa najszybciej, zwykle po 1&ndash;2 minutach. Kolejne części serwer przygotowuje sam w tle, gdy oglądasz poprzednią. Gotowy plik otworzy odtwarzacz telefonu.</p>
 <p class="m">Zacznij od MP4. Gdy telefon go nie odtworzy, wybierz 3GP.</p>
 {% elif mode == "busy" %}<p>Serwer przygotowuje teraz inny film. Ten zacznie się zaraz po nim &ndash; strona odświeża się sama.</p>
 <a class="b" href="{{ here }}">Odśwież</a>
@@ -2157,8 +2211,9 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 {% elif mode == "done" %}<a class="b" href="{{ url_for('video_file', key=key, ext=fmt) }}">Odtwórz film ({{ fmt_name }}, {{ status.size|mb }})</a>
 <p class="m">{% if status.length %}Czas: {{ status.length|mmss }}. {% endif %}Plik otworzy odtwarzacz telefonu.</p>
 <p><a href="{{ url_for('video_file', key=key, ext=fmt, d=1) }}">Zapisz w pamięci telefonu</a></p>
-{% if status.total and status.total > part * part_seconds %}<a class="b" href="{{ link(f=fmt, c=part + 1) }}">Następna część ({{ part + 1 }}) &raquo;</a>
-{% endif %}{% if part > 1 %}<a class="b" href="{{ link(f=fmt, c=part - 1) }}">&laquo; Poprzednia część</a>
+{% if has_next %}<a class="b" href="{{ link(f=fmt, c=part + 1) }}">Następna część ({{ part + 1 }}){% if next_ready %} &ndash; gotowa{% endif %} &raquo;</a>
+{% if not next_ready %}<p class="m">Następna część przygotowuje się w tle.</p>
+{% endif %}{% endif %}{% if part > 1 %}<a class="b" href="{{ link(f=fmt, c=part - 1) }}">&laquo; Poprzednia część</a>
 {% endif %}<p><a href="{{ link(f=other, c=part) }}">Nie działa? Spróbuj {{ formats[other].name }}</a></p>
 {% else %}<div class="e">{{ status.message }}</div>
 {% if status.blocked %}<a class="b" href="{{ referer or src }}">Otwórz bezpośrednio w Operze</a>
@@ -2364,7 +2419,8 @@ def video():
     poster_img = url_for("image", u=src, v=1, p=poster or None, f=fallback or None,
                          r=f"{site_url.scheme}://{site_url.netloc}") if images_enabled() else None
     page = dict(src=src, referer=referer, title=title, host=host_of(src), part=part, formats=VIDEO_FORMATS, poster_img=poster_img,
-                part_seconds=VIDEO_PART_SECONDS, part_minutes=VIDEO_PART_SECONDS // 60, link=link, status=None, **common)
+                first_minutes=part_length(0) // 60, link=link, status=None, part_total=None, has_next=False,
+                next_ready=False, **common)
     os.makedirs(VIDEO_DIR, exist_ok=True)
     if fmt not in VIDEO_FORMATS:
         ready = {f: (read_status(video_key(src, f, part - 1)) or {}).get("state") == "done" for f in VIDEO_FORMATS}
@@ -2379,6 +2435,13 @@ def video():
         status = read_status(key) or {"state": "download", "got": 0, "progress": 0}
     page["status"] = status
     state = status.get("state")
+    if status.get("total"):
+        page["part_total"] = part_count(status["total"])
+        page["has_next"] = part < page["part_total"]
+    if state == "done" and page["has_next"]:  # oglądasz tę część – następna przygotowuje się w tle
+        next_key = video_key(src, fmt, part)
+        start_video_job(next_key, src, referer, fmt, part, auto=True)
+        page["next_ready"] = (read_status(next_key) or {}).get("state") == "done"
     if state in VIDEO_ACTIVE:
         return render_template("film.html", mode="work", refresh=8, **page)
     return render_template("film.html", mode="done" if state == "done" else "error", **page)
