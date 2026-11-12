@@ -16,6 +16,10 @@ nawigacja samymi strzałkami.
 
 ## Układ artykułu jak na oryginale
 
+- nazwa serwisu (`og:site_name`) pod tytułem i ścieżka nawigacji („Strona główna / Kategoria”) nad tytułem – widoczna na
+  stronie, a gdy jej brak, z JSON-LD `BreadcrumbList`,
+- karta danych jak na stronie: wiersze „Etykieta : wartości” (np. Autor, Kategoria, Tagi) zebrane w ramce pod zdjęciem
+  głównym, z linkami; bez „Zobacz też”, polecanych, nagłówka i stopki strony,
 - tytuł z nagłówka strony (`<h1>`), bez dopisku serwisu („Polska”, a nie „Polska – Wikipedia, wolna encyklopedia”),
 - linki w tekście akapitów (przez czytnik); na dole przełącznik „Linki w tekście: wyłącz/włącz” – na klawiaturze każdy
   link to dodatkowy przystanek strzałki,

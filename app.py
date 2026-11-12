@@ -1312,7 +1312,103 @@ def lead_paragraphs(container, anchor, shown, base_url):
     return lead
 
 
-def extract_article(html, url, videos=None, posters=None):
+META_LABEL = re.compile(r"^\s*([^\W\d_][\w .'&/-]{0,24}?)\s*:\s*$")
+META_SKIP = {"nav", "footer", "header", "aside", "form", "table"}
+META_NOT_DATA = re.compile(r"also|like|related|recommend|more|share|follow|polecan|podobn|zobacz|więcej|udostępnij|czytaj", re.I)
+
+
+def meta_rows(soup, base_url):
+    """Wiersze danych typu „Autor : Jan Kowalski”, „Tagi : a, b, c” (etykieta z dwukropkiem i linki obok) – jak karta
+    z informacjami na oryginalnej stronie. Zwraca wiersze w formacie tabeli informacyjnej i adresy użytych linków."""
+    rows, used, seen = [], set(), set()
+    for label_text in soup.find_all(string=META_LABEL):
+        label_tag = label_text.parent
+        if label_tag is None or label_tag.name in ("script", "style", "a", "option", "title"):
+            continue
+        if label_tag.name in META_SKIP or any(a.name in META_SKIP for a in label_tag.parents):
+            continue  # nagłówek i stopka strony, menu, formularze
+        row = label_tag
+        for _ in range(3):  # w górę do pierwszego poziomu, na którym obok etykiety jest wartość (link albo tekst)
+            if row.find("a", href=True) is not None or squash(node_text(row).replace(label_text.strip(), "", 1)):
+                break
+            if row.parent is None:
+                break
+            row = row.parent
+        if id(row) in seen or len(row.find_all(string=META_LABEL)) > 1 or len(node_text(row)) > 400:
+            continue  # cały kontener wielu wierszy albo zwykły tekst
+        seen.add(id(row))
+        label = META_LABEL.match(label_text).group(1).strip()
+        if META_NOT_DATA.search(label):
+            continue  # „Zobacz też:”, „You might also like:” – to nie dane tej strony
+        links = []
+        for link in row.find_all("a", href=True):
+            href, text = urljoin(base_url, link["href"].strip()), node_text(link)
+            if text and urlparse(href).scheme in ("http", "https") and len(links) < 30:
+                links.append(f"\x01{href}\x02{text}\x03")
+                used.add(href)
+        if links:
+            rows.append({"l": label, "v": ", ".join(links)})
+        else:
+            value = squash(node_text(row).replace(label_text.strip(), "", 1))
+            if 1 <= len(value) <= 60:
+                rows.append({"l": label, "v": value})
+    return (rows, used) if len(rows) >= 2 else ([], set())  # pojedynczy „X:” to zwykle nie karta danych
+
+
+def breadcrumbs(soup, base_url):
+    """Ścieżka nawigacji („Strona główna / Kategoria / …”) – widoczna na stronie (element breadcrumb), a gdy jej brak,
+    z JSON-LD BreadcrumbList. Bez ostatniego elementu, gdy to bieżąca strona (tytuł stoi pod spodem)."""
+    crumbs = []
+    for tag in soup.find_all(True):
+        hint = " ".join(tag.get("class") or []) + " " + (tag.get("id") or "") + " " + (tag.get("aria-label") or "")
+        if re.search(r"breadcrumb|okruszk", hint, re.I):
+            crumbs = [(shorten(node_text(a), 40), urljoin(base_url, a["href"])) for a in tag.find_all("a", href=True) if node_text(a)]
+            if crumbs:
+                tag.decompose()  # ścieżkę pokazujemy nad tytułem – nie powtarzamy jej w treści
+                break
+    if not crumbs:
+        crumbs = jsonld_breadcrumbs(soup, base_url)
+    page = base_url.split("#")[0].rstrip("/")
+    while crumbs and (crumbs[-1][1] is None or crumbs[-1][1].split("#")[0].rstrip("/") == page):
+        crumbs.pop()
+    return crumbs[:6] if crumbs else []
+
+
+def jsonld_breadcrumbs(soup, base_url):
+    for script in soup.find_all("script", type="application/ld+json"):
+        try:
+            stack = [json.loads(script.string or "")]
+        except ValueError:
+            continue
+        while stack:
+            item = stack.pop()
+            if isinstance(item, list):
+                stack.extend(item)
+            elif isinstance(item, dict):
+                if "BreadcrumbList" in str(item.get("@type", "")) and isinstance(item.get("itemListElement"), list):
+                    crumbs = []
+                    for entry in sorted((e for e in item["itemListElement"] if isinstance(e, dict)),
+                                        key=lambda e: e.get("position") or 0):
+                        target = entry.get("item")
+                        name = entry.get("name") or (target.get("name") if isinstance(target, dict) else None)
+                        link = (target.get("@id") or target.get("url")) if isinstance(target, dict) else target
+                        if isinstance(name, str) and squash(name):
+                            crumbs.append((shorten(squash(name), 40), urljoin(base_url, link) if isinstance(link, str) else None))
+                    if len(crumbs) >= 2:
+                        return crumbs
+                stack.extend(v for v in item.values() if isinstance(v, (list, dict)))
+    return []
+
+
+def site_name(soup):
+    for attrs in ({"property": "og:site_name"}, {"name": "application-name"}, {"name": "apple-mobile-web-app-title"}):
+        tag = soup.find("meta", attrs=attrs)
+        if tag is not None and squash(tag.get("content") or ""):
+            return shorten(squash(tag["content"]), 40)
+    return None
+
+
+def extract_article(html, url, videos=None, posters=None, info=None):
     """Zwraca (tytuł, bloki), gdzie blok to ("h" | "p", tekst, adres_linku_lub_None).
     Gdy podano listę `videos`, trafiają do niej adresy filmów ze strony."""
     html = CONTROL_CHARS.sub("", html)
@@ -1328,6 +1424,9 @@ def extract_article(html, url, videos=None, posters=None):
     # readability usuwa z obrazków width/height – ikonki rozpoznajemy po wymiarach z oryginalnej strony
     small_images = {image_source(img, url, check_size=False) for img in soup.find_all("img") if is_small_image(img)}
     heading = node_text(soup.find("h1"))
+    if info is not None:
+        info["crumbs"], info["site_name"] = breadcrumbs(soup, url), site_name(soup)
+    meta, meta_links = meta_rows(soup, url)
     infobox = clean_document(soup, url)
     blocks = []
     if Document is not None:
@@ -1369,8 +1468,17 @@ def extract_article(html, url, videos=None, posters=None):
     # Tytuł jak na stronie: nagłówek <h1> zamiast <title> z dopiskiem serwisu („Polska – Wikipedia, wolna encyklopedia”)
     if heading and len(heading) <= 200 and fold(heading) in fold(node_text(soup.title) or title):
         title = heading
-    if blocks and blocks[0][0] == "h" and blocks[0][1] == title:
-        blocks = blocks[1:]  # tytuł pokazujemy osobno
+    # tytuł pokazujemy osobno – bez powtórzenia w treści (także gdy stoi pod zdjęciem głównym)
+    for index, block in enumerate(blocks[:3]):
+        if block[0] == "h" and fold(block[1]) == fold(title):
+            blocks = blocks[:index] + blocks[index + 1:]
+            break
+    if meta and not infobox and not front_page:  # karta danych („Autor: …”, „Tagi: …”) pod zdjęciem głównym
+        blocks = [b for b in blocks if not (b[0] in ("p", "h") and b[2] in meta_links)]
+        position = 1 if blocks and blocks[0][0] in ("img", "thumb") else 0
+        if position and blocks[0][0] == "thumb":
+            blocks[0] = ("img",) + tuple(blocks[0][1:])  # zdjęcie główne nad kartą – pełne, nie miniatura listy
+        blocks.insert(position, ("ib", json.dumps(meta, ensure_ascii=False), None))
     if infobox:  # tabela informacyjna po pierwszym akapicie, jak w mobilnej Wikipedii (także w krótkich hasłach)
         position = next((i + 1 for i, b in enumerate(blocks) if b[0] in ("p", "pl")), 0)
         blocks.insert(position, ("ib", json.dumps(infobox, ensure_ascii=False), None))
@@ -1497,12 +1605,12 @@ def load_article(url):
     if CHALLENGE_TITLE.search(text[:5000]) and len(text) < 60_000:
         log.warning("strona pokazała sprawdzanie przeglądarki: %s", final_url)
         raise FetchError(BLOCKED_MESSAGE, 403, blocked=True)
-    videos, posters = [], {}
+    videos, posters, info = [], {}, {}
     if content_type == "text/plain":
         title = host_of(final_url)
         blocks = [("p", squash(part), None) for part in re.split(r"\n\s*\n", text) if squash(part)]
     else:
-        title, blocks = extract_article(text, final_url, videos, posters)
+        title, blocks = extract_article(text, final_url, videos, posters, info)
     if not blocks and videos:
         blocks = [("p", "Na tej stronie jest film – wybierz go wyżej.", None)]
     if not blocks:
@@ -1532,7 +1640,8 @@ def load_article(url):
     timing = {"pobranie": fetched - started, "tresc": extracted - fetched, "wyglad": done - extracted}
     log.info("czytnik %s: %s", final_url, ", ".join(f"{k} {v:.1f}s" for k, v in timing.items()))
     article = {"title": title, "url": final_url, "pages": paginate(kept, ARTICLE_PAGE_CHARS), "videos": videos, "timing": timing,
-               "posters": posters, "theme": theme}
+               "posters": posters, "theme": theme,
+               "crumbs": info.get("crumbs") or [], "site_name": info.get("site_name")}
     article_cache.set(url, article)
     return article
 
@@ -2833,7 +2942,7 @@ STYLE = (
     ".it a{font-weight:bold;text-decoration:none}.it a.n{display:block;margin-left:86px}"
     ".ph{margin:4px 0 10px}.ph img{max-width:100%;border:0}"
     ".ib{border:1px solid #c8ccd1;background:#f8f9fa;padding:5px 7px;margin:4px 0 10px;font-size:13px;line-height:1.3}"
-    ".ibt{font-weight:bold;text-align:center;margin:2px 0 4px}.ibi{text-align:center;margin:4px 0 6px}.ib img{border:0}"
+    ".bc{font-size:12px;margin:6px 0 0}.ibt{font-weight:bold;text-align:center;margin:2px 0 4px}.ibi{text-align:center;margin:4px 0 6px}.ib img{border:0}"
     ".ib1 img{max-width:100%}.ib2{display:inline-block;width:48%;vertical-align:top;text-align:center}"
     ".v{margin:6px 0 10px;padding:4px;text-align:center;background:#eef3fd;border:1px solid #c6d5f5}"
     ".v img{max-width:100%;margin:0 0 4px;border:0}.v a{font-weight:bold}"
@@ -2952,8 +3061,9 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 {% macro tl(text) %}{% if links %}{{ inline_links(text, q, rp) }}{% else %}{{ visible(text) }}{% endif %}{% endmacro %}
 {% block head %}{% if film and film.mode in ("work", "busy") %}<meta http-equiv="refresh" content="{{ 8 if film.mode == 'work' else 15 }};url={{ url_for('read', url=url, q=q, rp=rp, wf=film.index, wfmt=film.fmt, wc=film.part, n=tick) }}#film{{ film.index }}">{% endif %}{% endblock %}
 {% block body %}{% include "_nav.html" %}<div class="w">
-<h1>{{ title }}</h1>
-<p class="m">{{ host }}{% if pages > 1 %} &middot; strona {{ page }} z {{ pages }}{% endif %}</p>
+{% if crumbs and page == 1 %}<div class="bc">{% for name, href in crumbs %}{% if not loop.first %} / {% endif %}{% if href %}<a href="{{ url_for('read', url=href, q=q, rp=rp) }}">{{ name }}</a>{% else %}{{ name }}{% endif %}{% endfor %}</div>
+{% endif %}<h1>{{ title }}</h1>
+<p class="m">{{ site_name or host }}{% if pages > 1 %} &middot; strona {{ page }} z {{ pages }}{% endif %}</p>
 {% if page == 1 %}{% for v in videos %}{% set i = loop.index %}{% set start = url_for('read', url=url, q=q, rp=rp, wf=i) ~ '#film' ~ i %}<div class="v" id="film{{ i }}">{% if images %}<a href="{{ start }}"><img src="{{ url_for('image', u=v.url, v=1, p=v.poster, f=v.fallback, r=site) }}" alt=""></a><br>{% endif %}
 {% if film and film.index == i %}{% set f = film %}{% set again = url_for('read', url=url, q=q, rp=rp, wf=i, wfmt=f.fmt, wc=f.part, n=tick) ~ '#film' ~ i %}{% if f.mode == "work" %}<b>Przygotowuję film{% if f.part > 1 or (f.part_total and f.part_total > 1) %}, część {{ f.part }}{% endif %}&hellip;</b><br>
 {% if f.status.state == "download" %}Pobieranie: {{ f.status.got|mb }}{% if f.status.progress %} ({{ f.status.progress }}%){% endif %}{% else %}Zmniejszanie dla telefonu: {{ f.status.progress }}%{% endif %}<br>
@@ -3264,7 +3374,8 @@ def read():
         site=f"{parts.scheme}://{parts.netloc}",
         videos=videos, film=film, formats=VIDEO_FORMATS, theme=theme_cache.get(parts.hostname or "") or article.get("theme"),
         tick=int(time.time()) % 100000,
-        links=links_enabled(), has_links=any(b[0] == "pl" for p in pages for b in p), **common,
+        links=links_enabled(), has_links=any(b[0] in ("pl", "ib") for p in pages for b in p),
+        crumbs=article.get("crumbs") or [], site_name=article.get("site_name"), **common,
     ), 200, {"Server-Timing": server_timing(article, time.monotonic() - started)}
 
 
