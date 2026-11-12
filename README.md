@@ -28,7 +28,7 @@ Strojenie zmiennymi środowiskowymi: `IMAGE_MAX_WIDTH` (220), `IMAGE_MAX_HEIGHT`
 ## Filmy dla Nokii 235 4G / 3210 4G
 
 Czytnik wykrywa filmy na stronie (`<video>`, `og:video`, JSON-LD, linki do plików .mp4/.webm/.m3u8…, adresy w skryptach
-odtwarzaczy, odtwarzacz Kaltura) i pokazuje przycisk „Film: obejrzyj na telefonie”. Link prosto do pliku filmu
+odtwarzaczy, Vimeo – także osadzone na innych stronach, odtwarzacz Kaltura) i pokazuje przycisk „Film: obejrzyj na telefonie”. Link prosto do pliku filmu
 otwiera od razu stronę filmu. Serwer pobiera film (zwykły plik albo strumień HLS – wtedy najniższą jakość, która
 wypełni ekran), przekodowuje go ffmpegiem i podaje gotowy plik, który otwiera odtwarzacz telefonu:
 

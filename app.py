@@ -818,6 +818,7 @@ VIDEO_FILE = re.compile(r"\.(mp4|m4v|mov|webm|mkv|3gp|3g2|avi|flv|mpe?g|m3u8)$",
 SCRIPT_VIDEO = re.compile(
     r"""https?:(?:\\?/){2}[^"'\s<>]+?\.(?:mp4|m4v|webm|m3u8|mov|3gp)(?:\?[^"'\s<>]*)?(?=["'\s<>\\]|$)""", re.I
 )
+VIMEO_PLAYER = re.compile(r"^https://player\.vimeo\.com/video/\d+", re.I)
 KALTURA_PARTNER = re.compile(r"""(?:partner_?id["']?\s*[:=]\s*["']?|/p/)(\d{3,9})""", re.I)
 KALTURA_ENTRY = re.compile(r"""(?:entry_?id["']?\s*[:=/]\s*["']?)([01]_[a-z0-9]{8})""", re.I)
 # ffmpeg czyta tylko lokalne pliki i tylko zwykłe formaty filmów – nigdy list (HLS, concat), które mogłyby wskazać
@@ -862,7 +863,7 @@ def find_videos(soup, base_url):
         src = urljoin(base_url, value)
         if urlparse(src).scheme not in ("http", "https") or len(src) > MAX_URL_LENGTH:
             return
-        if need_ext and not is_video_url(src):
+        if need_ext and not is_video_url(src) and not VIMEO_PLAYER.match(src):
             return
         if src not in found:
             found.append(src)
@@ -895,6 +896,9 @@ def find_videos(soup, base_url):
                 stack.extend(v for v in item.values() if isinstance(v, (list, dict)))
     for link in soup.find_all("a", href=True):
         add(link["href"], need_ext=True)
+    for frame in soup.find_all("iframe", src=True):  # filmy Vimeo osadzone na innych stronach
+        if "player.vimeo.com/video/" in frame["src"]:
+            add(frame["src"])
     if not found:
         scripts = "\n".join(s.string or "" for s in soup.find_all("script"))
         for match in SCRIPT_VIDEO.finditer(scripts):
@@ -1192,8 +1196,36 @@ def prepare_hls(url, text, headers, part, report):
     return inputs, total
 
 
+def vimeo_stream(url, referer):
+    """Vimeo: strona odtwarzacza (player.vimeo.com) zawiera konfigurację z adresem strumienia HLS (ważnym kilka godzin)."""
+    headers = {"Accept": "text/html,*/*;q=0.5"}
+    if referer:
+        headers["Referer"] = referer  # filmy dozwolone tylko na wybranych stronach wymagają adresu tej strony
+    resp = open_media(url, headers)
+    html = decode_html(read_body(resp), resp)
+    start = html.find("window.playerConfig")
+    try:
+        config, _ = json.JSONDecoder().raw_decode(html, html.index("{", start))
+        files = config["request"]["files"]
+    except (ValueError, KeyError, TypeError):
+        raise FetchError("Vimeo nie udostępnia tego filmu (prywatny, płatny albo tylko do osadzenia na innej stronie).", 415)
+    hls = files.get("hls") or {}
+    cdns = hls.get("cdns") or {}
+    for name in [hls.get("default_cdn")] + list(cdns):
+        stream = (cdns.get(name) or {}).get("url")
+        if stream:
+            return stream
+    progressive = [p for p in files.get("progressive") or [] if p.get("url")]
+    if progressive:  # starsze filmy: zwykłe pliki MP4 – najmniejszy, który wypełni ekran
+        enough = [p for p in progressive if (p.get("height") or 0) >= 216]
+        return min(enough or progressive, key=lambda p: p.get("height") or 0)["url"]
+    raise FetchError("Vimeo nie podało adresu tego filmu.", 415)
+
+
 def prepare_source(src, referer, part, report, depth=0):
     """Pobiera źródło filmu na dysk. Zwraca ([(plik, przesunięcie_początku_s)], długość_całości_s albo None)."""
+    if VIMEO_PLAYER.match(src) and depth < 3:
+        return prepare_source(vimeo_stream(src, referer), src, part, report, depth + 1)
     headers = {"Accept": "*/*"}
     if referer:
         headers["Referer"] = referer
