@@ -1798,8 +1798,8 @@ def get_article(url):
 # Gdy zwykłe pobranie da prawie pusty szkielet aplikacji JavaScript, prosimy Cloudflare o otwarcie strony w prawdziwej
 # przeglądarce i bierzemy gotowy HTML. Darmowy plan: 10 min pracy przeglądarki dziennie, 1 zapytanie na 10 s.
 # Klucze: zmienne środowiskowe CF_ACCOUNT_ID i CF_API_TOKEN (token z uprawnieniem Browser Rendering – Edit).
-CF_ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID", "").strip()
-CF_API_TOKEN = os.environ.get("CF_API_TOKEN", "").strip()
+CF_ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID", "").strip().strip("\"' ")
+CF_API_TOKEN = os.environ.get("CF_API_TOKEN", "").strip().strip("\"' ")
 CF_PATHS = ("browser-rendering", "browser-run")  # nazwa usługi zmieniła się – próbujemy obu
 CF_GAP = 10.5  # s między zapytaniami (limit darmowego planu)
 CF_WAIT = 8.0  # najwyżej tyle czytnik czeka na wolne miejsce w kolejce
@@ -1842,6 +1842,32 @@ def needs_render(html, blocks):
     return chars < RENDER_MIN_CHARS and (bool(SPA_MARKERS.search(html)) or html.count("<script") >= 8)
 
 
+def cf_error(resp):
+    """Krótki opis błędu z odpowiedzi Cloudflare (kod i komunikat)."""
+    try:
+        errors = resp.json().get("errors") or []
+    except ValueError:
+        return resp.text[:150]
+    return "; ".join(f"{e.get('code')} {e.get('message')}" for e in errors if isinstance(e, dict))[:200] or resp.text[:150]
+
+
+def cf_content(body):
+    """POST /content – obie nazwy usługi (stara i nowa). Odpowiedź z pierwszej ścieżki, która nie jest 404/401/403,
+    a gdy obie odmówią – ostatnią odmowę."""
+    headers = {"Authorization": f"Bearer {CF_API_TOKEN}", "Content-Type": "application/json"}
+    resp = None
+    for path in CF_PATHS:
+        try:
+            resp = requests.post(f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/{path}/content",
+                                 json=body, headers=headers, timeout=(6, 25))
+        except requests.exceptions.RequestException as err:
+            log.warning("cloudflare: %s", err)
+            return None
+        if resp.status_code not in (401, 403, 404):
+            return resp
+    return resp
+
+
 def render_page(url):
     """Gotowy HTML strony po wykonaniu JavaScriptu (Cloudflare) albo None, gdy się nie da (limit, błąd, brak kluczy)."""
     cached = render_cache.get(url)
@@ -1863,17 +1889,9 @@ def render_page(url):
         cf_state({"last": time.time()})
         body = {"url": url, "bestAttempt": True, "gotoOptions": {"waitUntil": "networkidle2", "timeout": 15000},
                 "rejectResourceTypes": ["image", "media", "font", "stylesheet"]}
-        headers = {"Authorization": f"Bearer {CF_API_TOKEN}", "Content-Type": "application/json"}
-        resp = None
-        for path in CF_PATHS:
-            try:
-                resp = requests.post(f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/{path}/content",
-                                     json=body, headers=headers, timeout=(6, 25))
-            except requests.exceptions.RequestException as err:
-                log.warning("cloudflare: %s", err)
-                return None
-            if resp.status_code != 404:
-                break
+        resp = cf_content(body)
+        if resp is None:
+            return None
         if resp.status_code == 429:
             if "limit exceeded for today" in resp.text.lower() or "time limit" in resp.text.lower():
                 tomorrow = (int(time.time() // 86400) + 1) * 86400  # limit dzienny wraca o północy UTC
@@ -1881,8 +1899,8 @@ def render_page(url):
             log.warning("cloudflare 429: %s", resp.text[:200])
             return None
         if resp.status_code in (401, 403):
-            cf_state({"down_until": time.time() + 3600, "reason": f"klucz odrzucony ({resp.status_code})"})
-            log.warning("cloudflare odrzucił klucz: %s", resp.text[:200])
+            cf_state({"down_until": time.time() + 600, "reason": f"klucz odrzucony ({resp.status_code}): {cf_error(resp)}"})
+            log.warning("cloudflare odrzucił klucz: %s", resp.text[:300])
             return None
         try:
             data = resp.json()
@@ -4632,6 +4650,19 @@ def diag():
         "brak kluczy CF_ACCOUNT_ID / CF_API_TOKEN" if not (CF_ACCOUNT_ID and CF_API_TOKEN) else
         f"wstrzymane do {time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime(state['down_until']))} – {state.get('reason')}"
         if time.time() < state.get("down_until", 0) else "skonfigurowane"))
+    if request.args.get("cf") and CF_ACCOUNT_ID and CF_API_TOKEN:  # /diag?cf=1 – jedno zapytanie próbne
+        started = time.monotonic()
+        resp = cf_content({"url": "https://example.com/", "rejectResourceTypes": ["image", "media", "font", "stylesheet"]})
+        took = int((time.monotonic() - started) * 1000)
+        if resp is None:
+            lines.append(f"Cloudflare test: brak połączenia ({took} ms)")
+        else:
+            ok = resp.status_code == 200 and "Example Domain" in resp.text
+            lines.append(f"Cloudflare test: HTTP {resp.status_code}, {'DZIAŁA' if ok else cf_error(resp)}, {took} ms, "
+                         f"konto {CF_ACCOUNT_ID[:4]}…{CF_ACCOUNT_ID[-4:]} ({len(CF_ACCOUNT_ID)} znaków), "
+                         f"token {len(CF_API_TOKEN)} znaków")
+            if ok:
+                cf_state({"down_until": 0, "reason": ""})
     proxy_vars = sorted(k for k in os.environ if k.lower() in ("http_proxy", "https_proxy", "all_proxy", "no_proxy"))
     lines.append("zmienne proxy: " + (", ".join(proxy_vars) if proxy_vars else "brak"))
     for host, port in DIAG_TARGETS:
