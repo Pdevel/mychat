@@ -3369,7 +3369,7 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 <div class="logo">Szuk<span>ajka</span></div>
 {% set plus = True %}{% include "_pill.html" %}<p class="m">Wpisz hasło albo adres strony.</p>
 </div>
-<div class="hb">{% if weather %}<a class="cd" href="{{ url_for('weather_page') }}"><b>{{ weather.temp }}&deg;</b> {{ weather.city }}, {{ weather.desc }}{% for day in weather.days %}<br><span class="m">{{ day.label }} {{ day.min }}&hellip;{{ day.max }}&deg;C, {{ day.desc }}</span>{% endfor %}</a>{% else %}<a class="cd" href="{{ url_for('weather_page') }}">Pogoda</a>{% endif %}
+<div class="hb">{% if weather %}<a class="cd" href="{{ url_for('weather_page') }}"><b>{{ weather.temp }}&deg;</b> {{ weather.city }}, {{ weather.desc }}{% for day in weather.days %}<br><span class="m">{{ day.label }} od {{ day.min }} do {{ day.max }}&deg;C, {{ day.desc }}</span>{% endfor %}</a>{% else %}<a class="cd" href="{{ url_for('weather_page') }}">Pogoda</a>{% endif %}
 {% if rates %}<div class="cd"><span class="m">Kursy NBP</span><br>{% for code, value in rates.rates %}<span class="nw">{{ code }} {{ value }}</span>{% if not loop.last %} &middot; {% endif %}{% endfor %} <span class="m">zł</span></div>
 {% endif %}<p><a href="{{ url_for('bookmarks') }}" accesskey="4" class="ch">Zakładki{% if bookmarks_count %} ({{ bookmarks_count }}){% endif %}</a> <a href="{{ url_for('settings', k='oszcz', v=0 if saving else 1, next='/') }}" class="ch">Oszczędzanie danych: {{ "wyłącz" if saving else "włącz" }}</a></p>
 <p class="m">Dane z Szukajki w tym miesiącu: {{ data_mb|mb1 }} &middot; tekst:{% for size, label in (("s", "A-"), ("m", "A"), ("l", "A+"), ("xl", "A++")) %} {% if text_size == size %}<b>{{ label }}</b>{% else %}<a href="{{ url_for('settings', k='tekst', v=size, next='/') }}">{{ label }}</a>{% endif %}{% endfor %}</p></div>
@@ -3397,7 +3397,7 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 <div class="w">
 {% if weather %}<h2>{{ weather.city }}: {{ weather.temp }}&deg;C</h2>
 <p>{{ weather.desc }}</p>
-{% for day in weather.days %}<div class="r"><b>{{ day.label }}</b>: {{ day.min }}&hellip;{{ day.max }}&deg;C, {{ day.desc }}</div>
+{% for day in weather.days %}<div class="r"><b>{{ day.label }}</b>: od {{ day.min }} do {{ day.max }}&deg;C, {{ day.desc }}</div>
 {% endfor %}{% else %}<div class="e">Nie znalazłem pogody dla &bdquo;{{ city }}&rdquo;. Sprawdź nazwę miejscowości.</div>
 {% endif %}<form action="{{ url_for('weather_page') }}" method="get">Miejscowość:<br><input class="q" type="text" name="miasto" value="{{ city }}" maxlength="60">
 <input type="submit" value="Pokaż"></form>
