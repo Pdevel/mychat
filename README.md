@@ -77,6 +77,18 @@ Serwer pobiera obrazek, zmniejsza go do 220 px szerokości (ekran ma 240 px), za
 Strojenie zmiennymi środowiskowymi: `IMAGE_MAX_WIDTH` (220), `IMAGE_MAX_HEIGHT` (400), `IMAGE_QUALITY` (45),
 `THUMB_MAX_SIZE` (80).
 
+## Strony działające tylko z JavaScriptem (Cloudflare Browser Rendering)
+
+Część stron przysyła sam szkielet aplikacji, a treść dopisuje JavaScriptem. Gdy zwykłe pobranie da prawie pusty
+szkielet (mniej niż ok. 500 znaków tekstu i znaki aplikacji JS), Szukajka prosi Cloudflare o otwarcie strony
+w prawdziwej przeglądarce i robi lekką wersję z gotowego HTML-a (w czytniku: „z JavaScriptem”).
+
+- Darmowe konto Cloudflare (bez karty): 10 minut pracy przeglądarki dziennie, 1 zapytanie na 10 s. Po wyczerpaniu
+  limitu do północy UTC działa po staremu.
+- Konfiguracja: w Cloudflare skopiuj **Account ID** i utwórz **API Token** z uprawnieniem „Browser Rendering – Edit”,
+  a w Render (Environment) dodaj zmienne `CF_ACCOUNT_ID` i `CF_API_TOKEN`. Stan widać na `/diag`.
+- Nie obchodzi blokad stron ani chronionych odtwarzaczy (SoundCloud, serwisy z filmami bez praw) – to nie problem JavaScriptu.
+
 ## Strony, które blokują serwer
 
 Gdy strona odmawia dostępu serwerowi Szukajki (403/401/429 albo ekran sprawdzania przeglądarki, np. Cloudflare

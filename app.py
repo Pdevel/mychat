@@ -693,6 +693,7 @@ def prefetch_articles(urls):
     def run():
         if not _prefetching.acquire(blocking=False):
             return  # inne wczytywanie z wyprzedzeniem już trwa
+        _render_local.background = True  # nie czeka w kolejce Cloudflare – to tylko przyspieszenie
         try:
             for url in urls:
                 if article_cache.get(url) is None:
@@ -1793,6 +1794,114 @@ def get_article(url):
             event.set()
 
 
+# ---------- Strony działające tylko z JavaScriptem: Cloudflare Browser Rendering ----------
+# Gdy zwykłe pobranie da prawie pusty szkielet aplikacji JavaScript, prosimy Cloudflare o otwarcie strony w prawdziwej
+# przeglądarce i bierzemy gotowy HTML. Darmowy plan: 10 min pracy przeglądarki dziennie, 1 zapytanie na 10 s.
+# Klucze: zmienne środowiskowe CF_ACCOUNT_ID i CF_API_TOKEN (token z uprawnieniem Browser Rendering – Edit).
+CF_ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID", "").strip()
+CF_API_TOKEN = os.environ.get("CF_API_TOKEN", "").strip()
+CF_PATHS = ("browser-rendering", "browser-run")  # nazwa usługi zmieniła się – próbujemy obu
+CF_GAP = 10.5  # s między zapytaniami (limit darmowego planu)
+CF_WAIT = 8.0  # najwyżej tyle czytnik czeka na wolne miejsce w kolejce
+RENDER_MIN_CHARS = 500  # mniej tekstu niż tyle (a strona wygląda na aplikację JS) = renderujemy
+SPA_MARKERS = re.compile(r'__NEXT_DATA__|__NUXT__|id="(?:root|app|__next|__nuxt|main-app)"|data-reactroot|ng-version|'
+                         r"<noscript>[^<]{0,200}(?:JavaScript|javascript)", re.I)
+render_cache = DiskCache("wyrenderowane", ttl=3600, max_files=200)
+_render_lock = threading.Lock()
+_render_local = threading.local()  # .background = True w wątku wczytywania z wyprzedzeniem
+CF_STATE = os.path.join(CACHE_DIR, "cloudflare.json")
+
+
+def cf_state(update=None):
+    """Stan wspólny dla procesów serwera: last (czas ostatniego zapytania), down_until, reason."""
+    try:
+        with open(CF_STATE, encoding="utf-8") as handle:
+            state = json.load(handle)
+    except (OSError, ValueError):
+        state = {}
+    if update:
+        state.update(update)
+        try:
+            os.makedirs(CACHE_DIR, exist_ok=True)
+            tmp = f"{CF_STATE}.{uuid.uuid4().hex}"
+            with open(tmp, "w", encoding="utf-8") as handle:
+                json.dump(state, handle)
+            os.replace(tmp, CF_STATE)
+        except OSError:
+            pass
+    return state
+
+
+def needs_render(html, blocks):
+    """Czy strona to szkielet aplikacji JavaScript: prawie bez tekstu, a ze znakami aplikacji (albo bez treści w ogóle)."""
+    if not CF_ACCOUNT_ID or not CF_API_TOKEN:
+        return False
+    if not blocks:
+        return True
+    chars = sum(len(visible(b[1])) for b in blocks if b[0] in ("h", "p", "pl"))
+    return chars < RENDER_MIN_CHARS and (bool(SPA_MARKERS.search(html)) or html.count("<script") >= 8)
+
+
+def render_page(url):
+    """Gotowy HTML strony po wykonaniu JavaScriptu (Cloudflare) albo None, gdy się nie da (limit, błąd, brak kluczy)."""
+    cached = render_cache.get(url)
+    if cached is not None:
+        return cached or None
+    background = getattr(_render_local, "background", False)
+    if not _render_lock.acquire(timeout=0 if background else CF_WAIT):
+        return None
+    try:
+        state = cf_state()
+        now = time.time()
+        if now < state.get("down_until", 0):
+            return None
+        pause = state.get("last", 0) + CF_GAP - now
+        if pause > (0 if background else CF_WAIT):
+            return None
+        if pause > 0:
+            time.sleep(pause)
+        cf_state({"last": time.time()})
+        body = {"url": url, "bestAttempt": True, "gotoOptions": {"waitUntil": "networkidle2", "timeout": 15000},
+                "rejectResourceTypes": ["image", "media", "font", "stylesheet"]}
+        headers = {"Authorization": f"Bearer {CF_API_TOKEN}", "Content-Type": "application/json"}
+        resp = None
+        for path in CF_PATHS:
+            try:
+                resp = requests.post(f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/{path}/content",
+                                     json=body, headers=headers, timeout=(6, 25))
+            except requests.exceptions.RequestException as err:
+                log.warning("cloudflare: %s", err)
+                return None
+            if resp.status_code != 404:
+                break
+        if resp.status_code == 429:
+            if "limit exceeded for today" in resp.text.lower() or "time limit" in resp.text.lower():
+                tomorrow = (int(time.time() // 86400) + 1) * 86400  # limit dzienny wraca o północy UTC
+                cf_state({"down_until": tomorrow, "reason": "dzienny limit wyczerpany"})
+            log.warning("cloudflare 429: %s", resp.text[:200])
+            return None
+        if resp.status_code in (401, 403):
+            cf_state({"down_until": time.time() + 3600, "reason": f"klucz odrzucony ({resp.status_code})"})
+            log.warning("cloudflare odrzucił klucz: %s", resp.text[:200])
+            return None
+        try:
+            data = resp.json()
+        except ValueError:
+            data = {}
+        html = data.get("result") if data.get("success") else None
+        if not isinstance(html, str):
+            log.warning("cloudflare %s: %s", resp.status_code, resp.text[:200])
+            render_cache.set(url, "")  # ta strona się nie renderuje – nie próbujemy znowu przez godzinę
+            return None
+        used = resp.headers.get("X-Browser-Ms-Used")
+        log.info("cloudflare: %s (%s ms przeglądarki)", url, used or "?")
+        cf_state({"reason": "", "used_ms": int(used) if (used or "").isdigit() else None})
+        render_cache.set(url, html)
+        return html
+    finally:
+        _render_lock.release()
+
+
 def load_article(url):
     started = time.monotonic()
     final_url, resp = http_request(url)
@@ -1821,6 +1930,15 @@ def load_article(url):
         blocks = [("p", squash(part), None) for part in re.split(r"\n\s*\n", text) if squash(part)]
     else:
         title, blocks = extract_article(text, final_url, videos, posters, info)
+    rendered = False
+    if content_type != "text/plain" and needs_render(text, blocks):
+        html = render_page(final_url)
+        if html:
+            r_videos, r_posters, r_info = [], {}, {}
+            r_title, r_blocks = extract_article(html, final_url, r_videos, r_posters, r_info)
+            text_len = lambda bl: sum(len(visible(b[1])) for b in bl if b[0] in ("h", "p", "pl"))
+            if text_len(r_blocks) > text_len(blocks):
+                title, blocks, videos, posters, info, text, rendered = r_title or title, r_blocks, r_videos, r_posters, r_info, html, True
     if not blocks and (videos or info.get("audios")):
         blocks = [("p", "Na tej stronie jest film albo nagranie – wybierz je wyżej.", None)]
     if not blocks:
@@ -1850,7 +1968,7 @@ def load_article(url):
     timing = {"pobranie": fetched - started, "tresc": extracted - fetched, "wyglad": done - extracted}
     log.info("czytnik %s: %s", final_url, ", ".join(f"{k} {v:.1f}s" for k, v in timing.items()))
     article = {"title": title, "url": final_url, "pages": paginate(kept, ARTICLE_PAGE_CHARS), "videos": videos, "timing": timing,
-               "posters": posters, "theme": theme,
+               "posters": posters, "theme": theme, "rendered": rendered,
                "crumbs": info.get("crumbs") or [], "site_name": info.get("site_name"), "audios": info.get("audios") or []}
     article_cache.set(url, article)
     return article
@@ -3530,7 +3648,7 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 {% block body %}{% include "_nav.html" %}<div class="w">
 {% if crumbs and page == 1 %}<div class="bc">{% for name, href in crumbs %}{% if not loop.first %} / {% endif %}{% if href %}<a href="{{ url_for('read', url=href, q=q, rp=rp) }}">{{ name }}</a>{% else %}{{ name }}{% endif %}{% endfor %}</div>
 {% endif %}<h1>{{ title }}</h1>
-<p class="m">{{ site_name or host }}{% if pages > 1 %} &middot; strona {{ page }} z {{ pages }}{% endif %}</p>
+<p class="m">{{ site_name or host }}{% if pages > 1 %} &middot; strona {{ page }} z {{ pages }}{% endif %}{% if rendered %} &middot; z JavaScriptem{% endif %}</p>
 {% if score %}<div class="ib"><b>{% if score.state == "live" %}Na żywo{% if score.status %} &middot; {{ score.status }}{% endif %}{% elif score.state == "fin" %}Koniec meczu{% else %}Przed meczem{% if score.status %} &middot; {{ score.status }}{% endif %}{% endif %}</b><br>
 {{ score.home }} &ndash; {{ score.away }}: <b>{{ score.score }}</b>{% if score.extra %} {{ score.extra }}{% endif %}<br>
 <a href="{{ url_for('read', url=score.href, q=q, rp=rp) }}">Szczegóły</a> &middot; <a href="{{ url_for('read', url=url, q=q, rp=rp, n=tick) }}">Odśwież</a> <span class="m">wg Flashscore</span></div>
@@ -4081,7 +4199,7 @@ def read():
         items=page_items(pages[page - 1]), page=page, pages=len(pages), images=images_enabled(),
         has_images=any(b[0] in ("img", "gi", "thumb") or (b[0] == "ib" and '"img"' in b[1]) for p in pages for b in p),
         site=f"{parts.scheme}://{parts.netloc}",
-        videos=videos, shown_videos=shown, film=film, score=score, formats=VIDEO_FORMATS, theme=theme_cache.get(parts.hostname or "") or article.get("theme"),
+        videos=videos, shown_videos=shown, film=film, score=score, rendered=article.get("rendered"), formats=VIDEO_FORMATS, theme=theme_cache.get(parts.hostname or "") or article.get("theme"),
         tick=int(time.time()) % 100000,
         links=links_enabled(), has_links=any(b[0] in ("pl", "ib") for p in pages for b in p),
         crumbs=article.get("crumbs") or [], site_name=article.get("site_name"), bookmark_url=article["url"],
@@ -4509,6 +4627,11 @@ DIAG_TARGETS = [("example.com", 443), ("lite.duckduckgo.com", 443), ("frogfind.c
 def diag():
     """Diagnostyka sieci serwera (DNS i połączenia TCP przez IPv4 i IPv6) – zwykły tekst, do szukania przyczyny timeoutów."""
     lines = [f"FORCE_IPV4={FORCE_IPV4}"]
+    state = cf_state()
+    lines.append("Cloudflare (strony z JavaScriptem): " + (
+        "brak kluczy CF_ACCOUNT_ID / CF_API_TOKEN" if not (CF_ACCOUNT_ID and CF_API_TOKEN) else
+        f"wstrzymane do {time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime(state['down_until']))} – {state.get('reason')}"
+        if time.time() < state.get("down_until", 0) else "skonfigurowane"))
     proxy_vars = sorted(k for k in os.environ if k.lower() in ("http_proxy", "https_proxy", "all_proxy", "no_proxy"))
     lines.append("zmienne proxy: " + (", ".join(proxy_vars) if proxy_vars else "brak"))
     for host, port in DIAG_TARGETS:

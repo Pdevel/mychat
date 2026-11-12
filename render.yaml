@@ -6,3 +6,8 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn app:app --workers 2 --threads 4 --timeout 40 --bind 0.0.0.0:$PORT
     healthCheckPath: /healthz
+    envVars:
+      - key: CF_ACCOUNT_ID  # Cloudflare Browser Rendering – strony działające tylko z JavaScriptem (opcjonalne)
+        sync: false
+      - key: CF_API_TOKEN
+        sync: false
