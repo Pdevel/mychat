@@ -2441,10 +2441,14 @@ def find_videos(soup, base_url, deep=False, posters=None, raw=None):
             add(f"https://fast.wistia.net/embed/iframe/{wistia.group(1)}", players)
     for link in soup.find_all("a", href=True) if has_file else []:
         add(link["href"], direct, need_ext=True)
-    frames = [f.get("src") or f.get("data-src") or f.get("data-lazy-src") for f in soup.find_all("iframe")]
-    for value in filter(None, frames):
+    frame_srcs = list(filter(None, (f.get("src") or f.get("data-src") or f.get("data-lazy-src")
+                                    for f in soup.find_all("iframe"))))
+    extra_frames = []  # ramki bez słów kluczowych – fallback gdy nic innego nie zostanie
+    for value in frame_srcs:
         if deep or PLAYER_HINT.search(value):
             add(value, players)
+        else:
+            extra_frames.append(value)
     if deep or not direct:
         scripts = "\n".join(s.string or "" for s in soup.find_all("script"))
         for escaped, plain in (("\\/", "/"), ("\\u002F", "/"), ("\\u002f", "/")):
@@ -2464,6 +2468,9 @@ def find_videos(soup, base_url, deep=False, posters=None, raw=None):
             pid, eid = partner.group(1), entry.group(1)
             add(f"https://cdnapisec.kaltura.com/p/{pid}/sp/{pid}00/playManifest/entryId/{eid}"
                 f"/format/applehttp/protocol/https/a.m3u8", direct)
+    if not direct and not players and extra_frames:  # ostatni ratunek: iframe bez słów kluczowych (np. vidy.st/movie/…)
+        for value in extra_frames:
+            add(value, players)
     result = (direct + players)[:VIDEOS_PER_ARTICLE * (2 if deep else 1)]
     if posters is not None:
         posters.update({url: found_posters[url] for url in result if url in found_posters})
