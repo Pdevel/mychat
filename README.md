@@ -5,8 +5,11 @@ Prosty HTML bez JavaScriptu i bez plików CSS (tylko mały wbudowany `<style>`, 
 nawigacja samymi strzałkami.
 
 - `/` – formularz wyszukiwania
-- `/search?q=…` – wyniki z DuckDuckGo Lite (region polski), 10 na stronę, z linkiem [Oryginał]
+- `/search?q=…` – wyniki z DuckDuckGo Lite (region polski), 10 na stronę, z linkiem [Oryginał]; wpisany link
+  (np. `rp.pl`, `www.onet.pl`, `https://…`) otwiera stronę od razu
 - `/read?url=…` – czytnik: sam tekst strony (tytuł, nagłówki, akapity), podzielony na strony po ok. 3000 znaków
+- `/read?url=…&s=słowo` – szukanie na konkretnej stronie: fragmenty z tym słowem (bez względu na wielkość liter
+  i polskie znaki) z odnośnikiem do miejsca w tekście; formularz „Masz dokładny link?” na stronie głównej i na dole czytnika
 - `/img?u=…` – obrazki z artykułów zmniejszone dla telefonu (szczegóły niżej)
 - `/film?u=…` – filmy ze stron przekodowane dla telefonu (szczegóły niżej)
 

@@ -25,6 +25,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import unicodedata
 import uuid
 from collections import OrderedDict
 from urllib.parse import parse_qs, urljoin, urlparse
@@ -52,6 +53,8 @@ MAX_PAGE_BYTES = 1_500_000  # więcej nie pobieramy (oszczędza pamięć serwera
 MAX_REDIRECTS = 5
 MAX_URL_LENGTH = 2000
 RESULTS_PER_PAGE = 10
+FIND_PER_PAGE = 15  # trafień „Szukaj na tej stronie” na jeden ekran
+FIND_MAX_HITS = 150
 MAX_RESULT_PAGES = 30
 SNIPPET_CHARS = 220
 ARTICLE_PAGE_CHARS = int(os.environ.get("ARTICLE_PAGE_CHARS", "3000"))  # tyle tekstu na jedną stronę w telefonie
@@ -1536,7 +1539,7 @@ STYLE = (
     ".b{display:block;background:#eef3fd;border:1px solid #c6d5f5;padding:7px;margin:8px 0;"
     "text-align:center;font-weight:bold;text-decoration:none}"
     ".f{border-top:1px solid #e3e3e3;padding:6px;font-size:12px;color:#777}"
-    ".q{width:140px}.e{background:#fff4e5;border:1px solid #f0c890;padding:6px;margin:6px 0}"
+    ".q{width:140px}.u{width:200px}.hl{background:#fff3a0}.e{background:#fff4e5;border:1px solid #f0c890;padding:6px;margin:6px 0}"
 )
 
 TEMPLATES = {
@@ -1558,14 +1561,39 @@ TEMPLATES = {
 <input type="submit" value="Szukaj">
 </form>
 """,
-    "_nav.html": """<div class="bar">{% if q %}<a href="{{ url_for('search', q=q, p=rp) }}">&laquo; Wróć do wyników</a> | {% endif %}<a href="{{ url_for('home') }}">Nowe szukanie</a></div>
+    "_nav.html": """<div class="bar">{% if q %}<a href="{{ url_for('search', q=q, p=rp, w=1) }}">{% if request.args.get('l') %}Szukaj w sieci{% else %}&laquo; Wróć do wyników{% endif %}</a> | {% endif %}<a href="{{ url_for('home') }}">Nowe szukanie</a></div>
+""",
+    "_find_form.html": """<form action="{{ url_for('read') }}" method="get">
+{% if fixed_url %}<input type="hidden" name="url" value="{{ fixed_url }}">{% else %}Link:<br><input class="u" type="text" name="url" value="" maxlength="2000"><br>
+Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" name="s" value="{{ s or '' }}" maxlength="100">{% if q %}
+<input type="hidden" name="q" value="{{ q }}"><input type="hidden" name="rp" value="{{ rp }}">{% endif %}
+<input type="submit" value="{{ 'Szukaj na stronie' if fixed_url else 'Otwórz' }}">
+</form>
 """,
     "home.html": """{% extends "base.html" %}
 {% block body %}<div class="bar"><b>Szukajka</b></div>
 <div class="w">
 {% include "_form.html" %}
 <p class="m">Szukaj w sieci i czytaj strony w lekkiej wersji, wygodnej na telefonie z klawiaturą.</p>
+<h2>Masz dokładny link?</h2>
+{% include "_find_form.html" %}<p class="m">Otwiera tę stronę od razu. Gdy podasz słowo, pokaże tylko fragmenty strony z tym słowem (polskie znaki można pominąć). Link wpisany w górne pole też otwiera stronę od razu.</p>
 </div>
+{% endblock %}
+""",
+    "find.html": """{% extends "base.html" %}
+{% block title %}{{ s }} - {{ host }}{% endblock %}
+{% block body %}{% include "_nav.html" %}<div class="w">
+<h1>Szukaj na stronie</h1>
+<p class="m">{{ title }} &middot; {{ host }}</p>
+{% include "_find_form.html" %}<p><b>&bdquo;{{ s }}&rdquo;</b>: {% if total %}{{ total }} {{ "trafienie" if total == 1 else ("trafienia" if total % 10 in (2, 3, 4) and total % 100 not in (12, 13, 14) else "trafień") }}{% if pages > 1 %} &middot; str. {{ sp }} z {{ pages }}{% endif %}{% else %}nie znaleziono{% endif %}</p>
+{% for h in hits %}<div class="r">{% if h.heading %}<b>{% endif %}{{ h.before }}<b class="hl">{{ h.match }}</b>{{ h.after }}{% if h.heading %}</b>{% endif %}<br>
+{% if h.href %}<a class="t" href="{{ url_for('read', url=h.href, q=q, rp=rp) }}">Otwórz artykuł</a> &middot; {% endif %}<a class="o" href="{{ url_for('read', url=url, q=q, rp=rp, page=h.page) }}">W tekście (str. {{ h.page }})</a></div>
+{% endfor %}{% if not total %}<p>Spróbuj innego słowa albo jego początku (np. &bdquo;prezyd&rdquo; zamiast &bdquo;prezydenta&rdquo;).</p>
+{% endif %}{% if sp < pages %}<a class="b" href="{{ url_for('read', url=url, s=s, q=q, rp=rp, sp=sp + 1) }}">Dalsze trafienia &raquo;</a>
+{% endif %}{% if sp > 1 %}<a class="b" href="{{ url_for('read', url=url, s=s, q=q, rp=rp, sp=sp - 1) }}">&laquo; Poprzednie trafienia</a>
+{% endif %}<a class="b" href="{{ url_for('read', url=url, q=q, rp=rp) }}">Cała strona</a>
+</div>
+{% include "_nav.html" %}<div class="f"><a href="{{ original }}">[Oryginał]</a></div>
 {% endblock %}
 """,
     "search.html": """{% extends "base.html" %}
@@ -1594,7 +1622,7 @@ TEMPLATES = {
 {% else %}<p>{{ it.text }}</p>
 {% endif %}{% endfor %}{% if page < pages %}<a class="b" href="{{ url_for('read', url=url, q=q, rp=rp, page=page + 1) }}">Dalej &raquo; ({{ page }}/{{ pages }})</a>
 {% endif %}{% if page > 1 %}<a class="b" href="{{ url_for('read', url=url, q=q, rp=rp, page=page - 1) }}">&laquo; Wstecz</a>
-{% endif %}</div>
+{% endif %}{% set fixed_url = url %}{% include "_find_form.html" %}</div>
 {% include "_nav.html" %}<div class="f"><a href="{{ original }}">[Oryginał]</a>{% if has_images %} &middot; <a href="{{ url_for('toggle_images', wl=0 if images else 1, next=request.full_path) }}">Obrazki: {{ "wyłącz" if images else "włącz" }}</a>{% endif %}</div>
 {% endblock %}
 """,
@@ -1640,6 +1668,61 @@ TEMPLATES = {
 }
 
 
+# Link wpisany w pole wyszukiwania: pełny adres, www.… albo domena ze znaną końcówką (np. rp.pl, onet.pl/sport).
+LINK_QUERY = re.compile(
+    r"^(?:https?://\S+|www\.\S+\.\S+|(?:[a-z0-9-]+\.)+(?:pl|com|net|org|eu|info|io|tv|fm|de|uk|co|me|gov|edu|app|dev|"
+    r"biz|news|online|site|xyz|cz|sk|ua|fr|it|es|nl|ru|us|ca|au)(?::\d+)?(?:[/?#]\S*)?)$",
+    re.I,
+)
+
+
+def fold(text):
+    """Małe litery bez polskich (i innych) znaków diakrytycznych – znak w znak, więc pozycje zgadzają się z oryginałem."""
+    out = []
+    for char in text:
+        low = char.lower()[:1] or char
+        if low == "ł":
+            out.append("l")
+        else:
+            out.append(unicodedata.normalize("NFKD", low)[:1] or low)
+    return "".join(out)
+
+
+def find_in_article(article, phrase):
+    """Fragmenty artykułu z szukanym słowem: [{page, before, match, after, href, heading}] i łączna liczba trafień."""
+    needle = fold(phrase)
+    hits, total = [], 0
+    for number, page in enumerate(article["pages"], 1):
+        for kind, text, href in page:
+            if kind not in ("h", "p"):
+                continue
+            hay = fold(text)
+            pos = hay.find(needle)
+            if pos < 0:
+                continue
+            total += hay.count(needle)
+            if len(hits) >= FIND_MAX_HITS:
+                continue
+            end_match = pos + len(needle)
+            while pos > 0 and text[pos - 1].isalnum():  # zaznaczamy całe słowo („lodz” -> „Łodzi”)
+                pos -= 1
+            while end_match < len(text) and text[end_match].isalnum():
+                end_match += 1
+            start, end = max(0, pos - 70), min(len(text), end_match + 110)
+            if start > 0:
+                space = text.find(" ", start, pos)
+                start = space + 1 if space >= 0 else start
+            if end < len(text):
+                space = text.rfind(" ", end_match, end)
+                end = space if space > 0 else end
+            hits.append({
+                "page": number, "href": href, "heading": kind == "h",
+                "before": ("…" if start > 0 else "") + text[start:pos].lstrip("• "),
+                "match": text[pos:end_match], "after": text[end_match:end] + ("…" if end < len(text) else ""),
+            })
+    return hits, total
+
+
 def page_items(blocks):
     """Bloki jednej strony czytnika -> elementy do wyświetlenia. Miniatura stojąca tuż przed tytułem-linkiem
     trafia obok niego (jeden wiersz listy), a każdy blok-link staje się wierszem listy."""
@@ -1673,6 +1756,8 @@ def search():
     query = squash(request.args.get("q", ""))[:200]
     if not query:
         return redirect(url_for("home"))
+    if LINK_QUERY.match(query) and not request.args.get("w"):
+        return redirect(url_for("read", url=query, q=query, rp=1, l=1))  # dokładny link – od razu otwieramy stronę
     page = clamp_int(request.args.get("p"), 1, 1, MAX_RESULT_PAGES)
     error, results, has_more = None, [], False
     try:
@@ -1707,6 +1792,16 @@ def read():
     except FetchError as err:
         return render_template("error.html", message=err.message, original=url, retry=request.full_path, **common), err.status
     pages = article["pages"]
+    phrase = squash(request.args.get("s", ""))[:100]
+    if phrase:  # szukanie na tej stronie
+        hits, total = find_in_article(article, phrase)
+        count = max(1, -(-len(hits) // FIND_PER_PAGE))
+        find_page = clamp_int(request.args.get("sp"), 1, 1, count)
+        return render_template(
+            "find.html", title=article["title"], url=url, original=article["url"], host=host_of(article["url"]), s=phrase,
+            fixed_url=url, hits=hits[(find_page - 1) * FIND_PER_PAGE:find_page * FIND_PER_PAGE], total=total,
+            sp=find_page, pages=count, **common,
+        )
     page = min(page, len(pages))
     parts = urlparse(article["url"])
     return render_template(
