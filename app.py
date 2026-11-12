@@ -2184,7 +2184,8 @@ AUDIO_IN_HTML = re.compile(r"<audio|og:audio|AudioObject|PodcastEpisode|\.(?:mp3
 
 
 def is_audio_url(url):
-    return bool(AUDIO_FILE.search(urlparse(url).path))
+    path = urlparse(url).path
+    return bool(AUDIO_FILE.search(path)) and ":" not in unquote(path.rsplit("/", 1)[-1])
 
 
 def find_audio(soup, base_url, raw=None):
@@ -2262,7 +2263,16 @@ class VideoLink(Exception):
 
 
 def is_video_url(url):
-    return bool(VIDEO_FILE.search(urlparse(url).path))
+    path = urlparse(url).path
+    # „File:Film.webm”, „TimedText:Film.webm” – strony opisu w wiki (MediaWiki), a nie pliki
+    return bool(VIDEO_FILE.search(path)) and ":" not in unquote(path.rsplit("/", 1)[-1])
+
+
+def media_family(url):
+    """Ten sam film w różnych jakościach („film.webm.240p.vp9.webm”, „film-720p.mp4”) liczymy jako jeden."""
+    name = unquote(urlparse(url).path.rsplit("/", 1)[-1]).lower()
+    name = re.sub(r"\.\d{3,4}p(\.[a-z0-9]+)*$", "", name)
+    return re.sub(r"[._-]\d{3,4}p(?=\.[a-z0-9]+$)", "", name)
 
 
 def is_video_response(content_type, url):
@@ -2355,6 +2365,8 @@ def find_videos(soup, base_url, deep=False, posters=None, raw=None):
         if need_ext and target is direct and not is_video_url(src):
             return
         key = src if target is direct else player_key(src)
+        if media_family(src).split(":")[-1] in {media_family(d) for d in direct}:
+            return  # ten sam film w innej jakości albo strona odtwarzacza z tym samym plikiem („File:Film.webm”)
         if src not in direct and key not in (player_key(p) for p in players):
             target.append(src)
         poster = (poster or "").strip()
