@@ -66,6 +66,11 @@ IMAGE_MAX_WIDTH = int(os.environ.get("IMAGE_MAX_WIDTH", "220"))  # ekran 240 px 
 IMAGE_MAX_HEIGHT = int(os.environ.get("IMAGE_MAX_HEIGHT", "400"))  # wysokie grafiki też się zmieszczą
 IMAGE_QUALITY = int(os.environ.get("IMAGE_QUALITY", "45"))  # JPEG: mały plik, wciąż czytelny na tym ekranie
 IMAGE_MAX_BYTES = 4_000_000  # większych plików nie pobieramy
+# Powiększenie (zdjęcie wybrane w czytniku, otwierane w nowej karcie): większe i ostrzejsze, ale nadal lekkie.
+IMAGE_HQ_WIDTH = int(os.environ.get("IMAGE_HQ_WIDTH", "720"))
+IMAGE_HQ_HEIGHT = 3000  # wysokie obrazki (np. strony komiksu) zostają czytelne
+IMAGE_HQ_QUALITY = int(os.environ.get("IMAGE_HQ_QUALITY", "72"))
+IMAGE_HQ_MAX_BYTES = 10_000_000
 IMAGE_MIN_SIZE = 48  # mniejsze to ikonki, flagi i piksele śledzące – na ekranie 240 px to tylko szum
 IMAGES_PER_ARTICLE = 12  # więcej obrazków to zbyt dużo danych i pracy dla telefonu i darmowego serwera
 GALLERY_MAX = 60  # obrazków z galerii (np. strony komiksu, zdjęcia z relacji) na jedną stronę serwisu
@@ -678,8 +683,11 @@ def gallery_images(soup, base_url):
     for link in soup.find_all("a", href=True):
         img = link.find("img")
         full = urljoin(base_url, link["href"].strip())
-        if img is None or not IMAGE_FILE.search(urlparse(full).path) or urlparse(full).scheme not in ("http", "https"):
+        path = urlparse(full).path
+        if img is None or not IMAGE_FILE.search(path) or urlparse(full).scheme not in ("http", "https"):
             continue
+        if ":" in path.rsplit("/", 1)[-1] or "/wiki/" in path:
+            continue  # strona opisu pliku (MediaWiki: Plik:…jpg, File:…jpg), a nie sam obrazek
         if full in seen:
             continue
         seen.add(full)
@@ -852,7 +860,7 @@ def get_article(url):
 
 
 # ---------- Obrazki dopasowane do telefonu ----------
-def shrink_image(raw, max_width=IMAGE_MAX_WIDTH, max_height=IMAGE_MAX_HEIGHT):
+def shrink_image(raw, max_width=IMAGE_MAX_WIDTH, max_height=IMAGE_MAX_HEIGHT, quality=None):
     """Zmniejsza obrazek do ekranu telefonu i zapisuje jako lekki JPEG (bez przezroczystości i metadanych).
     Zwraca None dla ikonek/pikseli śledzących i plików, których nie da się odczytać."""
     try:
@@ -869,7 +877,7 @@ def shrink_image(raw, max_width=IMAGE_MAX_WIDTH, max_height=IMAGE_MAX_HEIGHT):
                 image = image.convert("RGB")
             image.thumbnail((max_width, max_height), Image.Resampling.LANCZOS)
             out = io.BytesIO()
-            image.save(out, "JPEG", quality=IMAGE_QUALITY, optimize=True, progressive=False)  # zwykły JPEG – najlżejszy do dekodowania
+            image.save(out, "JPEG", quality=quality or IMAGE_QUALITY, optimize=True, progressive=False)  # zwykły JPEG – najlżejszy do dekodowania
             return out.getvalue()
     except (OSError, ValueError, Image.DecompressionBombError) as err:
         log.info("nie da się przetworzyć obrazka: %s", str(err)[:120])
@@ -1816,7 +1824,7 @@ STYLE = (
     ".it{border-bottom:1px solid #e3e3e3;padding:6px 0;overflow:hidden}"
     ".it img{float:left;width:80px;margin:0 6px 0 0}"
     ".it a{font-weight:bold;text-decoration:none}.it a.n{display:block;margin-left:86px}"
-    ".ph{margin:4px 0 10px}.ph img{max-width:100%}"
+    ".ph{margin:4px 0 10px}.ph img{max-width:100%;border:0}"
     ".v{display:block;margin:6px 0 10px;padding:4px;text-align:center;font-weight:bold;text-decoration:none;"
     "background:#eef3fd;border:1px solid #c6d5f5}.v img{max-width:100%;margin:0 0 4px}"
     ".r{border-bottom:1px solid #e3e3e3;padding:6px 0}"
@@ -1903,7 +1911,7 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 <p class="m">{{ host }}{% if pages > 1 %} &middot; strona {{ page }} z {{ pages }}{% endif %}</p>
 {% if page == 1 %}{% for v in videos %}<a class="v" href="{{ url_for('video', u=v.url, r=original, t=title, q=q, rp=rp, p=v.poster, fb=v.fallback) }}">{% if images %}<img src="{{ url_for('image', u=v.url, v=1, p=v.poster, f=v.fallback, r=site) }}" alt=""><br>{% endif %}Film{% if videos|length > 1 %} {{ loop.index }}{% endif %}: obejrzyj na telefonie</a>
 {% endfor %}{% endif %}{% for it in items %}{% if it.kind == "item" %}<div class="it">{% if it.img and images %}<img src="{{ url_for('image', u=it.img, r=site, t=1) }}" alt="">{% endif %}<a{% if it.img and images %} class="n"{% endif %} href="{{ url_for('read', url=it.href, q=q, rp=rp) }}">{{ it.text }}</a></div>
-{% elif it.kind == "img" %}{% if images %}<div class="ph"><img src="{{ url_for('image', u=it.href, r=site) }}" alt="{{ it.text or 'obrazek' }}"></div>
+{% elif it.kind == "img" %}{% if images %}<div class="ph"><a href="{{ url_for('image', u=it.href, r=site, hq=1) }}" target="_blank"><img src="{{ url_for('image', u=it.href, r=site) }}" alt="{{ it.text or 'obrazek' }}"></a></div>
 {% endif %}{% elif it.kind == "h" %}<h2>{{ it.text }}</h2>
 {% else %}<p>{{ it.text }}</p>
 {% endif %}{% endfor %}{% if page < pages %}<a class="b" href="{{ url_for('read', url=url, q=q, rp=rp, page=page + 1) }}">Dalej &raquo; ({{ page }}/{{ pages }})</a>
@@ -2180,28 +2188,52 @@ def image():
     url = (request.args.get("u") or "").strip()
     referer = (request.args.get("r") or "").strip()
     thumb = request.args.get("t") == "1"  # miniatura ze strony z listą artykułów
+    hq = request.args.get("hq") == "1"  # powiększenie otwierane z czytnika
     if not re.match(r"^https?://", url, re.I) or len(url) > MAX_URL_LENGTH:
         return Response("", status=400)
     if request.args.get("v") == "1":
         return video_poster_response(url, referer)
-    data = image_cache.get((url, thumb))
+    mode = "hq" if hq else thumb
+    data = image_cache.get((url, mode))
     if data is None:
         headers = {"Accept": "image/avif,image/webp,image/jpeg,image/png,image/*;q=0.8"}
         if re.match(r"^https?://[^/\s]+$", referer):
             headers["Referer"] = referer + "/"
         try:
-            _, resp = http_request(url, extra_headers=headers)
+            resp = None
+            bigger = hq_variant(url) if hq else None
+            if bigger:  # Wikimedia: ta sama fotografia w większym rozmiarze
+                _, resp = http_request(bigger, extra_headers=headers)
+                if resp.status_code >= 400 or not resp.headers.get("Content-Type", "").lower().startswith("image/"):
+                    resp.close()
+                    resp = None
+            if resp is None:
+                _, resp = http_request(url, extra_headers=headers)
             if resp.status_code >= 400 or not resp.headers.get("Content-Type", "").lower().startswith("image/"):
                 resp.close()
                 return Response("", status=404)
-            size = (THUMB_MAX_SIZE, THUMB_MAX_SIZE) if thumb else (IMAGE_MAX_WIDTH, IMAGE_MAX_HEIGHT)
-            data = shrink_image(read_body(resp, limit=IMAGE_MAX_BYTES), *size)
+            if hq:
+                data = shrink_image(read_body(resp, limit=IMAGE_HQ_MAX_BYTES), IMAGE_HQ_WIDTH, IMAGE_HQ_HEIGHT, IMAGE_HQ_QUALITY)
+            else:
+                size = (THUMB_MAX_SIZE, THUMB_MAX_SIZE) if thumb else (IMAGE_MAX_WIDTH, IMAGE_MAX_HEIGHT)
+                data = shrink_image(read_body(resp, limit=IMAGE_MAX_BYTES), *size)
         except FetchError as err:
             return Response("", status=err.status)
         if data is None:
             return Response("", status=404)
-        image_cache.set((url, thumb), data)
+        image_cache.set((url, mode), data)
     return Response(data, mimetype="image/jpeg", headers={"Cache-Control": "public, max-age=86400"})
+
+
+WIKIMEDIA_THUMB = re.compile(r"^(https://(?:upload|thumb)\.wikimedia\.org/.+/thumb/.+/)(\d+)px-([^/]+)$")
+
+
+def hq_variant(url):
+    """Większa wersja tego samego obrazka, gdy serwis ją udostępnia (Wikimedia: miniatury w stałych szerokościach)."""
+    match = WIKIMEDIA_THUMB.match(url)
+    if match and int(match.group(2)) < 960:
+        return f"{match.group(1)}960px-{match.group(3)}"
+    return None
 
 
 def video_poster_response(url, referer):

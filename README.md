@@ -25,6 +25,8 @@ Serwer pobiera obrazek, zmniejsza go do 220 px szerokości (ekran ma 240 px), za
 - galerie z powiększeniem (miniatura w linku do pełnego pliku .jpg/.png/.webp) pokazują pełne obrazy zmniejszone
   dla telefonu; obrazki galerii pominięte przez czytnik trafiają do sekcji „Galeria” (do 60 na stronę),
 - gdy artykuł nie ma obrazka w treści, na początku pojawia się zdjęcie główne z `og:image`,
+- każde zdjęcie w artykule jest linkiem: OK otwiera w nowej karcie powiększenie do 720 px (JPEG jakości 72, wysokie
+  obrazki np. komiksów do 3000 px); z Wikipedii serwer bierze wtedy większą wersję zdjęcia (`IMAGE_HQ_WIDTH`, `IMAGE_HQ_QUALITY`),
 - na dole artykułu link „Obrazki: wyłącz / włącz” (zapamiętany w ciasteczku).
 
 Strojenie zmiennymi środowiskowymi: `IMAGE_MAX_WIDTH` (220), `IMAGE_MAX_HEIGHT` (400), `IMAGE_QUALITY` (45),
