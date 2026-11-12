@@ -3667,7 +3667,7 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 {% if crumbs and page == 1 %}<div class="bc">{% for name, href in crumbs %}{% if not loop.first %} / {% endif %}{% if href %}<a href="{{ url_for('read', url=href, q=q, rp=rp) }}">{{ name }}</a>{% else %}{{ name }}{% endif %}{% endfor %}</div>
 {% endif %}<h1>{{ title }}</h1>
 <p class="m">{{ site_name or host }}{% if pages > 1 %} &middot; strona {{ page }} z {{ pages }}{% endif %}{% if rendered %} &middot; z JavaScriptem{% endif %}</p>
-{% if score %}<div class="ib">{% include "_board.html" %}<a href="{{ url_for('live_board', m=score.href.rstrip('/').rsplit('/', 1)[-1], s=score.sport, u=url, q=q or None, rp=rp) }}"><b>Śledź na żywo</b></a> &middot; <a href="{{ url_for('read', url=url, q=q, rp=rp, n=tick) }}">Odśwież</a> &middot; <a href="{{ url_for('read', url=score.href, q=q, rp=rp) }}">Szczegóły</a> <span class="m">wg Flashscore</span></div>
+{% if score %}<div class="ib">{% include "_board.html" %}<a href="{{ url_for('live_board', m=score.href.rstrip('/').rsplit('/', 1)[-1], s=score.sport, l=score.league or None, u=url, q=q or None, rp=rp) }}"><b>Śledź na żywo</b></a> &middot; <a href="{{ url_for('read', url=url, q=q, rp=rp, n=tick) }}">Odśwież</a> &middot; <a href="{{ url_for('read', url=score.href, q=q, rp=rp) }}">Szczegóły</a> <span class="m">wg Flashscore</span></div>
 {% endif %}{% if page == 1 %}{% for v in videos %}{% set i = loop.index %}{% set start = url_for('read', url=url, q=q, rp=rp, wf=i) ~ '#film' ~ i %}{% set what = "nagranie" if v.audio else "film" %}{% if not v.hide %}<div class="v" id="film{{ i }}">{% set live = film and film.index == i and film.mode == "done" and film.fmt in ("mp4", "mp3") %}{% set file = url_for('video_file', key=film.key, ext=film.fmt) if live else "" %}{% if live and film.fmt == "mp4" %}<video src="{{ file }}" controls playsinline preload="metadata"{% if images %} poster="{{ url_for('image', u=v.url, v=1, p=v.poster, f=v.fallback, r=site) }}"{% endif %}><a href="{{ file }}">Odtwórz film</a></video><br>{% elif images and not v.audio %}<a href="{{ start }}"><img src="{{ url_for('image', u=v.url, v=1, p=v.poster, f=v.fallback, r=site) }}" alt=""></a><br>{% elif images and v.fallback %}<a href="{{ start }}"><img src="{{ url_for('image', u=v.fallback, r=site, t=1) }}" alt=""></a><br>{% endif %}{% if live and film.fmt == "mp3" %}<audio src="{{ file }}" controls preload="none"><a href="{{ file }}">Odtwórz nagranie</a></audio><br>{% endif %}
 {% if film and film.index == i %}{% set f = film %}{% set again = url_for('read', url=url, q=q, rp=rp, wf=i, wfmt=f.fmt, wc=f.part, n=tick) ~ '#film' ~ i %}{% if f.mode == "work" %}<b>Przygotowuję {{ what }}{% if f.part > 1 or (f.part_total and f.part_total > 1) %}, część {{ f.part }}{% endif %}&hellip;</b><br>
 {% if f.status.state == "download" %}Pobieranie: {{ f.status.got|mb }}{% if f.status.progress %} ({{ f.status.progress }}%){% endif %}{% else %}Zmniejszanie dla telefonu: {{ f.status.progress }}%{% endif %}<br>
@@ -3735,18 +3735,20 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 <div class="f"><a href="{{ src }}">[Oryginał filmu]</a></div>
 {% endblock %}
 """,
-    "_board.html": """<b>{% if score.state == "live" %}Na żywo{% if score.status %} &middot; {{ score.status }}{% endif %}{% elif score.state == "fin" %}Koniec meczu{% else %}Przed meczem{% if score.status %} &middot; {{ score.status }}{% endif %}{% endif %}</b>
+    "_board.html": """{% if score.league or score.when %}<div class="m lg2">{{ score.league }}{% if score.league and score.when %} &middot; {% endif %}{{ score.when }}</div>{% endif %}<b>{% if score.state == "live" %}Na żywo{% if score.status %} &middot; {{ score.status }}{% endif %}{% elif score.state == "fin" %}Koniec meczu{% else %}Przed meczem{% if score.status %} &middot; {{ score.status }}{% endif %}{% endif %}</b>
 <table class="sb" cellspacing="0"><tr><th></th>{% for p in score.periods %}<th>{{ p.label }}</th>{% endfor %}<th>{{ score.total }}</th></tr>
 <tr><td class="n">{% if score.serve == "home" %}<span class="sv">&#9679;</span> {% endif %}{{ score.home }}</td>{% for p in score.periods %}<td>{{ p.h }}</td>{% endfor %}<td class="t">{{ score.h }}</td></tr>
 <tr><td class="n">{% if score.serve == "away" %}<span class="sv">&#9679;</span> {% endif %}{{ score.away }}</td>{% for p in score.periods %}<td>{{ p.a }}</td>{% endfor %}<td class="t">{{ score.a }}</td></tr></table>
 """,
     "board.html": """{% extends "base.html" %}
 {% block title %}{{ score.home }} - {{ score.away }} {{ score.score }}{% endblock %}
-{% block head %}<style>{{ board_css }}</style>{% if score.state != "fin" %}<meta http-equiv="refresh" content="30;url={{ url_for('live_board', m=match_id, s=sport or None, u=article or None, q=q or None, rp=rp, n=tick) }}">{% endif %}{% endblock %}
+{% block head %}<style>{{ board_css }}</style>{% if score.state != "fin" %}<meta http-equiv="refresh" content="30;url={{ url_for('live_board', m=match_id, s=sport or None, l=score.league or None, u=article or None, q=q or None, rp=rp, n=tick) }}">{% endif %}{% endblock %}
 {% block body %}<div class="bar">{% if article %}<a href="{{ url_for('read', url=article, q=q, rp=rp) }}">&laquo; Artykuł</a> {% endif %}<a href="{{ url_for('home') }}">Nowe szukanie</a></div>
 <div class="w"><div class="ib">{% include "_board.html" %}</div>
 {% for e in score.events %}<div class="r"><b>{{ e.minute }}</b> {{ e.what }}: {{ e.who }}</div>
-{% endfor %}<a class="b" href="{{ url_for('live_board', m=match_id, s=sport or None, u=article or None, q=q or None, rp=rp, n=tick) }}" accesskey="5">Odśwież teraz</a>
+{% endfor %}{% for sec in stats %}{% if sec.section %}<h2>{{ sec.section }}</h2>{% endif %}{% for r in sec.rows %}<table class="sx" cellspacing="0"><tr><td>{{ r.h }}</td><td class="c">{{ r.label }}</td><td class="r">{{ r.a }}</td></tr></table>
+<table class="bt" cellspacing="0"><tr><td width="{{ 50 - (r.hp / 2)|round|int }}%" class="bg"></td><td width="{{ (r.hp / 2)|round|int }}%" class="bh"></td><td width="{{ (r.ap / 2)|round|int }}%" class="ba"></td><td width="{{ 50 - (r.ap / 2)|round|int }}%" class="bg"></td></tr></table>
+{% endfor %}{% endfor %}<a class="b" href="{{ url_for('live_board', m=match_id, s=sport or None, l=score.league or None, u=article or None, q=q or None, rp=rp, n=tick) }}" accesskey="5">Odśwież teraz</a>
 <p class="m">{% if score.state != "fin" %}Wynik odświeża się sam co 30 s. {% endif %}Dane: Flashscore. <a href="{{ url_for('read', url=score.href, q=q, rp=rp) }}">Szczegóły i statystyki</a></p></div>
 {% endblock %}
 """,
@@ -4098,8 +4100,11 @@ def flashscore_matches(path):
     _, resp = http_request(FLASHSCORE + path)
     html = decode_html(read_body(resp, limit=1_000_000), resp)
     start = html.find('id="score-data"')
-    matches = []
+    matches, league = [], ""
     for chunk in re.split(r"<br\s*/?>", html[html.find(">", start) + 1:]) if start >= 0 else []:
+        heading = re.search(r"<h4>(.*?)</h4>", chunk, re.S)
+        if heading:
+            league = squash(unescape(re.sub(r"<a .*?</a>|<[^>]+>", " ", heading.group(1))))
         link = re.search(r'<a href="(/mecz/[A-Za-z0-9]+/)" class="([a-z]+)">(.*?)</a>(.*)', chunk, re.S)
         if not link:
             continue
@@ -4113,6 +4118,7 @@ def flashscore_matches(path):
             "home": home.strip(), "away": away.strip(), "href": FLASHSCORE + link.group(1)[1:], "state": link.group(2),
             "score": squash(unescape(re.sub(r"<[^>]+>", "", link.group(3)))).replace(" ", "") or "-",
             "extra": squash(unescape(re.sub(r"<[^>]+>", "", link.group(4)))), "status": squash(status.group(1)) if status else "",
+            "league": league,
         })
     flashscore_cache.set(path, matches)
     return matches
@@ -4122,7 +4128,10 @@ FS_EVENT_NAMES = {"y-card": "żółta kartka", "r-card": "czerwona kartka", "yr-
                   "soccer-ball": "gol", "soccer-ball-own": "gol samobójczy", "penalty-missed": "niewykorzystany karny"}
 BOARD_CSS = (".sb{border-collapse:collapse;width:100%;margin:6px 0}.sb th,.sb td{padding:3px 4px;text-align:center;"
              "border-bottom:1px solid rgba(128,128,128,.3)}.sb th{font-size:11px;font-weight:normal}.sb .n{text-align:left;"
-             "font-weight:bold}.sb .t{font-weight:bold;font-size:16px}.sv{color:#d93025}")
+             "font-weight:bold}.sb .t{font-weight:bold;font-size:16px}.sv{color:#d93025}.lg2{font-size:12px;margin:0 0 4px}"
+             ".sx{width:100%;margin:6px 0 0}.sx td{padding:0;font-size:12px}.sx .c{text-align:center}.sx .r{text-align:right}"
+             ".bt{width:100%;border-collapse:collapse;margin:2px 0 4px}.bt td{height:5px;padding:0;font-size:1px}"
+             ".bh{background:#34a853}.ba{background:#e8508a}.bg{background:rgba(128,128,128,.25)}")
 app.jinja_env.globals["board_css"] = BOARD_CSS
 
 
@@ -4153,7 +4162,7 @@ def flashscore_match(m):
     """Plansza meczu ze strony szczegółów m.flashscore.pl: nazwy, serwujący, wynik, okresy, status, zdarzenia."""
     cached = flashscore_cache.get(m["href"])
     if cached is not None:
-        return cached
+        return dict(cached, league=m.get("league") or cached.get("league", ""), sport=m.get("sport") or cached.get("sport", ""))
     _, resp = http_request(m["href"])
     html = decode_html(read_body(resp, limit=600_000), resp)
     head = re.search(r"<h3>(.*?)</h3>", html, re.S)
@@ -4165,6 +4174,7 @@ def flashscore_match(m):
     serve = head.find("tennis-serve")
     names = [squash(unescape(re.sub(r"<[^>]+>", "", part))) for part in (head[:sep], head[sep + 3:])] if sep > 0 else []
     statuses = re.findall(r'<div class="detail"><span class="[a-z]+">([^<]*)</span></div>', html)
+    when = re.search(r'<div class="detail">(\d{2}\.\d{2}\.\d{4} \d{2}:\d{2})</div>', html)
     periods = [{"label": period_label(label, i), "h": split_score(score)[0], "a": split_score(score)[1]}
                for i, (label, score) in enumerate(re.findall(r"<h4>([^<:]+):\s*<b>([^<]*)</b></h4>", html), 1)]
     events = []
@@ -4177,9 +4187,38 @@ def flashscore_match(m):
     board = dict(m, home=names[0] if len(names) == 2 else m["home"], away=names[1] if len(names) == 2 else m["away"],
                  state=main.group(1), score=f"{h}-{a}", h=h, a=a, status=squash(statuses[0]) if statuses else m.get("status", ""),
                  serve=None if serve < 0 else ("home" if serve < sep else "away"), periods=periods, events=events,
+                 when=when.group(1) if when else "",
                  total="Sety" if any(p["label"].startswith("S") for p in periods) or m.get("sport") == "tenis/" else "Wynik")
     flashscore_cache.set(m["href"], board)
     return board
+
+
+def flashscore_stats(href):
+    """Statystyki meczu (zakładka „Statystyki” m.flashscore.pl): [{section, rows: [{label, h, a, hp, ap}]}]."""
+    key = href + "#stat"
+    cached = flashscore_cache.get(key)
+    if cached is not None:
+        return cached
+    _, resp = http_request(href + "?t=statystyki")
+    html = decode_html(read_body(resp, limit=800_000), resp)
+    sections = []
+    for part in re.split(r'(?=<div class="sectionHeader)', html)[1:]:
+        title = re.search(r'<div class="sectionHeader[^"]*">([^<]*)</div>', part)
+        rows = []
+        for block in part.split('data-testid="wcl-statistics"')[1:]:
+            values = re.findall(r'<div class="wcl-value_[^"]*">([^<]*)</div>', block)
+            label = re.search(r'data-testid="wcl-simple-text-01">([^<]*)<', block)
+            home = re.search(r'data-side="home" data-percentage="([\d.]+)"', block)
+            away = re.search(r'data-side="away" data-percentage="([\d.]+)"', block)
+            if len(values) >= 2 and label:
+                hp = round(float(home.group(1)) * 100) if home else 50
+                ap = round(float(away.group(1)) * 100) if away else 100 - hp
+                rows.append({"label": unescape(label.group(1)), "h": unescape(values[0]), "a": unescape(values[-1]),
+                             "hp": max(0, min(100, hp)), "ap": max(0, min(100, ap))})
+        if rows:
+            sections.append({"section": unescape(title.group(1)) if title else "", "rows": rows})
+    flashscore_cache.set(key, sections)
+    return sections
 
 
 def find_live_score(title, hints):
@@ -4241,13 +4280,17 @@ def live_board():
     article = article if re.match(r"^https?://", article, re.I) and len(article) <= MAX_URL_LENGTH else ""
     sport = request.args.get("s") if request.args.get("s") in {p for p, _ in LIVE_SPORTS} else ""
     stub = {"href": f"{FLASHSCORE}mecz/{match_id}/", "home": "", "away": "", "score": "-", "extra": "", "status": "",
-            "state": "", "sport": sport}
+            "state": "", "sport": sport, "league": squash(request.args.get("l") or "")[:120]}
     try:
         board = flashscore_match(stub)
     except FetchError as err:
         return render_template("error.html", message=err.message, original=stub["href"], retry=request.full_path,
                                q=request.args.get("q", ""), rp=1), err.status
-    return render_template("board.html", score=board, article=article, match_id=match_id, sport=sport, q=request.args.get("q", ""),
+    try:
+        stats = flashscore_stats(stub["href"])
+    except FetchError:
+        stats = []
+    return render_template("board.html", score=board, stats=stats, article=article, match_id=match_id, sport=sport, q=request.args.get("q", ""),
                            rp=clamp_int(request.args.get("rp"), 1, 1, MAX_RESULT_PAGES), tick=int(time.time()) % 100000)
 
 
