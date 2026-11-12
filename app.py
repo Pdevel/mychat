@@ -1121,7 +1121,10 @@ def add_json_listing(blocks, embedded):
 
 
 INFOBOX_CLASS = re.compile(r"(^|[\s_-])(infobox|portable-infobox|ibox\d*|infotable|biota)([\s_-]|$)", re.I)
-CLUTTER_CLASS = re.compile(r"(^|\s)(mw-editsection|navbox|vertical-navbox|mw-jump-link|catlinks|toc|reflist-hide)(\s|$)", re.I)
+CLUTTER_CLASS = re.compile(
+    r"(^|\s)(mw-editsection|navbox|vertical-navbox|mw-jump-link|catlinks|toc|reflist-hide|references|reflist|refbegin|"
+    r"mw-references-wrap)(\s|$)", re.I
+)
 FOOTNOTE = re.compile(r"\[\s*[\w.,–-]{1,8}\s*\]")
 
 
@@ -1239,6 +1242,76 @@ def infobox_table_rows(table, base_url, rows):
                 rows.append({"v": text})
 
 
+LEAD_SKIP = {"nav", "aside", "header", "footer", "figure", "table", "form", "blockquote"}
+
+
+def readability_anchor(soup, blocks):
+    """Akapit w dokumencie, od którego zaczyna się treść wybrana przez readability."""
+    first = next((visible(b[1]) for b in blocks if b[0] in ("p", "pl") and len(visible(b[1])) >= 60), None)
+    if not first:
+        return None
+    key = fold(first[:80])
+    return next((p for p in soup.find_all("p") if fold(node_text(p)[:80]) == key), None)
+
+
+def sectioned_root(soup, blocks):
+    """Gdy wybrana treść leży w <section>, a jej rodzic ma kilka sekcji (np. Wikipedia: wstęp i działy jako osobne
+    sekcje), zwraca ten rodzic – cały artykuł. W przeciwnym razie None."""
+    anchor = readability_anchor(soup, blocks)
+    root = None
+    for ancestor in (anchor.parents if anchor is not None else []):
+        if ancestor.name in ("body", "html", "[document]"):
+            break
+        if ancestor.name == "section" and ancestor.parent is not None:
+            if len(ancestor.parent.find_all("section", recursive=False)) >= 2:
+                root = ancestor.parent  # najwyższy taki poziom
+    return root
+
+
+def missed_lead(soup, base_url, blocks):
+    """Akapity wstępu pominięte przez readability (np. Wikipedia dzieli artykuł na <section>, a readability wybiera
+    sekcje z dalszą treścią). Zwraca bloki akapitów stojących przed wybraną treścią w tym samym obszarze strony
+    (wspólny „dziadek” pierwszego wybranego akapitu), z pominięciem menu, ramek, tabel i bloków „czytaj też”."""
+    first = next((visible(b[1]) for b in blocks if b[0] in ("p", "pl") and len(visible(b[1])) >= 60), None)
+    if not first:
+        return []
+    key = fold(first[:80])
+    anchor = next((p for p in soup.find_all("p") if fold(node_text(p)[:80]) == key), None)
+    if anchor is None:
+        return []
+    shown = {fold(visible(b[1])[:80]) for b in blocks if b[0] in ("p", "pl")}
+    container, lead = anchor.parent, []
+    for _ in range(4):  # w górę (sekcje bywają zagnieżdżone), aż obszar ma akapity przed wybraną treścią
+        container = container.parent if container is not None else None
+        if container is None or container.name in ("body", "html", "[document]"):
+            return []
+        lead = lead_paragraphs(container, anchor, shown, base_url)
+        if lead:
+            return lead[:12]
+    return []
+
+
+def lead_paragraphs(container, anchor, shown, base_url):
+    lead = []
+    for paragraph in container.find_all("p"):
+        if paragraph is anchor:
+            break
+        skip = False
+        for ancestor in paragraph.parents:
+            if ancestor is container:
+                break
+            hint = " ".join(ancestor.get("class") or []) + " " + (ancestor.get("id") or "")
+            if ancestor.name in LEAD_SKIP or (hint.strip() and JUNK_HINT.search(hint)):
+                skip = True
+                break
+        text = node_text(paragraph)
+        if skip or len(text) < 60 or fold(text[:80]) in shown:
+            continue
+        segments, count = node_segments(paragraph, base_url)
+        lead.append(("pl", segments, None) if count else ("p", text, None))
+    return lead
+
+
 def extract_article(html, url, videos=None, posters=None):
     """Zwraca (tytuł, bloki), gdzie blok to ("h" | "p", tekst, adres_linku_lub_None).
     Gdy podano listę `videos`, trafiają do niej adresy filmów ze strony."""
@@ -1265,6 +1338,13 @@ def extract_article(html, url, videos=None, posters=None):
                 BeautifulSoup(doc.summary(html_partial=True), "lxml"), url, with_images=True, skip_images=small_images,
                 inline_links=True,
             )
+            sections = sectioned_root(soup, blocks)
+            if sections is not None:  # artykuł podzielony na <section>: cały, a nie jedna sekcja wybrana przez readability
+                blocks = collect_blocks(sections, url, with_images=True, skip_images=small_images, inline_links=True)
+                while blocks and blocks[-1][0] == "h":
+                    blocks.pop()  # puste nagłówki na końcu (np. „Przypisy” po usunięciu listy przypisów)
+            else:
+                blocks = missed_lead(soup, url, blocks) + blocks
         except Exception as err:
             log.info("readability nie poradził sobie z %s: %s", url, str(err)[:120])
             blocks = []
@@ -1333,11 +1413,24 @@ def split_long(text, limit):
     return pieces
 
 
+def infobox_weight(text):
+    """Tabela informacyjna na stronie czytnika: tyle co jej tekst, plus zdjęcia (zapis JSON ma też adresy obrazków)."""
+    try:
+        rows = json.loads(text)
+    except ValueError:
+        return len(text)
+    weight = 0
+    for row in rows:
+        weight += sum(IMAGE_WEIGHT // 2 for _ in row.get("img", []))
+        weight += len(visible(" ".join(str(row.get(k, "")) for k in ("t", "t2", "l", "v")))) + 10
+    return weight
+
+
 def paginate(blocks, budget):
     """Rozkłada bloki na strony po ~budget znaków; nagłówek nie zostaje sam na końcu strony."""
     pages, size = [[]], 0
     weights = {"img": IMAGE_WEIGHT, "thumb": THUMB_WEIGHT}
-    weight = lambda block: weights.get(block[0], len(visible(block[1])))
+    weight = lambda block: weights.get(block[0], infobox_weight(block[1]) if block[0] == "ib" else len(visible(block[1])))
     for kind, text, href in blocks:
         is_image = kind in weights
         if kind == "pl" and len(visible(text)) > budget:
@@ -1345,7 +1438,7 @@ def paginate(blocks, budget):
         pieces = [text] if is_image or kind in ("ib", "pl") else split_long(text, budget)
         for number, piece in enumerate(pieces):
             block = (kind, piece, href if number == 0 or is_image else None)
-            if size and size + weight(block) > budget:
+            if size and size + weight(block) > budget and kind != "ib":  # tabela zostaje przy wstępie
                 carry = [pages[-1].pop()] if pages[-1] and pages[-1][-1][0] == "h" else []
                 pages.append(carry)
                 size = sum(weight(b) for b in carry)
