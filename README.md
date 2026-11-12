@@ -21,10 +21,17 @@ Czysty HTML bez CSS i JavaScriptu, nawigacja samymi strzałkami.
 ## Gdy DuckDuckGo blokuje serwer
 
 DuckDuckGo blokuje zapytania z serwerów w centrach danych – z Render.com połączenie z lite.duckduckgo.com
-w ogóle nie dochodzi do skutku (sprawdzone stroną `/diag`). Aplikacja pokazuje wtedy komunikat, że DuckDuckGo
-nie odpowiada, a po pierwszej nieudanej próbie przez 10 minut pyta od razu źródło zapasowe. Rozwiązanie zapasowe: załóż darmowe konto
-w Brave Search API (https://brave.com/search/api/), a klucz wpisz w Render jako zmienną środowiskową
-`BRAVE_API_KEY`. Wtedy przy blokadzie DuckDuckGo wyniki przyjdą z Brave.
+w ogóle nie dochodzi do skutku (sprawdzone stroną `/diag`). Wtedy wyniki przychodzą automatycznie przez
+FrogFind (http://frogfind.com) – prostą nakładkę na DuckDuckGo dla starych przeglądarek, bez klucza API.
+Wyniki dalej otwierają się we wbudowanym czytniku. Po pierwszej nieudanej próbie DuckDuckGo aplikacja przez
+10 minut pyta od razu FrogFind, więc nie czeka na timeout.
+
+Ograniczenia FrogFind: tylko pierwsza strona wyników (ok. 10) i region zależny od serwera FrogFind
+(nie jest wymuszony polski). To darmowy serwis hobbystyczny – wyniki są przez 5 minut trzymane w pamięci,
+żeby nie pytać go bez potrzeby.
+
+Opcjonalnie: zmienna środowiskowa `BRAVE_API_KEY` (darmowy plan Brave Search API) – wtedy kolejne strony
+wyników i awaria FrogFind obsługuje Brave.
 
 ## Uruchomienie lokalne
 

@@ -5,8 +5,9 @@ Strony to czysty HTML: bez CSS, bez JavaScriptu, z jak najmniejszą liczbą link
 żeby wygodnie przechodzić po nich samymi strzałkami.
 
   /        – formularz wyszukiwania
-  /search  – wyniki z DuckDuckGo Lite (region polski), 10 na stronę; opcjonalnie zapasowo Brave Search API
-             (darmowy klucz w zmiennej BRAVE_API_KEY), gdy DuckDuckGo zablokuje serwer
+  /search  – wyniki z DuckDuckGo Lite (region polski), 10 na stronę. Gdy DuckDuckGo blokuje serwer (np. na Render.com),
+             wyniki przychodzą przez FrogFind (frogfind.com – prosta nakładka na DuckDuckGo, bez klucza API);
+             opcjonalnie jeszcze Brave Search API (klucz w zmiennej BRAVE_API_KEY)
   /read    – czytnik: pobiera stronę, zostawia sam tekst (tytuł, nagłówki, akapity) i dzieli go na strony
 """
 
@@ -51,9 +52,11 @@ ARTICLE_MAX_CHARS = 150_000  # dłuższe artykuły są przycinane
 DDG_LITE = "https://lite.duckduckgo.com/lite/"
 DDG_HTML = "https://html.duckduckgo.com/html/"
 DDG_REGION = "pl-pl"
+FROGFIND = "http://frogfind.com/"  # serwis działa tylko po http
+FROGFIND_UA = "LekkaSzukajka/1.0 (+https://github.com/Pdevel/mychat)"  # przedstawiamy się uczciwie
 BRAVE_API = "https://api.search.brave.com/res/v1/web/search"
 BRAVE_API_KEY = os.environ.get("BRAVE_API_KEY", "").strip()  # opcjonalny (darmowy plan); bez niego tylko DuckDuckGo
-DDG_BACKOFF = 600  # po nieudanej próbie DuckDuckGo przez tyle sekund pytamy od razu Brave (nie czekamy na timeout)
+DDG_BACKOFF = 600  # po nieudanej próbie DuckDuckGo przez tyle sekund pytamy od razu źródło zapasowe (bez czekania)
 ddg_down_until = 0.0
 
 
@@ -312,6 +315,44 @@ def parse_ddg_html(html):
     return results
 
 
+def parse_frogfind(html):
+    """Wyniki z frogfind.com: <a href="/read.php?a=ADRES&rut=…"><b>tytuł</b>…</a>, za nim opis aż do <hr>."""
+    soup = BeautifulSoup(html, "lxml")
+    results = []
+    for link in soup.find_all("a", href=True):
+        href = link["href"]
+        if "read.php?a=" not in href:
+            continue
+        url = clean_result_url((parse_qs(urlparse(href).query).get("a") or [None])[0])
+        if not url:
+            continue
+        bold = link.find("b")
+        title = node_text(bold) or node_text(link) or url
+        parts = []
+        for sibling in link.next_siblings:
+            if getattr(sibling, "name", None) in ("hr", "a"):
+                break
+            parts.append(sibling.get_text() if hasattr(sibling, "get_text") else str(sibling))
+        results.append({"title": title, "url": url, "snippet": shorten(squash("".join(parts)), SNIPPET_CHARS)})
+    return results
+
+
+def frogfind_search(query, page):
+    """FrogFind pobiera wyniki DuckDuckGo ze swojego serwera, którego DuckDuckGo nie blokuje. Ma tylko 1 stronę wyników."""
+    if page > 1:
+        return [], False
+    _, resp = http_request(FROGFIND, params={"q": query}, extra_headers={"User-Agent": FROGFIND_UA})
+    status = resp.status_code
+    html = decode_html(read_body(resp, limit=800_000), resp)
+    if status != 200:
+        log.warning("FrogFind zwrócił status %s", status)
+        raise FetchError("Zapasowa wyszukiwarka (FrogFind) nie odpowiada. Spróbuj za chwilę.", 502)
+    results = dedupe(parse_frogfind(html))
+    if not results and "Search Results for" not in html:
+        raise FetchError("Nie udało się odczytać wyników wyszukiwania. Spróbuj ponownie.", 502)
+    return results[:RESULTS_PER_PAGE], False
+
+
 def parse_brave(data):
     """Wyniki z Brave Search API (JSON): web.results[] z polami title, url, description (z <strong>)."""
     results = []
@@ -382,13 +423,10 @@ def ddg_search(query, page):
     if offset:
         form.update({"s": str(offset), "dc": str(offset + 1)})
     last_error = FetchError("Nie udało się pobrać wyników wyszukiwania. Spróbuj ponownie.", 502)
-    unreachable = FetchError(
-        "Wyszukiwarka DuckDuckGo nie odpowiada z tego serwera. Właściciel strony może dodać zapasowy klucz "
-        "BRAVE_API_KEY (opis w README).", 503,
-    )
+    unreachable = FetchError("Wyszukiwarka DuckDuckGo nie odpowiada z tego serwera.", 503)
     endpoints = ((DDG_LITE, parse_ddg_lite), (DDG_HTML, parse_ddg_html))
-    if BRAVE_API_KEY and time.monotonic() < ddg_down_until:
-        endpoints = ()  # DuckDuckGo niedawno zawiódł – od razu zapasowa wyszukiwarka
+    if time.monotonic() < ddg_down_until:
+        endpoints = ()  # DuckDuckGo niedawno zawiódł – od razu źródło zapasowe
     for endpoint, parser in endpoints:
         try:
             _, resp = http_request(endpoint, method="POST", data=form)
@@ -411,6 +449,15 @@ def ddg_search(query, page):
             search_cache.set(key, value)
             return value
         last_error = FetchError("Nie udało się odczytać wyników wyszukiwania. Spróbuj ponownie.", 502)
+    if page == 1 or not BRAVE_API_KEY:
+        try:
+            value = frogfind_search(query, page)
+            search_cache.set(key, value)
+            return value
+        except FetchError as err:
+            log.warning("FrogFind zawiódł: %s", err.message)
+            if not BRAVE_API_KEY:
+                raise err
     if BRAVE_API_KEY and page <= 10:
         value = brave_search(query, page)  # jej błąd (np. zły klucz) mówi więcej niż blokada DuckDuckGo
         search_cache.set(key, value)
@@ -667,7 +714,7 @@ def read():
     )
 
 
-DIAG_TARGETS = ["example.com", "lite.duckduckgo.com", "1.1.1.1"]  # stała lista – strona nie przyjmuje adresów z zewnątrz
+DIAG_TARGETS = [("example.com", 443), ("lite.duckduckgo.com", 443), ("frogfind.com", 80), ("1.1.1.1", 443)]  # stała lista
 
 
 @app.route("/diag")
@@ -676,11 +723,11 @@ def diag():
     lines = [f"FORCE_IPV4={FORCE_IPV4}"]
     proxy_vars = sorted(k for k in os.environ if k.lower() in ("http_proxy", "https_proxy", "all_proxy", "no_proxy"))
     lines.append("zmienne proxy: " + (", ".join(proxy_vars) if proxy_vars else "brak"))
-    for host in DIAG_TARGETS:
+    for host, port in DIAG_TARGETS:
         for family, name in ((socket.AF_INET, "IPv4"), (socket.AF_INET6, "IPv6")):
             started = time.monotonic()
             try:
-                addrs = sorted({i[4][0] for i in socket.getaddrinfo(host, 443, family, socket.SOCK_STREAM)})
+                addrs = sorted({i[4][0] for i in socket.getaddrinfo(host, port, family, socket.SOCK_STREAM)})
             except socket.gaierror as err:
                 lines.append(f"{host} {name}: DNS brak adresu ({err.strerror})")
                 continue
@@ -689,14 +736,14 @@ def diag():
             sock.settimeout(3)
             started = time.monotonic()
             try:
-                sock.connect((addrs[0], 443))
+                sock.connect((addrs[0], port))
                 result = "OK"
             except OSError as err:
                 result = f"BŁĄD {type(err).__name__}"
             finally:
                 sock.close()
             tcp_ms = int((time.monotonic() - started) * 1000)
-            lines.append(f"{host} {name} {addrs[0]}: DNS {dns_ms} ms, TCP {result} {tcp_ms} ms")
+            lines.append(f"{host}:{port} {name} {addrs[0]}: DNS {dns_ms} ms, TCP {result} {tcp_ms} ms")
     started = time.monotonic()
     try:
         resp = requests.get("https://example.com/", timeout=(5, 5), headers={"User-Agent": USER_AGENT})
