@@ -2184,6 +2184,14 @@ SCRIPT_PLAYER = re.compile(
     re.I,
 )
 VIMEO_PLAYER = re.compile(r"^https://player\.vimeo\.com/video/\d+", re.I)
+EMBED_HOSTS = re.compile(  # popularne serwisy hostujące filmy przez strony embed/player
+    r"vidsrc\.(to|me|net|xyz|nl|pro|in|cc)|filemoon\.(sx|to|in|cc)|vidplay\.|doodstream\.|"
+    r"streamtape\.|upstream\.|mixdrop\.|fembed\.|gofile\.io|cloudvideo\.|vidlox\.|"
+    r"streamhub\.|vidhide\.|voe\.sx|vtbe\.|turbobit\.|rapidvideo\.|videovard\.|"
+    r"streamvid\.|filelions\.|vidmoly\.|dropload\.|vidhd\.|streamwish\.|filelion\.|"
+    r"embedsito\.|moonplayer\.|vidy\.st|supervideo\.|highvid\.|tubeload\.|"
+    r"multiembed\.|vidsrc2\.|embedrise\.|nontonfilm\.|smashy\.stream", re.I
+)
 KNOWN_PLAYER_PAGE = re.compile(  # strony, z których film bierzemy przez publiczne API odtwarzacza
     r"^https?://(?:www\.)?(?:player\.vimeo\.com/video/|"
     r"(?:cdn\.jwplayer\.com|content\.jwplatform\.com)/(?:players|previews)/|fast\.wistia\.(?:net|com)/embed/)", re.I
@@ -2345,7 +2353,9 @@ def first_image_url(value):
 
 
 VIDEO_IN_HTML = re.compile(r"\.(?:mp4|m4v|webm|m3u8|mov|3gp|mkv|avi|flv|mpe?g)\b|<video|og:video|twitter:player|VideoObject|"
-                           r"player\.vimeo|jwplayer|jwplatform|wistia|kaltura|<iframe", re.I)
+                           r"player\.vimeo|jwplayer|jwplatform|wistia|kaltura|<iframe|"
+                           r"vidsrc\.|filemoon\.|doodstream\.|streamtape\.|vidplay\.|vidhide\.|streamwish\.|"
+                           r"vidy\.st|multiembed\.|furniturebeast\.", re.I)
 
 
 def find_videos(soup, base_url, deep=False, posters=None, raw=None):
@@ -2439,11 +2449,20 @@ def find_videos(soup, base_url, deep=False, posters=None, raw=None):
         wistia = re.search(r"wistia_async_([a-z0-9]{10})", classes)
         if wistia:
             add(f"https://fast.wistia.net/embed/iframe/{wistia.group(1)}", players)
-    for link in soup.find_all("a", href=True) if has_file else []:
-        add(link["href"], direct, need_ext=True)
+    for link in soup.find_all("a", href=True):
+        href = link.get("href", "")
+        if has_file:
+            add(href, direct, need_ext=True)
+        if not deep and (EMBED_HOSTS.search(href) or PLAYER_HINT.search(href)):
+            add(href, players)
+    if not deep:  # przyciski/divy z adresem embed w atrybucie data-* (np. wmovies: <button data-src="…vidsrc…">)
+        for tag in soup.find_all(True):
+            for name, value in tag.attrs.items():
+                if isinstance(value, str) and name.startswith("data-") and (EMBED_HOSTS.search(value) or PLAYER_HINT.search(value)):
+                    add(value, players)
     frame_srcs = list(filter(None, (f.get("src") or f.get("data-src") or f.get("data-lazy-src")
                                     for f in soup.find_all("iframe"))))
-    extra_frames = []  # ramki bez słów kluczowych – fallback gdy nic innego nie zostanie
+    extra_frames = []  # ramki bez slow kluczowych – fallback gdy nic innego nie zostanie
     for value in frame_srcs:
         if deep or PLAYER_HINT.search(value):
             add(value, players)
@@ -2462,6 +2481,11 @@ def find_videos(soup, base_url, deep=False, posters=None, raw=None):
             del direct[before + 1:]  # w skryptach to zwykle ten sam film w kilku jakościach – w czytniku wystarczy jeden
         for match in SCRIPT_PLAYER.finditer(scripts):  # JW Player, Wistia, Vimeo wstawiane skryptem
             add(match.group(), players)
+        # adresy serwisów wideo w zmiennych JS (np. var Servers = {"embedru":"https://vidy.st/…"})
+        for match in re.finditer(r'https?://[A-Za-z0-9._~:/?#\[\]@!$&\'()*+,;%=\-]{8,}', scripts):
+            url = match.group().rstrip('",\'\\')
+            if EMBED_HOSTS.search(url) or PLAYER_HINT.search(url):
+                add(url, players)
         page = raw if raw is not None else str(soup)
         partner, entry = (KALTURA_PARTNER.search(page), KALTURA_ENTRY.search(page)) if "kaltura" in page.lower() else (None, None)
         if partner and entry:  # Kaltura (m.in. uczelniane serwisy wideo)
