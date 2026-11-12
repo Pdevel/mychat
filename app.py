@@ -59,7 +59,7 @@ MAX_PAGE_BYTES = 1_500_000  # więcej nie pobieramy (oszczędza pamięć serwera
 MAX_REDIRECTS = 5
 MAX_URL_LENGTH = 2000
 RESULTS_PER_PAGE = 10
-FIND_PER_PAGE = 15  # trafień „Szukaj na tej stronie” na jeden ekran
+FIND_PER_PAGE = 15  # trafień „Szukaj na tej stronie" na jeden ekran
 FIND_MAX_HITS = 150
 MAX_RESULT_PAGES = 30
 SNIPPET_CHARS = 220
@@ -82,12 +82,12 @@ IMAGE_HQ_MAX_BYTES = 10_000_000
 IMAGE_MIN_SIZE = 48  # mniejsze to ikonki, flagi i piksele śledzące – na ekranie 240 px to tylko szum
 IMAGES_PER_ARTICLE = 12  # więcej obrazków to zbyt dużo danych i pracy dla telefonu i darmowego serwera
 GALLERY_MAX = 60  # obrazków z galerii (np. strony komiksu, zdjęcia z relacji) na jedną stronę serwisu
-IMAGE_WEIGHT = 600  # obrazek zajmuje na stronie czytnika tyle „znaków” z limitu ARTICLE_PAGE_CHARS
+IMAGE_WEIGHT = 600  # obrazek zajmuje na stronie czytnika tyle „znaków" z limitu ARTICLE_PAGE_CHARS
 # Miniatury na stronach z listą artykułów (np. główna serwisu): mniejsze i lżejsze niż zdjęcia w artykule.
 THUMB_MAX_SIZE = int(os.environ.get("THUMB_MAX_SIZE", "80"))  # najdłuższy bok miniatury w px (stoi obok tytułu)
 THUMBS_PER_LISTING = 30
 THUMB_WEIGHT = 300  # ok. 10 miniatur na jedną stronę czytnika
-Image.MAX_IMAGE_PIXELS = 25_000_000  # ochrona przed „bombami” (ogromne wymiary w małym pliku)
+Image.MAX_IMAGE_PIXELS = 25_000_000  # ochrona przed „bombami" (ogromne wymiary w małym pliku)
 
 # Filmy: serwer pobiera plik (albo strumień HLS .m3u8), przekodowuje go ffmpegiem do małego pliku, który odtwarzacz
 # wideo Nokii 235 4G / 3210 4G udźwignie, i podaje go do pobrania. Długie filmy dzielimy na części.
@@ -363,7 +363,7 @@ def squash(text):
 
 
 # Znaczniki, które w przeglądarce zaczynają nową linię/komórkę – tylko tam wstawiamy odstęp. Między zwykłymi
-# znacznikami w tekście (<a>, <b>, <span>…) odstępu nie dokładamy, więc nie ma „Polska , Rzeczpospolita”.
+# znacznikami w tekście (<a>, <b>, <span>…) odstępu nie dokładamy, więc nie ma „Polska , Rzeczpospolita".
 TEXT_BREAKS = {"br", "p", "div", "li", "td", "th", "tr", "dt", "dd", "ul", "ol", "table", "blockquote", "pre",
                "section", "article", "h1", "h2", "h3", "h4", "h5", "h6", "figcaption", "caption", "hr"}
 
@@ -396,7 +396,7 @@ def node_text(node):
                     parts.append(" ")
                 walk(child)
                 if breaks:
-                    parts.append(" ")  # odstęp także po elemencie blokowym („Tytuł” + „2026”)
+                    parts.append(" ")  # odstęp także po elemencie blokowym („Tytuł" + „2026")
             previous = child
 
     if isinstance(node, Tag):
@@ -526,7 +526,7 @@ def parse_ddg_html(html):
 
 def frogfind_target(href):
     """Adres docelowy z linku FrogFind: /read?a=ADRES&k=…, /read.php?a=ADRES, //duckduckgo.com/l/?uddg=ADRES
-    albo bezpośredni adres. Zwraca None dla linków wewnętrznych (np. logo „/”) i reklam."""
+    albo bezpośredni adres. Zwraca None dla linków wewnętrznych (np. logo „/") i reklam."""
     href = (href or "").strip()
     parts = urlparse(href)
     if parts.path.rstrip("/").endswith(("/read", "read.php")):
@@ -890,7 +890,7 @@ def text_parts(node):
 
 
 def meta_like(text):
-    """Linijka danych, a nie tytuł: sporo cyfr („Movie 2026 107 min”, „TV SS 1 EP 5”, „8,77”) albo prawie bez liter."""
+    """Linijka danych, a nie tytuł: sporo cyfr („Movie 2026 107 min", „TV SS 1 EP 5", „8,77") albo prawie bez liter."""
     digits = sum(char.isdigit() for char in text)
     return letters(text) < 3 or digits >= 0.2 * (letters(text) + digits)
 
@@ -908,10 +908,10 @@ def title_hinted(holder, stop):
 
 def pick_title(parts, container):
     """Który kawałek kafelka jest tytułem: nie linijka danych; najlepiej nagłówek albo klasa typu title/name;
-    inaczej pierwszy kawałek z co najmniej dwoma słowami (nie etykieta działu typu „KRAJ”). None, gdy same dane."""
+    inaczej pierwszy kawałek z co najmniej dwoma słowami (nie etykieta działu typu „KRAJ"). None, gdy same dane."""
     hinted = [part for part in parts if part[1] is not None and letters(part[0]) >= 1 and title_hinted(part[1], container)]
     if hinted:
-        return hinted[0][0]  # także tytuły z cyframi („Apollo 13”), gdy strona oznacza je jako tytuł
+        return hinted[0][0]  # także tytuły z cyframi („Apollo 13"), gdy strona oznacza je jako tytuł
     candidates = [part for part in parts if not meta_like(part[0])]
     if not candidates:
         return None
@@ -955,7 +955,7 @@ def collect_blocks(root, base_url, with_images=False, skip_images=frozenset(), i
     Blok to (rodzaj, tekst, adres_linku_lub_None); ten sam adres linkujemy tylko raz.
     Z with_images=True dochodzą bloki (image_kind, opis, adres_obrazka) – najwyżej max_images
     ("img" – zdjęcie w artykule, "thumb" – miniatura na stronie z listą).
-    cards=True (strony z listą): także „kafelki” – linki z obrazkiem i tytułem w zwykłym <div>/<span>, w title
+    cards=True (strony z listą): także „kafelki" – linki z obrazkiem i tytułem w zwykłym <div>/<span>, w title
     albo w alt obrazka (sklepy, katalogi, serwisy z przepisami…), które nie leżą w nagłówku ani akapicie."""
     blocks, linked, images = [], set(), set()
     consumed, card_hrefs, best_text, best_title = set(), set(), {}, {}
@@ -965,7 +965,7 @@ def collect_blocks(root, base_url, with_images=False, skip_images=frozenset(), i
             if href:
                 for candidate in (no_urls(node_text(link)), squash(link.get("title") or "")):
                     if letters(candidate) > letters(best_text.get(href, "")):
-                        best_text[href] = candidate  # tytuł ma najwięcej liter (nie „8,77 10 988 tys. ocen”)
+                        best_text[href] = candidate  # tytuł ma najwięcej liter (nie „8,77 10 988 tys. ocen")
                 if len(squash(link.get("title") or "")) > len(best_title.get(href, "")):
                     best_title[href] = squash(link["title"])
     tags = BLOCK_TAGS + (["img"] if with_images else []) + (["a"] if cards else [])
@@ -989,19 +989,19 @@ def collect_blocks(root, base_url, with_images=False, skip_images=frozenset(), i
             named = squash(node.get("title") or "") or best_title.get(href, "")
             elsewhere = best_text.get(href, "")  # tekst innego linku pod ten sam adres (np. tytuł obok obrazka-linku)
             known = [(elsewhere, None)] if elsewhere and not any(fold(elsewhere) in fold(text) for text, _ in parts) else []
-            if labeled:  # „Country:” + „USA” – to dane, nie tytuł z dopiskiem: zostają w kolejności ze strony
+            if labeled:  # „Country:" + „USA" – to dane, nie tytuł z dopiskiem: zostają w kolejności ze strony
                 title, parts = " ".join(text for text, _ in parts), []
             elif named and len(named) >= 2:
                 title = named  # atrybut title linku to zwykle pełny tytuł
             else:
                 title = pick_title(parts + known, container)
             is_card = has_image or len(parts) >= 2 or labeled
-            if title is None:  # same dane (np. „8,77 · 10 988 tys. ocen”) – zwykły link z tekstem w kolejności ze strony
+            if title is None:  # same dane (np. „8,77 · 10 988 tys. ocen") – zwykły link z tekstem w kolejności ze strony
                 title = no_urls(node_text(container)) or (squash(img.get("alt") or "") if img is not None else "")
                 is_card, parts = has_image, []
             if not ((is_card and len(title) >= 2) or len(title) >= 25 or len(title.split()) >= 4):
-                continue  # „Więcej”, „Zobacz”, numery stron, pozycje menu…
-            shown = fold(title)  # bez powtórzeń tytułu, także uciętego („Pełny tyt…”)
+                continue  # „Więcej", „Zobacz", numery stron, pozycje menu…
+            shown = fold(title)  # bez powtórzeń tytułu, także uciętego („Pełny tyt…")
             extras = [text for text, _ in parts
                       if fold(text) not in shown and not shown.startswith(fold(text).rstrip(".… "))]
             for inner in container.find_all(BLOCK_TAGS + ["img"]):
@@ -1083,9 +1083,9 @@ def is_menu_entry(block, protected=frozenset()):
 
 
 def drop_menus(blocks, run=6, protected=frozenset()):
-    """Usuwa menu nieoznaczone jako <nav>: ciąg co najmniej `run` krótkich linków z rzędu (np. „Filmy”, „Seriale”,
-    „Rankingi”…) bez obrazków. Na telefonie z klawiaturą to dziesiątki skoków strzałką przed treścią."""
-    def neutral(block):  # krótki podpis bez linku (np. „Na VOD”) nie przerywa menu
+    """Usuwa menu nieoznaczone jako <nav>: ciąg co najmniej `run` krótkich linków z rzędu (np. „Filmy", „Seriale",
+    „Rankingi"…) bez obrazków. Na telefonie z klawiaturą to dziesiątki skoków strzałką przed treścią."""
+    def neutral(block):  # krótki podpis bez linku (np. „Na VOD") nie przerywa menu
         return block[0] in ("p", "h") and block[2] is None and len(block[1]) <= 25
 
     is_entry = lambda block: is_menu_entry(block, protected)  # kafelki (obrazek, dane obok tytułu) to treść, nie menu
@@ -1106,13 +1106,13 @@ def drop_menus(blocks, run=6, protected=frozenset()):
 
 
 WRAPPER_TAGS = {"form", "header", "aside", "nav", "menu", "dialog"}
-WRAPPER_SHARE = 0.35  # element z taką częścią tekstu strony to jej „ramka”, a nie menu, reklama czy stopka
+WRAPPER_SHARE = 0.35  # element z taką częścią tekstu strony to jej „ramka", a nie menu, reklama czy stopka
 
 
 def fallback_blocks(soup, base_url, skip_images=frozenset()):
     """Strona z listą (albo gdy readability zawiedzie): usuń śmieci (skrypty, menu, reklamy…) i weź tekst
     z <article>/<main>/<body>. Elementów obejmujących dużą część strony nie usuwamy, nawet gdy wyglądają na
-    „śmieci”: <form> wokół całej strony (ASP.NET), <aside> z listami, klasy typu „with-sidebar”, „header-fixed”."""
+    „śmieci": <form> wokół całej strony (ASP.NET), <aside> z listami, klasy typu „with-sidebar", „header-fixed"."""
     for tag in soup(["script", "style", "noscript", "template"]):
         tag.decompose()
     total = max(len((soup.body or soup).get_text()), 1)
@@ -1127,7 +1127,7 @@ def fallback_blocks(soup, base_url, skip_images=frozenset()):
     for tag in soup.find_all(True):
         if tag.attrs is None:
             continue
-        # klasy BEM „blok__element” (np. card__header) to części kafelka, a nie nagłówek/stopka strony
+        # klasy BEM „blok__element" (np. card__header) to części kafelka, a nie nagłówek/stopka strony
         names = [c for c in (tag.get("class") or []) + [tag.get("id") or ""] if c and "__" not in c]
         hint = " ".join(names)
         if hint.strip() and JUNK_HINT.search(hint) and tag.name not in ("body", "html", "article", "main") and not big(tag):
@@ -1183,7 +1183,7 @@ def gallery_images(soup, base_url):
 
 def apply_gallery(blocks, gallery):
     """Obrazki z galerii: w treści podmieniamy miniatury na pełne obrazki, a brakujące (gdy galeria ma co najmniej
-    3 obrazki – np. strony komiksu) dokładamy na końcu w sekcji „Galeria”."""
+    3 obrazki – np. strony komiksu) dokładamy na końcu w sekcji „Galeria"."""
     by_thumb = {thumb: full for full, thumb, _ in gallery if thumb}
     shown = set()
     upgraded = []
@@ -1283,7 +1283,7 @@ def json_listing(soup, base_url):
 
 def add_json_listing(blocks, embedded):
     """Dokłada pozycje z danych JSON, których nie było w HTML. Gdy jest ich więcej niż linków w HTML (lista
-    wyświetlana dopiero przez JavaScript), idą na początek, w przeciwnym razie na koniec w sekcji „Więcej ze strony”."""
+    wyświetlana dopiero przez JavaScript), idą na początek, w przeciwnym razie na koniec w sekcji „Więcej ze strony"."""
     linked = {b[2] for b in blocks if b[0] in ("h", "p") and b[2]}
     new = [item for item in embedded if item[1] not in linked]
     if len(new) < 4:
@@ -1309,7 +1309,7 @@ FOOTNOTE = re.compile(r"\[\s*[\w.,–-]{1,8}\s*\]")
 
 
 def clean_document(soup, base_url):
-    """Usuwa z dokumentu to, co na telefonie tylko przeszkadza: znaczniki przypisów („[1]”, „[a]”), linki „edytuj”,
+    """Usuwa z dokumentu to, co na telefonie tylko przeszkadza: znaczniki przypisów („[1]", „[a]"), linki „edytuj",
     szablony nawigacyjne i spisy treści. Zwraca wiersze tabeli informacyjnej (infobox) jako [(etykieta, wartość)];
     sama tabela znika z treści – pokazujemy ją zwięźle po pierwszym akapicie, jak w mobilnej wersji serwisów."""
     for tag in soup(["script", "style", "svg", "template"]):
@@ -1363,7 +1363,7 @@ def infobox_value(text):
 
 
 def cell_parts(cell, base_url):
-    """Tekst komórki (z linkami) podzielony w miejscach <br> – np. „liczba ludności” i „gęstość” w jednej komórce."""
+    """Tekst komórki (z linkami) podzielony w miejscach <br> – np. „liczba ludności" i „gęstość" w jednej komórce."""
     if cell.find("br") is None:
         return [node_segments(cell, base_url)[0]]
     fragment = BeautifulSoup(re.sub(r"<br\s*/?>", BR_MARK, str(cell), flags=re.I), "lxml")
@@ -1387,7 +1387,7 @@ def infobox_table_rows(table, base_url, rows):
         images = [infobox_images(cell, base_url) for cell in cells]
         if any(images):
             entry = [{"src": found[0], "cap": node_segments(cell, base_url)[0]} for cell, found in zip(cells, images) if found]
-            if index < len(trs):  # podpisy w następnym wierszu („Herb”, „Flaga”)
+            if index < len(trs):  # podpisy w następnym wierszu („Herb", „Flaga")
                 below = trs[index].find_all(["th", "td"], recursive=False)
                 if (len(below) == len(cells) and not any(infobox_images(c, base_url) for c in below)
                         and all(len(node_text(c)) <= 60 for c in below)):
@@ -1405,7 +1405,7 @@ def infobox_table_rows(table, base_url, rows):
             if not labels or not values:
                 continue
             if len(labels) > 1 and len(values) == len(labels) - 1:
-                rows.append({"t2": shorten(labels[0], 60)})  # nagłówek grupy, np. „Populacja (30.06.2026)”
+                rows.append({"t2": shorten(labels[0], 60)})  # nagłówek grupy, np. „Populacja (30.06.2026)"
                 labels = labels[1:]
             if len(labels) == len(values) and len(labels) > 1:
                 for label, value in zip(labels, values):
@@ -1451,7 +1451,7 @@ def sectioned_root(soup, blocks):
 def missed_lead(soup, base_url, blocks):
     """Akapity wstępu pominięte przez readability (np. Wikipedia dzieli artykuł na <section>, a readability wybiera
     sekcje z dalszą treścią). Zwraca bloki akapitów stojących przed wybraną treścią w tym samym obszarze strony
-    (wspólny „dziadek” pierwszego wybranego akapitu), z pominięciem menu, ramek, tabel i bloków „czytaj też”."""
+    (wspólny „dziadek" pierwszego wybranego akapitu), z pominięciem menu, ramek, tabel i bloków „czytaj też"."""
     first = next((visible(b[1]) for b in blocks if b[0] in ("p", "pl") and len(visible(b[1])) >= 60), None)
     if not first:
         return []
@@ -1496,7 +1496,7 @@ META_LABEL = re.compile(r"^\s*([^\W\d_][\w .'&/-]{0,24}?)\s*:\s*$")
 META_SKIP = {"nav", "footer", "header", "aside", "form", "table"}
 META_ALWAYS_SKIP = {"nav", "footer", "table"}  # tych elementów nie traktujemy jak ramki z treścią
 LABEL_PART = re.compile(r"[^\W\d_][\w .'&/-]{0,24}:")
-LABEL_LEAD = re.compile(r"[^\W\d_][\w .'&/-]{0,24}:\s+\S")  # „Rok: 2000” zapisane w jednym kawałku tekstu
+LABEL_LEAD = re.compile(r"[^\W\d_][\w .'&/-]{0,24}:\s+\S")  # „Rok: 2000" zapisane w jednym kawałku tekstu
 META_NOT_DATA = re.compile(r"also|like|related|recommend|more|share|follow|polecan|podobn|zobacz|więcej|udostępnij|czytaj", re.I)
 
 
@@ -1507,7 +1507,7 @@ def big_wrapper(tag, soup):
 
 
 def meta_rows(soup, base_url):
-    """Wiersze danych typu „Autor : Jan Kowalski”, „Tagi : a, b, c” (etykieta z dwukropkiem i linki obok) – jak karta
+    """Wiersze danych typu „Autor : Jan Kowalski", „Tagi : a, b, c" (etykieta z dwukropkiem i linki obok) – jak karta
     z informacjami na oryginalnej stronie. Zwraca wiersze w formacie tabeli informacyjnej i adresy użytych linków."""
     rows, used, seen = [], set(), set()
     for label_text in soup.find_all(string=META_LABEL):
@@ -1533,7 +1533,7 @@ def meta_rows(soup, base_url):
         seen.add(id(row))
         label = META_LABEL.match(label_text).group(1).strip()
         if META_NOT_DATA.search(label):
-            continue  # „Zobacz też:”, „You might also like:” – to nie dane tej strony
+            continue  # „Zobacz też:", „You might also like:" – to nie dane tej strony
         links = []
         for link in row.find_all("a", href=True):
             href, text = urljoin(base_url, link["href"].strip()), node_text(link)
@@ -1546,11 +1546,11 @@ def meta_rows(soup, base_url):
             value = squash(node_text(row).replace(label_text.strip(), "", 1))
             if 1 <= len(value) <= 60:
                 rows.append({"l": label, "v": value})
-    return (rows, used) if len(rows) >= 2 else ([], set())  # pojedynczy „X:” to zwykle nie karta danych
+    return (rows, used) if len(rows) >= 2 else ([], set())  # pojedynczy „X:" to zwykle nie karta danych
 
 
 def breadcrumbs(soup, base_url):
-    """Ścieżka nawigacji („Strona główna / Kategoria / …”) – widoczna na stronie (element breadcrumb), a gdy jej brak,
+    """Ścieżka nawigacji („Strona główna / Kategoria / …") – widoczna na stronie (element breadcrumb), a gdy jej brak,
     z JSON-LD BreadcrumbList. Bez ostatniego elementu, gdy to bieżąca strona (tytuł stoi pod spodem)."""
     crumbs = []
     for tag in soup.find_all(True):
@@ -1558,7 +1558,7 @@ def breadcrumbs(soup, base_url):
         if re.search(r"breadcrumb|okruszk", hint, re.I) and tag.name not in ("body", "html", "main"):
             links = tag.find_all("a", href=True)
             if not 1 <= len(links) <= 8 or len(tag.get_text()) > 300:
-                continue  # to nie ścieżka, tylko większy obszar z taką klasą (np. „has-breadcrumbs” na ramce strony)
+                continue  # to nie ścieżka, tylko większy obszar z taką klasą (np. „has-breadcrumbs" na ramce strony)
             crumbs = [(shorten(node_text(a), 40), urljoin(base_url, a["href"])) for a in links if node_text(a)]
             if crumbs:
                 tag.decompose()  # ścieżkę pokazujemy nad tytułem – nie powtarzamy jej w treści
@@ -1640,7 +1640,7 @@ def extract_article(html, url, videos=None, posters=None, info=None):
             if sections is not None:  # artykuł podzielony na <section>: cały, a nie jedna sekcja wybrana przez readability
                 blocks = collect_blocks(sections, url, with_images=True, skip_images=small_images, inline_links=True)
                 while blocks and blocks[-1][0] == "h":
-                    blocks.pop()  # puste nagłówki na końcu (np. „Przypisy” po usunięciu listy przypisów)
+                    blocks.pop()  # puste nagłówki na końcu (np. „Przypisy" po usunięciu listy przypisów)
             else:
                 blocks = missed_lead(soup, url, blocks) + blocks
         except Exception as err:
@@ -1648,7 +1648,7 @@ def extract_article(html, url, videos=None, posters=None, info=None):
             blocks = []
     # Gdy readability znalazła mało tekstu, to zwykle strona z listą artykułów (np. główna serwisu): readability wycina
     # bloki gęste od linków, czyli właśnie tytuły. Wtedy bierzemy całą treść strony (bez menu i stopki) z tytułami-linkami.
-    # Artykuły i Wikipedia mają w readability tysiące znaków – zostają przy niej (bez list „czytaj też”).
+    # Artykuły i Wikipedia mają w readability tysiące znaków – zostają przy niej (bez list „czytaj też").
     # Strony z listą dostają małe miniatury (THUMB_MAX_SIZE), żeby dziesiątki obrazków nie przeciążyły telefonu.
     readability_chars = sum(len(visible(b[1])) for b in blocks if b[0] != "img")
     # Strona główna serwisu to lista (nawet gdy wkleja kilka pełnych newsów, które readability bierze za artykuł).
@@ -1660,11 +1660,11 @@ def extract_article(html, url, videos=None, posters=None, info=None):
         if sum(len(b[1]) for b in fallback if b[0] != "thumb") > readability_chars or (front_page and fallback_links >= 10):
             blocks = fallback
             listing = True
-    if listing and embedded:  # tylko strony z listą – w artykułach dane JSON to zwykle „polecane”
+    if listing and embedded:  # tylko strony z listą – w artykułach dane JSON to zwykle „polecane"
         blocks = add_json_listing(blocks, embedded)
     if gallery:
         blocks = apply_gallery(blocks, gallery)
-    # Tytuł jak na stronie: nagłówek <h1> zamiast <title> z dopiskiem serwisu („Polska – Wikipedia, wolna encyklopedia”)
+    # Tytuł jak na stronie: nagłówek <h1> zamiast <title> z dopiskiem serwisu („Polska – Wikipedia, wolna encyklopedia")
     if heading and len(heading) <= 200 and fold(heading) in fold(node_text(soup.title) or title):
         title = heading
     # tytuł pokazujemy osobno – bez powtórzenia w treści (także gdy stoi pod zdjęciem głównym)
@@ -1672,7 +1672,7 @@ def extract_article(html, url, videos=None, posters=None, info=None):
         if block[0] == "h" and fold(block[1]) == fold(title):
             blocks = blocks[:index] + blocks[index + 1:]
             break
-    if meta and not infobox and not front_page:  # karta danych („Autor: …”, „Tagi: …”) pod zdjęciem głównym
+    if meta and not infobox and not front_page:  # karta danych („Autor: …", „Tagi: …") pod zdjęciem głównym
         row_texts = {fold(re.sub(r"\s*:\s*", ": ", f"{r['l']}: {visible(r['v'])}")) for r in meta}
         blocks = [b for b in blocks if not (b[0] in ("p", "h") and b[2] in meta_links)
                   and not (b[0] in ("p", "pl") and fold(re.sub(r"\s*:\s*", ": ", visible(b[1]))) in row_texts)]
@@ -2184,6 +2184,13 @@ SCRIPT_PLAYER = re.compile(
     re.I,
 )
 VIMEO_PLAYER = re.compile(r"^https://player\.vimeo\.com/video/\d+", re.I)
+EMBED_HOSTS = re.compile(  # popularne serwisy hostujące filmy przez strony embed/player
+    r"vidsrc\.(to|me|net|xyz|nl|pro|in|cc)|filemoon\.(sx|to|in|cc)|vidplay\.|doodstream\.|"
+    r"streamtape\.|upstream\.|mixdrop\.|fembed\.|gofile\.io|cloudvideo\.|vidlox\.|"
+    r"streamhub\.|vidhide\.|voe\.sx|vtbe\.|turbobit\.|rapidvideo\.|videovard\.|"
+    r"streamvid\.|filelions\.|vidmoly\.|dropload\.|vidhd\.|streamwish\.|filelion\.|"
+    r"embedsito\.|moonplayer\.|vidy\.st|supervideo\.|highvid\.|tubeload\.", re.I
+)
 KNOWN_PLAYER_PAGE = re.compile(  # strony, z których film bierzemy przez publiczne API odtwarzacza
     r"^https?://(?:www\.)?(?:player\.vimeo\.com/video/|"
     r"(?:cdn\.jwplayer\.com|content\.jwplatform\.com)/(?:players|previews)/|fast\.wistia\.(?:net|com)/embed/)", re.I
@@ -2285,12 +2292,12 @@ class VideoLink(Exception):
 
 def is_video_url(url):
     path = urlparse(url).path
-    # „File:Film.webm”, „TimedText:Film.webm” – strony opisu w wiki (MediaWiki), a nie pliki
+    # „File:Film.webm", „TimedText:Film.webm" – strony opisu w wiki (MediaWiki), a nie pliki
     return bool(VIDEO_FILE.search(path)) and ":" not in unquote(path.rsplit("/", 1)[-1])
 
 
 def media_family(url):
-    """Ten sam film w różnych jakościach („film.webm.240p.vp9.webm”, „film-720p.mp4”) liczymy jako jeden."""
+    """Ten sam film w różnych jakościach („film.webm.240p.vp9.webm", „film-720p.mp4") liczymy jako jeden."""
     name = unquote(urlparse(url).path.rsplit("/", 1)[-1]).lower()
     name = re.sub(r"\.\d{3,4}p(\.[a-z0-9]+)*$", "", name)
     return re.sub(r"[._-]\d{3,4}p(?=\.[a-z0-9]+$)", "", name)
@@ -2345,7 +2352,8 @@ def first_image_url(value):
 
 
 VIDEO_IN_HTML = re.compile(r"\.(?:mp4|m4v|webm|m3u8|mov|3gp|mkv|avi|flv|mpe?g)\b|<video|og:video|twitter:player|VideoObject|"
-                           r"player\.vimeo|jwplayer|jwplatform|wistia|kaltura|<iframe", re.I)
+                           r"player\.vimeo|jwplayer|jwplatform|wistia|kaltura|<iframe|"
+                           r"vidsrc\.|filemoon\.|doodstream\.|streamtape\.|vidplay\.|vidhide\.|streamwish\.|vidy\.st", re.I)
 
 
 def find_videos(soup, base_url, deep=False, posters=None, raw=None):
@@ -2387,7 +2395,7 @@ def find_videos(soup, base_url, deep=False, posters=None, raw=None):
             return
         key = src if target is direct else player_key(src)
         if media_family(src).split(":")[-1] in {media_family(d) for d in direct}:
-            return  # ten sam film w innej jakości albo strona odtwarzacza z tym samym plikiem („File:Film.webm”)
+            return  # ten sam film w innej jakości albo strona odtwarzacza z tym samym plikiem („File:Film.webm")
         if src not in direct and key not in (player_key(p) for p in players):
             target.append(src)
         poster = (poster or "").strip()
@@ -2428,10 +2436,10 @@ def find_videos(soup, base_url, deep=False, posters=None, raw=None):
                         add(item["embedUrl"], poster=thumb)
                 stack.extend(v for v in item.values() if isinstance(v, (list, dict)))
     for tag in soup.find_all(True) if has_file or (raw is not None and "wistia_async" in raw) else []:
-        # atrybuty typu data-video-src="…mp4", data-hls="…m3u8", <param value="…">
+        # atrybuty typu data-video-src=".mp4", data-hls=".m3u8", <param value="...">
         for name, value in tag.attrs.items():
             if (isinstance(value, str) and (name.startswith("data-") or name in ("value", "content")) and "/" in value
-                    and VIDEO_HINT.search(value)):  # sama nazwa wariantu (np. „480p.vp9.webm”) to nie adres
+                    and VIDEO_HINT.search(value)):  # sama nazwa wariantu (np. „480p.vp9.webm") to nie adres
                 thumb = next((tag.get(a) for a in ("data-poster", "poster", "data-thumbnail", "data-thumb", "data-image")
                               if isinstance(tag.get(a), str)), None)
                 add(value, direct, need_ext=True, poster=thumb)
@@ -2439,8 +2447,17 @@ def find_videos(soup, base_url, deep=False, posters=None, raw=None):
         wistia = re.search(r"wistia_async_([a-z0-9]{10})", classes)
         if wistia:
             add(f"https://fast.wistia.net/embed/iframe/{wistia.group(1)}", players)
-    for link in soup.find_all("a", href=True) if has_file else []:
-        add(link["href"], direct, need_ext=True)
+    if not deep:  # przyciski/divy z adresem embed w atrybucie data-* (np. wmovies: <button data-src="https://vidsrc.to/…">)
+        for tag in soup.find_all(True):
+            for name, value in tag.attrs.items():
+                if isinstance(value, str) and name.startswith("data-") and EMBED_HOSTS.search(value):
+                    add(value, players)
+    for link in soup.find_all("a", href=True):
+        href = link.get("href", "")
+        if has_file:
+            add(href, direct, need_ext=True)
+        if not deep and EMBED_HOSTS.search(href):  # linki do znanych serwisów wideo (vidsrc, filemoon, doodstream…)
+            add(href, players)
     frame_srcs = list(filter(None, (f.get("src") or f.get("data-src") or f.get("data-lazy-src")
                                     for f in soup.find_all("iframe"))))
     extra_frames = []  # ramki bez słów kluczowych – fallback gdy nic innego nie zostanie
@@ -3014,7 +3031,7 @@ def video_job(key, src, referer, fmt, part, auto=False):
 
 def start_video_job(key, src, referer, fmt, part, auto=False):
     """Uruchamia przygotowanie filmu w tle. False, gdy serwer zajmuje się już VIDEO_JOBS innymi filmami.
-    Film wybrany przez użytkownika przerywa zadania „auto” (części przygotowywane z wyprzedzeniem)."""
+    Film wybrany przez użytkownika przerywa zadania „auto" (części przygotowywane z wyprzedzeniem)."""
     os.makedirs(VIDEO_DIR, exist_ok=True)
     with _video_start_lock:
         current = read_status(key)
@@ -3066,7 +3083,7 @@ def fetch_image(url, site, size):
 
 
 def add_play_icon(jpeg):
-    """Nakłada na miniaturę okrągły znak „odtwórz”, żeby od razu było widać, że to film."""
+    """Nakłada na miniaturę okrągły znak „odtwórz", żeby od razu było widać, że to film."""
     with Image.open(io.BytesIO(jpeg)) as source:
         image = source.convert("RGBA")
     width, height = image.size
@@ -3134,7 +3151,7 @@ def video_frame(url, referer):
                 head = read_body(resp, limit=FRAME_CHUNK)
                 handle.write(head)
                 if len(head) >= FRAME_CHUNK and total > len(head):
-                    # Indeks MP4 („moov”) bywa na końcu pliku: dokładamy koniec pliku na właściwym miejscu
+                    # Indeks MP4 („moov") bywa na końcu pliku: dokładamy koniec pliku na właściwym miejscu
                     # (plik rzadki – środek nie zajmuje miejsca na dysku i nie jest pobierany).
                     tail = fetch_range(final_url, headers, max(len(head), total - FRAME_CHUNK), total - 1)
                     if tail:
@@ -3209,7 +3226,7 @@ def poster_sources(url, referer, depth=0):
 
 
 def video_poster(url, site):
-    """Miniatura filmu ze znakiem „odtwórz” (JPEG) albo None. Najpierw obrazek podany przez stronę lub odtwarzacz,
+    """Miniatura filmu ze znakiem „odtwórz" (JPEG) albo None. Najpierw obrazek podany przez stronę lub odtwarzacz,
     a gdy go brak – klatka z początku filmu."""
     started = time.monotonic()
     try:
@@ -3536,7 +3553,7 @@ def find_in_article(article, phrase):
             if len(hits) >= FIND_MAX_HITS:
                 continue
             end_match = pos + len(needle)
-            while pos > 0 and text[pos - 1].isalnum():  # zaznaczamy całe słowo („lodz” -> „Łodzi”)
+            while pos > 0 and text[pos - 1].isalnum():  # zaznaczamy całe słowo („lodz" -> „Łodzi")
                 pos -= 1
             while end_match < len(text) and text[end_match].isalnum():
                 end_match += 1
@@ -4106,7 +4123,7 @@ def page_settings():
 
 @app.after_request
 def count_data(resp):
-    """Licznik danych w ciasteczku („RRRRMM:bajty”): każda strona, obrazek i plik wysłany przez Szukajkę.
+    """Licznik danych w ciasteczku („RRRRMM:bajty"): każda strona, obrazek i plik wysłany przez Szukajkę.
     Przybliżony – Opera Mini dodatkowo kompresuje strony, a równoległe pobrania obrazków mogą się nadpisać."""
     if request.endpoint in (None, "healthz", "robots", "icon", "diag") or resp.status_code >= 400:
         return resp
