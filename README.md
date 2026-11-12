@@ -38,6 +38,10 @@ Popularne odtwarzacze z publicznym API obsługuje wprost: Vimeo, JW Player, Wist
 (zwykły plik albo strumień HLS – wtedy najniższą jakość, która wypełni ekran), przekodowuje go ffmpegiem i podaje
 gotowy plik, który otwiera odtwarzacz telefonu:
 
+Każdy film ma miniaturę (220 px, ok. 2–4 KB) ze znakiem „odtwórz”: obrazek podany przez stronę (`poster`,
+`og:image`, JSON-LD), miniaturę z API odtwarzacza (Vimeo, JW Player, Wistia, Kaltura), a gdy jej brak – klatkę z filmu
+(serwer pobiera tylko początek pliku i, przez `Range`, jego koniec albo jeden odcinek strumienia HLS).
+
 - **MP4** – H.264 Baseline (poziom 1.3), do 320×240 (pionowe do 240×320), 15 kl./s, AAC mono – ok. 2 MB na minutę,
 - **3GP** – H.263 176×144, dźwięk AMR – ok. 1 MB na minutę; najbardziej zgodny ze starszymi odtwarzaczami.
 

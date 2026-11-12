@@ -28,14 +28,14 @@ import time
 import unicodedata
 import uuid
 from collections import OrderedDict
-from urllib.parse import parse_qs, urljoin, urlparse
+from urllib.parse import parse_qs, quote, urljoin, urlparse
 
 import requests
 import urllib3.util.connection as urllib3_connection
 from bs4 import BeautifulSoup
 from flask import Flask, Response, abort, redirect, render_template, request, send_file, url_for
 from jinja2 import DictLoader
-from PIL import Image, ImageOps
+from PIL import Image, ImageDraw, ImageOps
 
 try:  # readability daje najlepszy wybór treści; bez niego działa prostsza metoda zapasowa
     from readability import Document
@@ -88,6 +88,7 @@ VIDEO_KEEP_SECONDS = 3 * 3600  # gotowe pliki trzymamy tyle czasu
 VIDEO_DISK_LIMIT = int(os.environ.get("VIDEO_DISK_MB", "1500")) * 1_000_000
 VIDEO_STALE = 180  # zadanie bez znaku życia przez tyle sekund uznajemy za przerwane (np. restart serwera)
 VIDEOS_PER_ARTICLE = 5
+VIDEO_POSTER_SIZE = (IMAGE_MAX_WIDTH, 180)  # miniatura filmu na całą szerokość ekranu
 
 DDG_LITE = "https://lite.duckduckgo.com/lite/"
 DDG_HTML = "https://html.duckduckgo.com/html/"
@@ -653,14 +654,17 @@ def fallback_blocks(soup, base_url, skip_images=frozenset()):
 CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")  # przez nie readability (lxml) odmawia pracy
 
 
-def extract_article(html, url, videos=None):
+def extract_article(html, url, videos=None, posters=None):
     """Zwraca (tytuł, bloki), gdzie blok to ("h" | "p", tekst, adres_linku_lub_None).
     Gdy podano listę `videos`, trafiają do niej adresy filmów ze strony."""
     html = CONTROL_CHARS.sub("", html)
     soup = BeautifulSoup(html, "lxml")
     title = node_text(soup.title) or host_of(url)
     if videos is not None:
-        videos.extend(find_videos(soup, url))  # przed czyszczeniem – readability usuwa znaczniki <video>
+        videos.extend(find_videos(soup, url, posters=posters))  # przed czyszczeniem – readability usuwa znaczniki <video>
+        lead = lead_image(soup, url)
+        if posters is not None and lead:
+            posters[""] = lead[0]  # zdjęcie strony – zapasowa miniatura filmu
     # readability usuwa z obrazków width/height – ikonki rozpoznajemy po wymiarach z oryginalnej strony
     small_images = {image_source(img, url, check_size=False) for img in soup.find_all("img") if is_small_image(img)}
     blocks = []
@@ -760,12 +764,12 @@ def get_article(url):
         resp.close()
         raise FetchError("To nie jest strona z tekstem (np. PDF albo obrazek). Otwórz [Oryginał].", 415)
     text = decode_html(read_body(resp), resp)
-    videos = []
+    videos, posters = [], {}
     if content_type == "text/plain":
         title = host_of(final_url)
         blocks = [("p", squash(part), None) for part in re.split(r"\n\s*\n", text) if squash(part)]
     else:
-        title, blocks = extract_article(text, final_url, videos)
+        title, blocks = extract_article(text, final_url, videos, posters)
     if not blocks and videos:
         blocks = [("p", "Na tej stronie jest film – wybierz go wyżej.", None)]
     if not blocks:
@@ -779,7 +783,8 @@ def get_article(url):
         kept.append(block)
     if truncated:
         kept.append(("p", "[Artykuł skrócony – całość w oryginale.]", None))
-    article = {"title": title, "url": final_url, "pages": paginate(kept, ARTICLE_PAGE_CHARS), "videos": videos}
+    article = {"title": title, "url": final_url, "pages": paginate(kept, ARTICLE_PAGE_CHARS), "videos": videos,
+               "posters": posters}
     article_cache.set(url, article)
     return article
 
@@ -883,16 +888,35 @@ def player_key(url):
     return re.sub(r"[?#].*$", "", url.lower()).replace("wistia.net", "wistia.com").replace("/medias/", "/iframe/").rstrip("/")
 
 
-def find_videos(soup, base_url, deep=False):
+def first_image_url(value):
+    """thumbnailUrl / image z JSON-LD bywa napisem, listą albo obiektem ImageObject."""
+    if isinstance(value, list):
+        value = value[0] if value else None
+    if isinstance(value, dict):
+        value = value.get("url") or value.get("contentUrl")
+    return value if isinstance(value, str) else None
+
+
+def find_videos(soup, base_url, deep=False, posters=None):
     """Filmy na stronie, w kolejności: pliki i strumienie podane wprost (<video>, og:video, JSON-LD, atrybuty data-…,
     linki), adresy z konfiguracji odtwarzaczy w skryptach, a na końcu strony odtwarzaczy (iframe, og:video,
     twitter:player) – te otwieramy dopiero przy przygotowaniu filmu i szukamy w nich dalej.
-    deep=True (przygotowanie filmu): bierze też ramki bez typowych słów w adresie i zawsze przegląda skrypty."""
+    deep=True (przygotowanie filmu): bierze też ramki bez typowych słów w adresie i zawsze przegląda skrypty.
+    Gdy podano słownik `posters`, trafiają do niego miniatury filmów podane przez stronę (adres filmu -> obrazek)."""
+    found_posters = {}
+    meta_image = None
+    for attrs in ({"property": "og:image"}, {"name": "og:image"}, {"name": "twitter:image"}, {"property": "twitter:image"}):
+        tag = soup.find("meta", attrs=attrs)
+        if tag is not None and (tag.get("content") or "").strip():
+            meta_image = tag["content"].strip()
+            break
     if KNOWN_PLAYER_PAGE.match(base_url) and not deep:
+        if posters is not None and meta_image:
+            posters[base_url] = urljoin(base_url, meta_image)
         return [base_url]  # sama strona to odtwarzacz: film weźmiemy z jego API w najlepszej dla telefonu jakości
     direct, players = [], []
 
-    def add(value, target=None, need_ext=False):
+    def add(value, target=None, need_ext=False, poster=None):
         value = (value or "").strip()
         for escaped, plain in (("\\/", "/"), ("\\u002F", "/"), ("\\u002f", "/"), ("\\u0026", "&"), ("&amp;", "&")):
             value = value.replace(escaped, plain)
@@ -910,13 +934,16 @@ def find_videos(soup, base_url, deep=False):
         key = src if target is direct else player_key(src)
         if src not in direct and key not in (player_key(p) for p in players):
             target.append(src)
+        poster = (poster or "").strip()
+        if poster and src not in found_posters and not poster.startswith(("data:", "blob:")):
+            found_posters[src] = urljoin(base_url, poster)
 
     for video in soup.find_all("video"):
         candidates = [video.get("src"), video.get("data-src")]
         candidates += [s.get("src") or s.get("data-src") for s in video.find_all("source")]
         for value in candidates:
             if value and not value.strip().startswith(("blob:", "data:")):
-                add(value, direct)
+                add(value, direct, poster=video.get("poster") or video.get("data-poster"))
                 break
     og_type = soup.find("meta", attrs={"property": "og:video:type"})
     og_type = (og_type.get("content") or "").lower() if og_type is not None else ""
@@ -926,9 +953,9 @@ def find_videos(soup, base_url, deep=False):
         for meta in soup.find_all("meta", attrs={"property": name}) + soup.find_all("meta", attrs={"name": name}):
             value = meta.get("content")
             if og_direct and name.startswith("og:"):
-                add(value, direct)
+                add(value, direct, poster=meta_image)
             else:
-                add(value)  # zwykle strona odtwarzacza (text/html), czasem sam plik
+                add(value, poster=meta_image)  # zwykle strona odtwarzacza (text/html), czasem sam plik
     del direct[before + 1:]  # znaczniki og:/twitter: opisują jeden film (czasem w kilku jakościach)
     for script in soup.find_all("script", type="application/ld+json"):
         try:
@@ -941,15 +968,18 @@ def find_videos(soup, base_url, deep=False):
                 stack.extend(item)
             elif isinstance(item, dict):
                 if "Video" in str(item.get("@type", "")):
+                    thumb = first_image_url(item.get("thumbnailUrl") or item.get("image"))
                     if isinstance(item.get("contentUrl"), str):
-                        add(item["contentUrl"], direct)
+                        add(item["contentUrl"], direct, poster=thumb)
                     if isinstance(item.get("embedUrl"), str):
-                        add(item["embedUrl"])
+                        add(item["embedUrl"], poster=thumb)
                 stack.extend(v for v in item.values() if isinstance(v, (list, dict)))
     for tag in soup.find_all(True):  # atrybuty typu data-video-src="…mp4", data-hls="…m3u8", <param value="…">
         for name, value in tag.attrs.items():
             if isinstance(value, str) and (name.startswith("data-") or name in ("value", "content")) and VIDEO_HINT.search(value):
-                add(value, direct, need_ext=True)
+                thumb = next((tag.get(a) for a in ("data-poster", "poster", "data-thumbnail", "data-thumb", "data-image")
+                              if isinstance(tag.get(a), str)), None)
+                add(value, direct, need_ext=True, poster=thumb)
         classes = " ".join(tag.get("class") or [])
         wistia = re.search(r"wistia_async_([a-z0-9]{10})", classes)
         if wistia:
@@ -979,7 +1009,10 @@ def find_videos(soup, base_url, deep=False):
             pid, eid = partner.group(1), entry.group(1)
             add(f"https://cdnapisec.kaltura.com/p/{pid}/sp/{pid}00/playManifest/entryId/{eid}"
                 f"/format/applehttp/protocol/https/a.m3u8", direct)
-    return (direct + players)[:VIDEOS_PER_ARTICLE * (2 if deep else 1)]
+    result = (direct + players)[:VIDEOS_PER_ARTICLE * (2 if deep else 1)]
+    if posters is not None:
+        posters.update({url: found_posters[url] for url in result if url in found_posters})
+    return result
 
 
 def ffmpeg_info():
@@ -1507,6 +1540,193 @@ def start_video_job(key, src, referer, fmt, part):
     return True
 
 
+POSTER_IN_SCRIPT = re.compile(
+    r"""["']?(?:poster|image|thumbnail|thumbnailUrl|thumb|preview)["']?\s*[:=]\s*"""
+    r"""["'](https?:[^"'\s<>]+?\.(?:jpe?g|png|webp)(?:\?[^"'\s<>]*)?)["']""", re.I
+)
+
+
+def fetch_image(url, site, size):
+    """Pobiera obrazek i zmniejsza go dla telefonu (JPEG) albo zwraca None."""
+    headers = {"Accept": "image/avif,image/webp,image/jpeg,image/png,image/*;q=0.8"}
+    if site:
+        headers["Referer"] = site + "/"
+    try:
+        _, resp = http_request(url, extra_headers=headers)
+    except FetchError:
+        return None
+    if resp.status_code >= 400 or not resp.headers.get("Content-Type", "").lower().startswith("image/"):
+        resp.close()
+        return None
+    try:
+        return shrink_image(read_body(resp, limit=IMAGE_MAX_BYTES), *size)
+    except FetchError:
+        return None
+
+
+def add_play_icon(jpeg):
+    """Nakłada na miniaturę okrągły znak „odtwórz”, żeby od razu było widać, że to film."""
+    with Image.open(io.BytesIO(jpeg)) as source:
+        image = source.convert("RGBA")
+    width, height = image.size
+    radius = max(10, min(width, height) // 6)
+    cx, cy = width // 2, height // 2
+    overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    draw.ellipse((cx - radius, cy - radius, cx + radius, cy + radius), fill=(0, 0, 0, 150),
+                 outline=(255, 255, 255, 230), width=max(1, radius // 8))
+    side = radius * 0.5
+    draw.polygon([(cx - side * 0.6, cy - side), (cx - side * 0.6, cy + side), (cx + side, cy)], fill=(255, 255, 255, 245))
+    out = io.BytesIO()
+    Image.alpha_composite(image, overlay).convert("RGB").save(out, "JPEG", quality=IMAGE_QUALITY, optimize=True)
+    return out.getvalue()
+
+
+FRAME_CHUNK = 4_000_000  # tyle początku (i ewentualnie końca) pliku pobieramy na miniaturę
+FRAME_FULL_LIMIT = 25_000_000  # gdy serwer nie podaje fragmentów, mniejszy plik pobieramy cały
+
+
+def fetch_range(url, headers, start, end):
+    """Fragment pliku (nagłówek Range) albo None, gdy serwer nie obsługuje pobierania fragmentów."""
+    try:
+        _, resp = http_request(url, extra_headers=dict(headers, Range=f"bytes={start}-{end}"))
+    except FetchError:
+        return None
+    if resp.status_code != 206:
+        resp.close()
+        return None
+    return read_body(resp, limit=end - start + 1)
+
+
+def video_frame(url, referer):
+    """Klatka z początku filmu (ok. 2. sekunda): pobiera tylko początek pliku albo jeden odcinek strumienia HLS."""
+    exe, _ = ffmpeg_info()
+    if not exe:
+        return None
+    headers = {"Accept": "*/*"}
+    if referer:
+        headers["Referer"] = referer
+    resp = open_media(url, headers)
+    final_url = resp.url or url
+    content_type = resp.headers.get("Content-Type", "").split(";")[0].strip().lower()
+    os.makedirs(VIDEO_DIR, exist_ok=True)
+    path = video_path(f"frame-{uuid.uuid4().hex}.tmp")
+    try:
+        with open(path, "wb") as handle:
+            if "mpegurl" in content_type or urlparse(final_url).path.lower().endswith(".m3u8"):
+                resp_text = read_body(resp, limit=2_000_000).decode("utf-8", "replace")
+                playlist = parse_m3u8(resp_text, final_url)
+                if playlist["variants"]:
+                    playlist = fetch_playlist(choose_variant(playlist["variants"])["uri"], headers)
+                if playlist["key"] or playlist["byterange"] or not playlist["segments"]:
+                    return None
+                total = sum(duration for duration, _ in playlist["segments"])
+                moment = min(max(2.0, total * 0.1), 60.0, max(0.0, total - 1))  # początek filmu bywa czarny lub wyciemniony
+                uris, seek = pick_segments(playlist, moment, moment + 1)
+                for uri in ([playlist["init"]] if playlist["init"] else []) + uris[:1]:
+                    handle.write(read_body(open_media(uri, headers), limit=8_000_000))
+            elif "html" in content_type:
+                resp.close()
+                return None
+            else:
+                total = int(resp.headers.get("Content-Length") or 0)
+                head = read_body(resp, limit=FRAME_CHUNK)
+                handle.write(head)
+                if len(head) >= FRAME_CHUNK and total > len(head):
+                    # Indeks MP4 („moov”) bywa na końcu pliku: dokładamy koniec pliku na właściwym miejscu
+                    # (plik rzadki – środek nie zajmuje miejsca na dysku i nie jest pobierany).
+                    tail = fetch_range(final_url, headers, max(len(head), total - FRAME_CHUNK), total - 1)
+                    if tail:
+                        handle.seek(total - len(tail))
+                        handle.write(tail)
+                    elif total <= FRAME_FULL_LIMIT:  # serwer bez Range: mały plik pobieramy w całości
+                        handle.seek(0)
+                        handle.write(read_body(open_media(final_url, headers), limit=FRAME_FULL_LIMIT))
+                seek = 2
+        for start in (seek, 0):
+            cmd = [exe, "-hide_banner", "-nostdin", "-loglevel", "error", "-protocol_whitelist", "file",
+                   "-format_whitelist", VIDEO_INPUT_FORMATS, "-ss", f"{start:.2f}", "-i", path, "-frames:v", "1",
+                   "-vf", "scale=320:-2", "-f", "image2", "-c:v", "mjpeg", "pipe:1"]
+            try:
+                frame = subprocess.run(cmd, capture_output=True, timeout=15).stdout
+            except subprocess.TimeoutExpired:
+                return None
+            if frame:
+                return shrink_image(frame, *VIDEO_POSTER_SIZE)
+        return None
+    finally:
+        if os.path.exists(path):
+            os.remove(path)
+
+
+def poster_sources(url, referer, depth=0):
+    """Skąd wziąć miniaturę filmu: adresy obrazków (z API odtwarzacza albo ze strony odtwarzacza),
+    a dla samych plików i strumieni ("klatka", adres)."""
+    host = (urlparse(url).hostname or "").lower()
+    if VIMEO_PLAYER.match(url) or re.match(r"^https://(?:www\.)?vimeo\.com/\d+", url):
+        thumb = read_json("https://vimeo.com/api/oembed.json?url=" + quote(url, safe="")).get("thumbnail_url")
+        return [thumb] if thumb else []
+    if host.endswith(("jwplayer.com", "jwplatform.com")) and not is_video_url(url):
+        match = re.search(r"/(?:v2/media|players|previews|manifests)/([a-zA-Z0-9]{8})", url)
+        if match:
+            return [f"https://cdn.jwplayer.com/v2/media/{match.group(1)}/poster.jpg?width=320"]
+    if "wistia" in host:
+        thumb = read_json("https://fast.wistia.com/oembed?url=" + quote(url, safe="")).get("thumbnail_url")
+        return [thumb] if thumb else []
+    kaltura = re.search(r"kaltura\.com/p/(\d+)/sp/\d+/playManifest/entryId/([01]_[a-z0-9]{8})", url)
+    if kaltura:
+        return [f"https://cdnapisec.kaltura.com/p/{kaltura.group(1)}/thumbnail/entry_id/{kaltura.group(2)}/width/320"]
+    if is_video_url(url):
+        return [("klatka", url)]
+    headers = {"Accept": "text/html,*/*;q=0.5"}
+    if referer:
+        headers["Referer"] = referer
+    resp = open_media(url, headers)
+    final_url = resp.url or url
+    content_type = resp.headers.get("Content-Type", "").split(";")[0].strip().lower()
+    if is_video_response(content_type, final_url):
+        resp.close()
+        return [("klatka", final_url)]
+    if "html" not in content_type:
+        resp.close()
+        return []
+    html = CONTROL_CHARS.sub("", decode_html(read_body(resp), resp))
+    soup = BeautifulSoup(html, "lxml")
+    posters = {}
+    found = find_videos(soup, final_url, deep=True, posters=posters)
+    # kolejność: miniatura od strony -> klatka z filmu -> zdjęcie strony i obrazki z konfiguracji odtwarzacza
+    sources = [posters[f] for f in found if f in posters]
+    if found and is_video_url(found[0]):
+        sources.append(("klatka", found[0]))
+    elif found and not sources and depth < 2:
+        sources += poster_sources(found[0], final_url, depth + 1)  # odtwarzacz w ramce (także ramka w ramce)
+    lead = lead_image(soup, final_url)
+    if lead:
+        sources.append(lead[0])
+    sources += [m.group(1).replace("\\/", "/") for m in POSTER_IN_SCRIPT.finditer(html)][:2]
+    return sources
+
+
+def video_poster(url, site):
+    """Miniatura filmu ze znakiem „odtwórz” (JPEG) albo None. Najpierw obrazek podany przez stronę lub odtwarzacz,
+    a gdy go brak – klatka z początku filmu."""
+    started = time.monotonic()
+    try:
+        sources = poster_sources(url, site + "/" if site else None)
+    except FetchError:
+        return None
+    for source in sources[:4]:
+        if time.monotonic() - started > 25:
+            break
+        try:
+            data = video_frame(source[1], url) if isinstance(source, tuple) else fetch_image(source, site, VIDEO_POSTER_SIZE)
+        except FetchError:
+            data = None
+        if data:
+            return data
+    return None
+
+
 def mmss(seconds):
     seconds = int(seconds or 0)
     hours, rest = divmod(seconds, 3600)
@@ -1533,6 +1753,8 @@ STYLE = (
     ".it img{float:left;width:80px;margin:0 6px 0 0}"
     ".it a{font-weight:bold;text-decoration:none}.it a.n{display:block;margin-left:86px}"
     ".ph{margin:4px 0 10px}.ph img{max-width:100%}"
+    ".v{display:block;margin:6px 0 10px;padding:4px;text-align:center;font-weight:bold;text-decoration:none;"
+    "background:#eef3fd;border:1px solid #c6d5f5}.v img{max-width:100%;margin:0 0 4px}"
     ".r{border-bottom:1px solid #e3e3e3;padding:6px 0}"
     ".r a.t{font-weight:bold;text-decoration:none}"
     ".h{color:#1e7d32;font-size:12px}.s{color:#444}.o{font-size:12px}"
@@ -1615,7 +1837,7 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 {% block body %}{% include "_nav.html" %}<div class="w">
 <h1>{{ title }}</h1>
 <p class="m">{{ host }}{% if pages > 1 %} &middot; strona {{ page }} z {{ pages }}{% endif %}</p>
-{% if page == 1 %}{% for v in videos %}<a class="b" href="{{ url_for('video', u=v, r=original, t=title, q=q, rp=rp) }}">Film{% if videos|length > 1 %} {{ loop.index }}{% endif %}: obejrzyj na telefonie</a>
+{% if page == 1 %}{% for v in videos %}<a class="v" href="{{ url_for('video', u=v.url, r=original, t=title, q=q, rp=rp, p=v.poster, fb=v.fallback) }}">{% if images %}<img src="{{ url_for('image', u=v.url, v=1, p=v.poster, f=v.fallback, r=site) }}" alt=""><br>{% endif %}Film{% if videos|length > 1 %} {{ loop.index }}{% endif %}: obejrzyj na telefonie</a>
 {% endfor %}{% endif %}{% for it in items %}{% if it.kind == "item" %}<div class="it">{% if it.img and images %}<img src="{{ url_for('image', u=it.img, r=site, t=1) }}" alt="">{% endif %}<a{% if it.img and images %} class="n"{% endif %} href="{{ url_for('read', url=it.href, q=q, rp=rp) }}">{{ it.text }}</a></div>
 {% elif it.kind == "img" %}{% if images %}<div class="ph"><img src="{{ url_for('image', u=it.href, r=site) }}" alt="{{ it.text or 'obrazek' }}"></div>
 {% endif %}{% elif it.kind == "h" %}<h2>{{ it.text }}</h2>
@@ -1633,7 +1855,8 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 <div class="w">
 <h1>{{ title }}</h1>
 <p class="m">{{ host }}{% if status and status.total %} &middot; {{ status.total|mmss }}{% endif %}{% if part > 1 or (status and status.total and status.total > part_seconds) %} &middot; część {{ part }}{% if status and status.total %} z {{ (status.total / part_seconds)|round(0, 'ceil')|int }}{% endif %}{% endif %}</p>
-{% if mode == "choose" %}{% for f, info in formats.items() %}<a class="b" href="{{ link(f=f) }}">{{ info.name }}{% if ready[f] %} &ndash; gotowy{% endif %}</a>
+{% if poster_img and mode in ("choose", "done") %}<div class="ph"><img src="{{ poster_img }}" alt=""></div>
+{% endif %}{% if mode == "choose" %}{% for f, info in formats.items() %}<a class="b" href="{{ link(f=f) }}">{{ info.name }}{% if ready[f] %} &ndash; gotowy{% endif %}</a>
 <p class="m">{{ info.about }}</p>
 {% endfor %}<p>Serwer pobiera film i zmniejsza go dla telefonu. Krótki film jest gotowy po chwili, długi po kilku minutach. Gotowy plik otworzy odtwarzacz telefonu. Długie filmy są dzielone na części po {{ part_minutes }} min.</p>
 <p class="m">Zacznij od MP4. Gdy telefon go nie odtworzy, wybierz 3GP.</p>
@@ -1746,6 +1969,12 @@ app.jinja_env.filters["mmss"] = mmss
 app.jinja_env.filters["mb"] = megabytes
 
 
+def video_items(article):
+    """Filmy dla czytnika: adres, miniatura podana przez stronę i zdjęcie strony jako zapasowa miniatura."""
+    posters = article.get("posters") or {}
+    return [{"url": v, "poster": posters.get(v), "fallback": posters.get("")} for v in article.get("videos", [])]
+
+
 @app.route("/")
 def home():
     return render_template("home.html", q="")
@@ -1808,7 +2037,7 @@ def read():
         "read.html", title=article["title"], url=url, original=article["url"], host=host_of(article["url"]),
         items=page_items(pages[page - 1]), page=page, pages=len(pages), images=images_enabled(),
         has_images=any(b[0] in ("img", "thumb") for p in pages for b in p), site=f"{parts.scheme}://{parts.netloc}",
-        videos=article.get("videos", []), **common,
+        videos=video_items(article), **common,
     )
 
 
@@ -1827,13 +2056,19 @@ def video():
     if not re.match(r"^https?://", referer, re.I) or len(referer) > MAX_URL_LENGTH:
         referer = ""
     title = squash(request.args.get("t", ""))[:200] or "Film"
+    poster = (request.args.get("p") or "").strip()[:MAX_URL_LENGTH]
+    fallback = (request.args.get("fb") or "").strip()[:MAX_URL_LENGTH]
+    site_url = urlparse(referer or src)
 
     def link(**changes):
-        args = {"u": src, "r": referer or None, "t": title if title != "Film" else None, "q": query or None, "rp": results_page}
+        args = {"u": src, "r": referer or None, "t": title if title != "Film" else None, "q": query or None, "rp": results_page,
+                "p": poster or None, "fb": fallback or None}
         args.update(changes)
         return url_for("video", **args)
 
-    page = dict(src=src, referer=referer, title=title, host=host_of(src), part=part, formats=VIDEO_FORMATS,
+    poster_img = url_for("image", u=src, v=1, p=poster or None, f=fallback or None,
+                         r=f"{site_url.scheme}://{site_url.netloc}") if images_enabled() else None
+    page = dict(src=src, referer=referer, title=title, host=host_of(src), part=part, formats=VIDEO_FORMATS, poster_img=poster_img,
                 part_seconds=VIDEO_PART_SECONDS, part_minutes=VIDEO_PART_SECONDS // 60, link=link, status=None, **common)
     os.makedirs(VIDEO_DIR, exist_ok=True)
     if fmt not in VIDEO_FORMATS:
@@ -1876,6 +2111,8 @@ def image():
     thumb = request.args.get("t") == "1"  # miniatura ze strony z listą artykułów
     if not re.match(r"^https?://", url, re.I) or len(url) > MAX_URL_LENGTH:
         return Response("", status=400)
+    if request.args.get("v") == "1":
+        return video_poster_response(url, referer)
     data = image_cache.get((url, thumb))
     if data is None:
         headers = {"Accept": "image/avif,image/webp,image/jpeg,image/png,image/*;q=0.8"}
@@ -1893,6 +2130,31 @@ def image():
         if data is None:
             return Response("", status=404)
         image_cache.set((url, thumb), data)
+    return Response(data, mimetype="image/jpeg", headers={"Cache-Control": "public, max-age=86400"})
+
+
+def video_poster_response(url, referer):
+    """/img?v=1: miniatura filmu u. p = miniatura podana przez stronę, f = zdjęcie strony (zapasowe)."""
+    poster = (request.args.get("p") or "").strip()
+    fallback = (request.args.get("f") or "").strip()
+    site = referer if re.match(r"^https?://[^/\s]+$", referer) else ""
+    key = ("film", url, poster, fallback)
+    data = image_cache.get(key)
+    if data is None:
+        data = None
+        if re.match(r"^https?://", poster, re.I) and len(poster) <= MAX_URL_LENGTH:
+            data = fetch_image(poster, site, VIDEO_POSTER_SIZE)
+        if data is None:
+            try:
+                data = video_poster(url, site)
+            except Exception:
+                log.exception("miniatura filmu: %s", url)
+        if data is None and re.match(r"^https?://", fallback, re.I) and len(fallback) <= MAX_URL_LENGTH:
+            data = fetch_image(fallback, site, VIDEO_POSTER_SIZE)
+        data = add_play_icon(data) if data else b""
+        image_cache.set(key, data)  # także porażkę – nie szukamy drugi raz
+    if not data:
+        return Response("", status=404)
     return Response(data, mimetype="image/jpeg", headers={"Cache-Control": "public, max-age=86400"})
 
 
