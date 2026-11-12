@@ -119,6 +119,21 @@ przygotowywany jest jeden film (kolejne czekają).
 Strojenie: `VIDEO_FIRST_PARTS_MINUTES` (3,6,12), `VIDEO_PART_MINUTES` (15), `VIDEO_SOURCE_MAX_MB` (400), `VIDEO_CONVERT_MINUTES` (40), `VIDEO_JOBS` (1),
 `VIDEO_DISK_MB` (1500), `VIDEO_DIR`.
 
+## Wygoda na telefonie
+
+- **skróty klawiszowe** (`accesskey`): 1 wstecz, 3 dalej, 2 góra, 8 dół, 5 film/nagranie, 4 zakładka, 7 wyniki,
+  0 nowe szukanie, 9 oryginał – legenda w stopce czytnika,
+- **wielkość tekstu** A- / A / A+ / A++ (12–20 px, nagłówki skalowane razem), zapamiętana w telefonie,
+- **zakładki** w ciasteczku telefonu (do ok. 40, najstarsze wypadają; przetrwają restarty serwera): „Dodaj do zakładek” na
+  dole strony, lista pod `/zakladki`, licznik na stronie głównej,
+- **oszczędzanie danych**: jeden przełącznik wyłącza obrazki, miniatury i ikony; licznik danych wysłanych przez Szukajkę
+  w tym miesiącu (przybliżony – Opera Mini dodatkowo kompresuje),
+- **pogoda** (Open-Meteo, zapasowo wttr.in) i **kursy walut NBP** (EUR, USD, GBP, CHF) na stronie głównej – bez kluczy API;
+  miejscowość do ustawienia pod `/pogoda`; strona główna czeka na nie najwyżej 2 s,
+- **muzyka i podcasty**: nagrania na stronach (`<audio>`, `og:audio`, JSON-LD `AudioObject`/`PodcastEpisode`, linki do
+  .mp3/.m4a/.ogg/.opus/.flac…) i linki prosto do plików dźwiękowych są przerabiane na MP3 80 kb/s stereo
+  (ok. 0,6 MB na minutę), tak samo jak filmy – w ramce na stronie, z podziałem na części.
+
 ## Szybkość
 
 - wyniki wyszukiwania (30 min) i przeczytane strony (15 min) są zapamiętywane na dysku – wspólnie dla wszystkich

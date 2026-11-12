@@ -12,6 +12,7 @@ Strony to czysty HTML: bez CSS, bez JavaScriptu, z jak najmniejszą liczbą link
   /film    – filmy ze stron przekodowane dla telefonu (MP4 H.264 320×240 albo 3GP H.263 176×144)
 """
 
+import base64
 import collections
 import hashlib
 import io
@@ -29,8 +30,9 @@ import threading
 import time
 import unicodedata
 import uuid
+import zlib
 from collections import OrderedDict
-from urllib.parse import parse_qs, quote, urljoin, urlparse
+from urllib.parse import parse_qs, quote, unquote, urljoin, urlparse
 
 import requests
 import urllib3.util.connection as urllib3_connection
@@ -1594,6 +1596,8 @@ def extract_article(html, url, videos=None, posters=None, info=None):
     embedded = json_listing(soup, url)
     if videos is not None:
         videos.extend(find_videos(soup, url, posters=posters, raw=html))  # przed czyszczeniem – readability usuwa <video>
+        if info is not None:
+            info["audios"] = [a for a in find_audio(soup, url, raw=html) if a not in videos]
         lead = lead_image(soup, url)
         if posters is not None and lead:
             posters[""] = lead[0]  # zdjęcie strony – zapasowa miniatura filmu
@@ -1772,7 +1776,8 @@ def load_article(url):
     content_type = resp.headers.get("Content-Type", "").split(";")[0].strip().lower()
     if is_video_response(content_type, final_url):
         resp.close()
-        raise VideoLink(final_url)  # sam film, nie strona – czytnik przekieruje do /film
+        # sam film albo nagranie, nie strona – czytnik przekieruje do /film
+        raise VideoLink(final_url, audio=content_type.startswith("audio/") or is_audio_url(final_url))
     if content_type and not (content_type.startswith("text/") or "html" in content_type or "xml" in content_type):
         resp.close()
         raise FetchError("To nie jest strona z tekstem (np. PDF albo obrazek). Otwórz [Oryginał].", 415)
@@ -1787,8 +1792,8 @@ def load_article(url):
         blocks = [("p", squash(part), None) for part in re.split(r"\n\s*\n", text) if squash(part)]
     else:
         title, blocks = extract_article(text, final_url, videos, posters, info)
-    if not blocks and videos:
-        blocks = [("p", "Na tej stronie jest film – wybierz go wyżej.", None)]
+    if not blocks and (videos or info.get("audios")):
+        blocks = [("p", "Na tej stronie jest film albo nagranie – wybierz je wyżej.", None)]
     if not blocks:
         raise FetchError("Nie udało się wydobyć tekstu z tej strony. Otwórz [Oryginał].", 422)
     truncated, total, kept = False, 0, []
@@ -1817,7 +1822,7 @@ def load_article(url):
     log.info("czytnik %s: %s", final_url, ", ".join(f"{k} {v:.1f}s" for k, v in timing.items()))
     article = {"title": title, "url": final_url, "pages": paginate(kept, ARTICLE_PAGE_CHARS), "videos": videos, "timing": timing,
                "posters": posters, "theme": theme,
-               "crumbs": info.get("crumbs") or [], "site_name": info.get("site_name")}
+               "crumbs": info.get("crumbs") or [], "site_name": info.get("site_name"), "audios": info.get("audios") or []}
     article_cache.set(url, article)
     return article
 
@@ -1849,7 +1854,41 @@ def shrink_image(raw, max_width=IMAGE_MAX_WIDTH, max_height=IMAGE_MAX_HEIGHT, qu
 
 
 def images_enabled():
-    return request.cookies.get("obrazki") != "0"
+    return request.cookies.get("obrazki") != "0" and not saving_enabled()
+
+
+def saving_enabled():
+    """Oszczędzanie danych: bez obrazków, miniatur i ikon (jeden przełącznik)."""
+    return request.cookies.get("oszcz") == "1"
+
+
+# Ustawienia zapamiętane w telefonie (ciasteczka na rok): klucz -> dozwolone wartości.
+SETTINGS = {"obrazki": {"0", "1"}, "linki": {"0", "1"}, "tekst": {"s", "m", "l", "xl"}, "oszcz": {"0", "1"},
+            "miasto": None}
+TEXT_SIZES = {"s": 12, "m": 14, "l": 17, "xl": 20}  # px; 14 to wielkość domyślna
+DATA_COOKIE = "dane"
+
+
+def text_css():
+    """Wielkość tekstu wybrana w ustawieniach (nagłówki i drobny tekst skalowane razem z nią)."""
+    size = TEXT_SIZES.get(request.cookies.get("tekst") or "m", 14)
+    if size == 14:
+        return ""
+    return (f"body{{font-size:{size}px}}h1{{font-size:{size + 3}px}}h2{{font-size:{size + 1}px}}"
+            f".m,.h,.f,.bc,.bar,.o{{font-size:{size - 2}px}}.ib{{font-size:{size - 1}px}}.pi{{font-size:{size + 1}px}}"
+            f".logo{{font-size:{size + 20}px}}")
+
+
+def data_used():
+    """Dane wysłane do telefonu przez Szukajkę w tym miesiącu (w bajtach) – z licznika w ciasteczku."""
+    month, _, value = (request.cookies.get(DATA_COOKIE) or "").partition(":")
+    return int(value) if month == time.strftime("%Y%m") and value.isdigit() else 0
+
+
+def safe_next(target):
+    """Powrót tylko na adres w tej aplikacji."""
+    target = target or "/"
+    return target if target.startswith("/") and not target.startswith("//") else "/"
 
 
 def links_enabled():
@@ -2132,11 +2171,61 @@ KALTURA_PARTNER = re.compile(r"""(?:partner_?id["']?\s*[:=]\s*["']?|/p/)(\d{3,9}
 KALTURA_ENTRY = re.compile(r"""(?:entry_?id["']?\s*[:=/]\s*["']?)([01]_[a-z0-9]{8})""", re.I)
 # ffmpeg czyta tylko lokalne pliki i tylko zwykłe formaty filmów – nigdy list (HLS, concat), które mogłyby wskazać
 # pliki serwera albo adresy w sieci wewnętrznej. Listy HLS rozkładamy sami i pobieramy przez http_request.
-VIDEO_INPUT_FORMATS = "mov,mp4,m4a,3gp,3g2,mj2,matroska,webm,avi,flv,mpegts,mpeg,ogg,asf,aac,mp3,wav"
+VIDEO_INPUT_FORMATS = "mov,mp4,m4a,3gp,3g2,mj2,matroska,webm,avi,flv,mpegts,mpeg,ogg,asf,aac,mp3,wav,flac"
 VIDEO_FORMATS = {
     "mp4": {"name": "MP4", "mime": "video/mp4", "about": "H.264, do 320×240, ok. 2 MB na minutę"},
     "3gp": {"name": "3GP", "mime": "video/3gpp", "about": "H.263, 176×144, ok. 1,2 MB na minutę – dla starszych odtwarzaczy"},
+    "mp3": {"name": "MP3", "mime": "audio/mpeg", "about": "dźwięk 80 kb/s stereo, ok. 0,6 MB na minutę"},
 }
+VIDEO_CHOICES = ("mp4", "3gp")
+AUDIO_CHOICES = ("mp3",)
+AUDIO_FILE = re.compile(r"\.(mp3|m4a|aac|ogg|oga|opus|wav|flac|wma)$", re.I)
+AUDIO_IN_HTML = re.compile(r"<audio|og:audio|AudioObject|PodcastEpisode|\.(?:mp3|m4a|aac|ogg|oga|opus|flac)\b", re.I)
+
+
+def is_audio_url(url):
+    return bool(AUDIO_FILE.search(urlparse(url).path))
+
+
+def find_audio(soup, base_url, raw=None):
+    """Nagrania na stronie (muzyka, podcasty): <audio>/<source>, og:audio, JSON-LD (AudioObject, PodcastEpisode),
+    linki do plików dźwiękowych. Najwyżej VIDEOS_PER_ARTICLE."""
+    if raw is not None and not AUDIO_IN_HTML.search(raw):
+        return []
+    found = []
+
+    def add(value, need_ext=False):
+        value = (value or "").strip()
+        if not value or value.startswith(("blob:", "data:")):
+            return
+        src = urljoin(base_url, value)
+        if urlparse(src).scheme not in ("http", "https") or len(src) > MAX_URL_LENGTH or (need_ext and not is_audio_url(src)):
+            return
+        if src not in found:
+            found.append(src)
+
+    for audio in soup.find_all("audio"):
+        add(pick_video_source(audio))
+    for name in ("og:audio:secure_url", "og:audio:url", "og:audio"):
+        for meta in soup.find_all("meta", attrs={"property": name}) + soup.find_all("meta", attrs={"name": name}):
+            add(meta.get("content"))
+    for script in soup.find_all("script", type="application/ld+json"):
+        try:
+            stack = [json.loads(script.string or "")]
+        except ValueError:
+            continue
+        while stack:
+            item = stack.pop()
+            if isinstance(item, list):
+                stack.extend(item)
+            elif isinstance(item, dict):
+                kind = str(item.get("@type", ""))
+                if ("Audio" in kind or "Podcast" in kind) and isinstance(item.get("contentUrl"), str):
+                    add(item["contentUrl"])
+                stack.extend(v for v in item.values() if isinstance(v, (list, dict)))
+    for link in soup.find_all("a", href=True):
+        add(link["href"], need_ext=True)
+    return found[:VIDEOS_PER_ARTICLE]
 VIDEO_ACTIVE = ("download", "convert")
 
 
@@ -2166,9 +2255,10 @@ _video_start_lock = threading.Lock()
 class VideoLink(Exception):
     """Pod adresem otwieranym w czytniku jest film, a nie strona."""
 
-    def __init__(self, url):
+    def __init__(self, url, audio=False):
         super().__init__(url)
         self.url = url
+        self.audio = audio
 
 
 def is_video_url(url):
@@ -2176,9 +2266,9 @@ def is_video_url(url):
 
 
 def is_video_response(content_type, url):
-    if content_type.startswith("video/") or "mpegurl" in content_type:
+    if content_type.startswith(("video/", "audio/")) or "mpegurl" in content_type:
         return True
-    return is_video_url(url) and ("html" not in content_type)
+    return (is_video_url(url) or is_audio_url(url)) and ("html" not in content_type)
 
 
 def player_key(url):
@@ -2370,6 +2460,8 @@ def ffmpeg_info():
 
 
 def encode_args(fmt):
+    if fmt == "mp3":  # sam dźwięk: MP3 odtworzy każdy telefon, 80 kb/s stereo to ok. 0,6 MB na minutę
+        return ["-vn", "-c:a", "libmp3lame", "-b:a", "80k", "-ar", "44100", "-ac", "2", "-f", "mp3"]
     """Ustawienia ffmpeg dla telefonu. MP4: H.264 Baseline (poziom 1.3) do 320×240, 15 kl./s, AAC mono.
     3GP: H.263 176×144 z dźwiękiem AMR – format, który odtwarza praktycznie każdy telefon z klawiaturą."""
     _, encoders = ffmpeg_info()
@@ -2771,7 +2863,7 @@ def probe_video(exe, path):
         raise FetchError("Nie udało się odczytać pliku filmu.", 415)
     match = re.search(r"Duration: (\d+):(\d+):(\d+(?:\.\d+)?)", out)
     duration = int(match.group(1)) * 3600 + int(match.group(2)) * 60 + float(match.group(3)) if match else None
-    return duration, bool(re.search(r"Stream #\S+.*: Video:", out))
+    return duration, bool(re.search(r"Stream #\S+.*: Video:", out)), bool(re.search(r"Stream #\S+.*: Audio:", out))
 
 
 def run_ffmpeg(cmd, length, report):
@@ -2831,8 +2923,11 @@ def video_job(key, src, referer, fmt, part, auto=False):
         if not exe:
             raise FetchError("Na serwerze brakuje programu ffmpeg (pakiet imageio-ffmpeg).", 500)
         inputs, total = prepare_source(src, referer, part, report)
-        duration, has_video = probe_video(exe, inputs[0][0])
-        if not has_video:
+        duration, has_video, has_audio = probe_video(exe, inputs[0][0])
+        audio_only = fmt in AUDIO_CHOICES
+        if audio_only and not (has_audio or len(inputs) > 1):
+            raise FetchError("W tym pliku nie ma dźwięku albo jego format nie jest obsługiwany.", 415)
+        if not audio_only and not has_video:
             raise FetchError("W tym pliku nie ma obrazu albo jego format nie jest obsługiwany.", 415)
         total = total or duration
         start, part_seconds = part_bounds(part)
@@ -2846,7 +2941,9 @@ def video_job(key, src, referer, fmt, part, auto=False):
             if offset > 0.05:
                 cmd += ["-ss", f"{offset:.2f}"]
             cmd += ["-i", path]
-        cmd += ["-t", str(part_seconds), "-map", "0:v:0", "-map", "1:a:0?" if len(inputs) > 1 else "0:a:0?",
+        maps = ["-map", "1:a:0" if len(inputs) > 1 else "0:a:0"] if audio_only else \
+            ["-map", "0:v:0", "-map", "1:a:0?" if len(inputs) > 1 else "0:a:0?"]
+        cmd += ["-t", str(part_seconds), *maps,
                 "-sn", "-dn", "-map_metadata", "-1", "-threads", "2", *encode_args(fmt),
                 "-progress", "pipe:1", "-nostats", out_tmp]
         run_ffmpeg(cmd, length, report)
@@ -3142,6 +3239,7 @@ DARK_STYLE = (
     ".pill .pq{padding:6px 0 6px 14px}.pill .pl+.pq{padding-left:2px}"
     ".pi{width:100%;background:#4d5156;border:0;color:#e8eaed;font-size:15px;padding:4px 0}"
     ".pr{width:36px;text-align:center}"
+    ".hb{padding:22px 12px 0;text-align:center;line-height:1.5}.hb p{margin:10px 0 0}"
     ".sh{padding:8px 8px 2px}.sh .m{margin:6px 4px 0}.lg{font-size:20px;font-weight:bold;color:#fff;margin:0 0 8px 4px}"
     ".lg a{color:#fff;text-decoration:none}"
     ".dk .m{color:#9aa0a6}.dk .r{border-color:#3c4043}.dk .h,.dk .s{color:#bdc1c6}.dk h2{color:#e8eaed}"
@@ -3157,7 +3255,8 @@ TEMPLATES = {
 <meta name="viewport" content="width=device-width">
 <title>{% block title %}Szukaj{% endblock %}</title>
 <style>{{ style }}</style>{% block extra_style %}{% endblock %}{% if theme %}
-<style>{{ theme_css(theme) }}</style>{% endif %}
+<style>{{ theme_css(theme) }}</style>{% endif %}{% if text_css %}
+<style>{{ text_css }}</style>{% endif %}
 {% block head %}{% endblock %}</head>
 <body{% block bodyattr %}{% endblock %}>
 {% block body %}{% endblock %}
@@ -3169,7 +3268,12 @@ TEMPLATES = {
 <input type="submit" value="Szukaj">
 </form>
 """,
-    "_nav.html": """<div class="bar">{% if theme and images %}<img class="ic" src="{{ url_for('image', u=theme.icon, r=theme.site, ic=theme.bar[1:]) }}" width="16" height="16" alt="">{% endif %}{% if q %}<a href="{{ url_for('search', q=q, p=rp, w=1) }}">{% if request.args.get('l') %}Szukaj w sieci{% else %}&laquo; Wróć do wyników{% endif %}</a> | {% endif %}<a href="{{ url_for('home') }}">Nowe szukanie</a></div>
+    "_nav.html": """<div class="bar"{% if not bottom %} id="g"{% endif %}>{% if theme and images %}<img class="ic" src="{{ url_for('image', u=theme.icon, r=theme.site, ic=theme.bar[1:]) }}" width="16" height="16" alt="">{% endif %}{% if q %}<a href="{{ url_for('search', q=q, p=rp, w=1) }}"{% if not bottom %} accesskey="7"{% endif %}>{% if request.args.get('l') %}Szukaj w sieci{% else %}&laquo; Wróć do wyników{% endif %}</a> | {% endif %}<a href="{{ url_for('home') }}"{% if not bottom %} accesskey="0"{% endif %}>Nowe szukanie</a></div>
+""",
+    "_settings.html": """<div class="f" id="d"><a href="{{ original }}" accesskey="9">[Oryginał]</a>{% if bookmark_url %} &middot; {% if bookmarked %}<a href="{{ url_for('bookmark_remove', u=bookmark_url, next=request.full_path) }}" accesskey="4">Usuń z zakładek</a>{% else %}<a href="{{ url_for('bookmark_add', u=bookmark_url, t=title, next=request.full_path) }}" accesskey="4">Dodaj do zakładek</a>{% endif %}{% endif %}<br>
+{% if has_images and not saving %}<a href="{{ url_for('settings', k='obrazki', v=0 if images else 1, next=request.full_path) }}">Obrazki: {{ "wyłącz" if images else "włącz" }}</a> &middot; {% endif %}{% if has_links %}<a href="{{ url_for('settings', k='linki', v=0 if links else 1, next=request.full_path) }}">Linki w tekście: {{ "wyłącz" if links else "włącz" }}</a>{% endif %}{% if has_images and not saving or has_links %}<br>
+{% endif %}Tekst:{% for size, label in (("s", "A-"), ("m", "A"), ("l", "A+"), ("xl", "A++")) %} {% if text_size == size %}<b>{{ label }}</b>{% else %}<a href="{{ url_for('settings', k='tekst', v=size, next=request.full_path) }}">{{ label }}</a>{% endif %}{% endfor %} &middot; <a href="{{ url_for('settings', k='oszcz', v=0 if saving else 1, next=request.full_path) }}">Oszczędzanie danych: {{ "wyłącz" if saving else "włącz" }}</a><br>
+<span class="m">Dane w tym miesiącu: {{ data_mb|mb1 }} &middot; skróty: 1 wstecz, 3 dalej, <a href="#g" accesskey="2">2 góra</a>, <a href="#d" accesskey="8">8 dół</a>, 5 film, 4 zakładka, 7 wyniki, 0 nowe szukanie, 9 oryginał</span></div>
 """,
     "_find_form.html": """<form action="{{ url_for('read') }}" method="get">
 {% if fixed_url %}<input type="hidden" name="url" value="{{ fixed_url }}">{% else %}Link:<br><input class="u" type="text" name="url" value="" maxlength="2000"><br>
@@ -3186,6 +3290,42 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 {% block body %}<div class="hm">
 <div class="logo">Szukajka</div>
 {% set plus = True %}{% include "_pill.html" %}<p class="m">Wpisz hasło albo adres strony.</p>
+</div>
+<div class="hb">{% if weather %}<a href="{{ url_for('weather_page') }}">{{ weather.city }}: {{ weather.temp }}&deg;C, {{ weather.desc }}</a>{% if weather.days|length > 1 %}<br><span class="m">jutro {{ weather.days[1].min }}&hellip;{{ weather.days[1].max }}&deg;C, {{ weather.days[1].desc }}</span>{% endif %}{% else %}<a href="{{ url_for('weather_page') }}">Pogoda</a>{% endif %}
+{% if rates %}<br>{% for code, value in rates.rates %}{{ code }} {{ value }}{% if not loop.last %} &middot; {% endif %}{% endfor %} <span class="m">zł (NBP)</span>{% endif %}
+<p><a href="{{ url_for('bookmarks') }}" accesskey="4">Zakładki{% if bookmarks_count %} ({{ bookmarks_count }}){% endif %}</a> &middot; <a href="{{ url_for('settings', k='oszcz', v=0 if saving else 1, next='/') }}">Oszczędzanie danych: {{ "wyłącz" if saving else "włącz" }}</a></p>
+<p class="m">Dane z Szukajki w tym miesiącu: {{ data_mb|mb1 }} &middot; tekst:{% for size, label in (("s", "A-"), ("m", "A"), ("l", "A+"), ("xl", "A++")) %} {% if text_size == size %}<b>{{ label }}</b>{% else %}<a href="{{ url_for('settings', k='tekst', v=size, next='/') }}">{{ label }}</a>{% endif %}{% endfor %}</p></div>
+{% endblock %}
+""",
+    "bookmarks.html": """{% extends "base.html" %}
+{% block title %}Zakładki{% endblock %}
+{% block extra_style %}<style>{{ dark_style }}</style>{% endblock %}
+{% block bodyattr %} class="dk"{% endblock %}
+{% block body %}<div class="sh"><div class="lg"><a href="{{ url_for('home') }}" accesskey="0">Szukajka</a></div></div>
+<div class="w">
+<h2>Zakładki</h2>
+{% for url, title in items %}<div class="r"><a class="t" href="{{ url_for('read', url=url) }}">{{ title }}</a><br>
+<span class="h">{{ url|host }}</span> &middot; <a class="o" href="{{ url_for('bookmark_remove', u=url, next=request.full_path) }}">usuń</a></div>
+{% else %}<p>Nie masz jeszcze zakładek. Na dole każdej strony w czytniku jest &bdquo;Dodaj do zakładek&rdquo; (skrót: 4).</p>
+{% endfor %}<p class="m">Zakładki są zapisane w telefonie (najwyżej ok. {{ 40 }} &ndash; najstarsze wypadają).</p>
+</div>
+{% endblock %}
+""",
+    "weather.html": """{% extends "base.html" %}
+{% block title %}Pogoda{% endblock %}
+{% block extra_style %}<style>{{ dark_style }}</style>{% endblock %}
+{% block bodyattr %} class="dk"{% endblock %}
+{% block body %}<div class="sh"><div class="lg"><a href="{{ url_for('home') }}" accesskey="0">Szukajka</a></div></div>
+<div class="w">
+{% if weather %}<h2>{{ weather.city }}: {{ weather.temp }}&deg;C</h2>
+<p>{{ weather.desc }}</p>
+{% for day in weather.days %}<div class="r"><b>{{ day.label }}</b>: {{ day.min }}&hellip;{{ day.max }}&deg;C, {{ day.desc }}</div>
+{% endfor %}{% else %}<div class="e">Nie znalazłem pogody dla &bdquo;{{ city }}&rdquo;. Sprawdź nazwę miejscowości.</div>
+{% endif %}<form action="{{ url_for('weather_page') }}" method="get">Miejscowość:<br><input class="q" type="text" name="miasto" value="{{ city }}" maxlength="60">
+<input type="submit" value="Pokaż"></form>
+{% if rates %}<h2>Kursy walut</h2>
+<p>{% for code, value in rates.rates %}{{ code }}: {{ value }} zł<br>{% endfor %}<span class="m">Średnie kursy NBP z {{ rates.date }}</span></p>
+{% endif %}<p class="m">Pogoda: Open-Meteo / wttr.in. Miejscowość jest zapamiętana w telefonie.</p>
 </div>
 {% endblock %}
 """,
@@ -3213,7 +3353,7 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 {% endif %}{% if sp > 1 %}<a class="b" href="{{ url_for('read', url=url, s=s, q=q, rp=rp, sp=sp - 1) }}">&laquo; Poprzednie trafienia</a>
 {% endif %}<a class="b" href="{{ url_for('read', url=url, q=q, rp=rp) }}">Cała strona</a>
 </div>
-{% include "_nav.html" %}<div class="f"><a href="{{ original }}">[Oryginał]</a></div>
+{% set bottom = True %}{% include "_nav.html" %}{% include "_settings.html" %}
 {% endblock %}
 """,
     "search.html": """{% extends "base.html" %}
@@ -3227,9 +3367,9 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 {% endif %}{% for r in results %}<div class="r"><a class="t" href="{{ url_for('read', url=r.url, q=q, rp=page) }}">{{ r.title }}</a><br>
 <span class="h">{{ r.host }}</span>{% if r.snippet %}<br><span class="s">{{ r.snippet }}</span>{% endif %} <a class="o" href="{{ r.url }}">[Oryginał]</a></div>
 {% endfor %}{% if not results and not error %}<p>Brak wyników.</p>
-{% endif %}{% if has_more %}<a class="b" href="{{ url_for('search', q=q, p=page + 1) }}">Następna strona &raquo;</a>
-{% endif %}{% if page > 1 %}<a class="b" href="{{ url_for('search', q=q, p=page - 1) }}">&laquo; Poprzednia strona</a>
-{% endif %}</div>
+{% endif %}{% if has_more %}<a class="b" href="{{ url_for('search', q=q, p=page + 1) }}" accesskey="3">Następna strona &raquo;</a>
+{% endif %}{% if page > 1 %}<a class="b" href="{{ url_for('search', q=q, p=page - 1) }}" accesskey="1">&laquo; Poprzednia strona</a>
+{% endif %}<p class="m"><a href="{{ url_for('home') }}" accesskey="0">Nowe szukanie</a> &middot; skróty: 3 dalej, 1 wstecz, 0 nowe szukanie</p></div>
 {% endblock %}
 """,
     "read.html": """{% extends "base.html" %}
@@ -3240,18 +3380,18 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 {% if crumbs and page == 1 %}<div class="bc">{% for name, href in crumbs %}{% if not loop.first %} / {% endif %}{% if href %}<a href="{{ url_for('read', url=href, q=q, rp=rp) }}">{{ name }}</a>{% else %}{{ name }}{% endif %}{% endfor %}</div>
 {% endif %}<h1>{{ title }}</h1>
 <p class="m">{{ site_name or host }}{% if pages > 1 %} &middot; strona {{ page }} z {{ pages }}{% endif %}</p>
-{% if page == 1 %}{% for v in videos %}{% set i = loop.index %}{% set start = url_for('read', url=url, q=q, rp=rp, wf=i) ~ '#film' ~ i %}<div class="v" id="film{{ i }}">{% if images %}<a href="{{ start }}"><img src="{{ url_for('image', u=v.url, v=1, p=v.poster, f=v.fallback, r=site) }}" alt=""></a><br>{% endif %}
-{% if film and film.index == i %}{% set f = film %}{% set again = url_for('read', url=url, q=q, rp=rp, wf=i, wfmt=f.fmt, wc=f.part, n=tick) ~ '#film' ~ i %}{% if f.mode == "work" %}<b>Przygotowuję film{% if f.part > 1 or (f.part_total and f.part_total > 1) %}, część {{ f.part }}{% endif %}&hellip;</b><br>
+{% if page == 1 %}{% for v in videos %}{% set i = loop.index %}{% set start = url_for('read', url=url, q=q, rp=rp, wf=i) ~ '#film' ~ i %}{% set what = "nagranie" if v.audio else "film" %}<div class="v" id="film{{ i }}">{% if images and not v.audio %}<a href="{{ start }}"><img src="{{ url_for('image', u=v.url, v=1, p=v.poster, f=v.fallback, r=site) }}" alt=""></a><br>{% elif images and v.fallback %}<a href="{{ start }}"><img src="{{ url_for('image', u=v.fallback, r=site, t=1) }}" alt=""></a><br>{% endif %}
+{% if film and film.index == i %}{% set f = film %}{% set again = url_for('read', url=url, q=q, rp=rp, wf=i, wfmt=f.fmt, wc=f.part, n=tick) ~ '#film' ~ i %}{% if f.mode == "work" %}<b>Przygotowuję {{ what }}{% if f.part > 1 or (f.part_total and f.part_total > 1) %}, część {{ f.part }}{% endif %}&hellip;</b><br>
 {% if f.status.state == "download" %}Pobieranie: {{ f.status.got|mb }}{% if f.status.progress %} ({{ f.status.progress }}%){% endif %}{% else %}Zmniejszanie dla telefonu: {{ f.status.progress }}%{% endif %}<br>
 <a href="{{ again }}">Odśwież</a> <span class="m">&ndash; samo co 8 s</span>
-{% elif f.mode == "busy" %}Serwer kończy inny film &ndash; ten zacznie się za chwilę.<br><a href="{{ again }}">Odśwież</a>
-{% elif f.mode == "done" %}<a href="{{ url_for('video_file', key=f.key, ext=f.fmt) }}">Odtwórz film ({{ formats[f.fmt].name }}, {{ f.status.size|mb }})</a><br>
+{% elif f.mode == "busy" %}Serwer kończy inny film &ndash; {{ "to nagranie zacznie" if v.audio else "ten zacznie" }} się za chwilę.<br><a href="{{ again }}">Odśwież</a>
+{% elif f.mode == "done" %}<a href="{{ url_for('video_file', key=f.key, ext=f.fmt) }}"{% if i == 1 %} accesskey="5"{% endif %}>Odtwórz {{ what }} ({{ formats[f.fmt].name }}, {{ f.status.size|mb }})</a><br>
 <span class="m">{% if f.part_total and f.part_total > 1 %}Część {{ f.part }} z {{ f.part_total }} &middot; {% endif %}{{ f.status.length|mmss }}</span><br>
 {% if f.has_next %}<a href="{{ url_for('read', url=url, q=q, rp=rp, wf=i, wfmt=f.fmt, wc=f.part + 1) }}#film{{ i }}">Następna część{% if f.next_ready %} (gotowa){% endif %} &raquo;</a><br>
 {% endif %}{% if f.part > 1 %}<a href="{{ url_for('read', url=url, q=q, rp=rp, wf=i, wfmt=f.fmt, wc=f.part - 1) }}#film{{ i }}">&laquo; Poprzednia część</a><br>
-{% endif %}<span class="m"><a href="{{ url_for('video_file', key=f.key, ext=f.fmt, d=1) }}">Zapisz w telefonie</a> &middot; <a href="{{ url_for('read', url=url, q=q, rp=rp, wf=i, wfmt=f.other, wc=f.part) }}#film{{ i }}">Nie działa? {{ formats[f.other].name }}</a></span>
-{% else %}{{ f.status.message }}<br>{% if f.status.blocked %}<a href="{{ original }}">Otwórz bezpośrednio w Operze</a>{% else %}<a href="{{ url_for('read', url=url, q=q, rp=rp, wf=i, wfmt=f.fmt, wc=f.part, znowu=1) }}#film{{ i }}">Spróbuj ponownie</a> &middot; <a href="{{ url_for('read', url=url, q=q, rp=rp, wf=i, wfmt=f.other, wc=f.part) }}#film{{ i }}">{{ formats[f.other].name }}</a>{% endif %}
-{% endif %}{% else %}<a href="{{ start }}">Film{% if videos|length > 1 %} {{ i }}{% endif %}: obejrzyj na telefonie</a>{% endif %}</div>
+{% endif %}<span class="m"><a href="{{ url_for('video_file', key=f.key, ext=f.fmt, d=1) }}">Zapisz w telefonie</a>{% if f.other %} &middot; <a href="{{ url_for('read', url=url, q=q, rp=rp, wf=i, wfmt=f.other, wc=f.part) }}#film{{ i }}">Nie działa? {{ formats[f.other].name }}</a>{% endif %}</span>
+{% else %}{{ f.status.message }}<br>{% if f.status.blocked %}<a href="{{ original }}">Otwórz bezpośrednio w Operze</a>{% else %}<a href="{{ url_for('read', url=url, q=q, rp=rp, wf=i, wfmt=f.fmt, wc=f.part, znowu=1) }}#film{{ i }}">Spróbuj ponownie</a>{% if f.other %} &middot; <a href="{{ url_for('read', url=url, q=q, rp=rp, wf=i, wfmt=f.other, wc=f.part) }}#film{{ i }}">{{ formats[f.other].name }}</a>{% endif %}{% endif %}
+{% endif %}{% else %}<a href="{{ start }}"{% if i == 1 %} accesskey="5"{% endif %}>{% if v.audio %}Nagranie{% else %}Film{% endif %}{% if videos|length > 1 %} {{ i }}{% endif %}: {{ "posłuchaj" if v.audio else "obejrzyj" }} na telefonie</a>{% endif %}</div>
 {% endfor %}{% endif %}{% for it in items %}{% if it.kind == "item" %}<div class="it">{% if it.img and images %}<img src="{{ url_for('image', u=it.img, r=site, t=1) }}" alt="">{% endif %}<a{% if it.img and images %} class="n"{% endif %} href="{{ url_for('read', url=it.href, q=q, rp=rp) }}">{{ it.text }}</a></div>
 {% elif it.kind == "img" %}{% if images %}<div class="ph"><a href="{{ url_for('image', u=it.href, r=site, hq=1) }}" target="_blank"><img src="{{ url_for('image', u=it.href, r=site) }}" alt="{{ it.text or 'obrazek' }}"></a></div>
 {% endif %}{% elif it.kind == "h" %}<h2>{{ it.text }}</h2>
@@ -3263,10 +3403,10 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 {% else %}{{ tl(r.v) }}<br>
 {% endif %}{% endfor %}</div>
 {% else %}<p>{{ it.text }}</p>
-{% endif %}{% endfor %}{% if page < pages %}<a class="b" href="{{ url_for('read', url=url, q=q, rp=rp, page=page + 1) }}">Dalej &raquo; ({{ page }}/{{ pages }})</a>
-{% endif %}{% if page > 1 %}<a class="b" href="{{ url_for('read', url=url, q=q, rp=rp, page=page - 1) }}">&laquo; Wstecz</a>
+{% endif %}{% endfor %}{% if page < pages %}<a class="b" href="{{ url_for('read', url=url, q=q, rp=rp, page=page + 1) }}" accesskey="3">Dalej &raquo; ({{ page }}/{{ pages }})</a>
+{% endif %}{% if page > 1 %}<a class="b" href="{{ url_for('read', url=url, q=q, rp=rp, page=page - 1) }}" accesskey="1">&laquo; Wstecz</a>
 {% endif %}{% set fixed_url = url %}{% include "_find_form.html" %}</div>
-{% include "_nav.html" %}<div class="f"><a href="{{ original }}">[Oryginał]</a>{% if has_images %} &middot; <a href="{{ url_for('toggle_images', wl=0 if images else 1, next=request.full_path) }}">Obrazki: {{ "wyłącz" if images else "włącz" }}</a>{% endif %}{% if has_links %} &middot; <a href="{{ url_for('toggle_links', wl=0 if links else 1, next=request.full_path) }}">Linki w tekście: {{ "wyłącz" if links else "włącz" }}</a>{% endif %}</div>
+{% set bottom = True %}{% include "_nav.html" %}{% include "_settings.html" %}
 {% endblock %}
 """,
     "film.html": """{% extends "base.html" %}
@@ -3276,31 +3416,31 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 <div class="w">
 <h1>{{ title }}</h1>
 <p class="m">{{ host }}{% if status and status.total %} &middot; {{ status.total|mmss }}{% endif %}{% if part_total and part_total > 1 %} &middot; część {{ part }} z {{ part_total }}{% elif part > 1 %} &middot; część {{ part }}{% endif %}</p>
-{% if poster_img and mode in ("choose", "done") %}<div class="ph"><img src="{{ poster_img }}" alt=""></div>
+{% if poster_img and mode in ("choose", "done") and not audio %}<div class="ph"><img src="{{ poster_img }}" alt=""></div>
 {% endif %}{% if mode == "choose" %}{% for f, info in formats.items() %}<a class="b" href="{{ link(f=f) }}">{{ info.name }}{% if ready[f] %} &ndash; gotowy{% endif %}</a>
 <p class="m">{{ info.about }}</p>
 {% endfor %}<p>Serwer pobiera film i zmniejsza go dla telefonu. Pierwsza część ({{ first_minutes }} min) jest gotowa najszybciej, zwykle po 1&ndash;2 minutach. Kolejne części serwer przygotowuje sam w tle, gdy oglądasz poprzednią. Gotowy plik otworzy odtwarzacz telefonu.</p>
 <p class="m">Zacznij od MP4. Gdy telefon go nie odtworzy, wybierz 3GP.</p>
 {% elif mode == "busy" %}<p>Serwer przygotowuje teraz inny film. Ten zacznie się zaraz po nim &ndash; strona odświeża się sama.</p>
 <a class="b" href="{{ here }}">Odśwież</a>
-{% elif mode == "work" %}<p><b>Przygotowuję film {{ fmt_name }}&hellip;</b></p>
+{% elif mode == "work" %}<p><b>Przygotowuję {{ "nagranie" if audio else "film" }} {{ fmt_name }}&hellip;</b></p>
 <p>{% if status.state == "download" %}Pobieranie: {{ status.got|mb }}{% if status.progress %} ({{ status.progress }}%){% endif %}{% else %}Zmniejszanie dla telefonu: {{ status.progress }}%{% endif %}</p>
 <a class="b" href="{{ here }}">Odśwież</a>
 <p class="m">Strona odświeża się sama co {{ refresh }} s. Możesz też wyjść i wrócić tu później.</p>
-{% elif mode == "done" %}<a class="b" href="{{ url_for('video_file', key=key, ext=fmt) }}">Odtwórz film ({{ fmt_name }}, {{ status.size|mb }})</a>
+{% elif mode == "done" %}<a class="b" href="{{ url_for('video_file', key=key, ext=fmt) }}" accesskey="5">Odtwórz {{ "nagranie" if fmt == "mp3" else "film" }} ({{ fmt_name }}, {{ status.size|mb }})</a>
 <p class="m">{% if status.length %}Czas: {{ status.length|mmss }}. {% endif %}Plik otworzy odtwarzacz telefonu.</p>
 <p><a href="{{ url_for('video_file', key=key, ext=fmt, d=1) }}">Zapisz w pamięci telefonu</a></p>
-{% if has_next %}<a class="b" href="{{ link(f=fmt, c=part + 1) }}">Następna część ({{ part + 1 }}){% if next_ready %} &ndash; gotowa{% endif %} &raquo;</a>
+{% if has_next %}<a class="b" href="{{ link(f=fmt, c=part + 1) }}" accesskey="3">Następna część ({{ part + 1 }}){% if next_ready %} &ndash; gotowa{% endif %} &raquo;</a>
 {% if not next_ready %}<p class="m">Następna część przygotowuje się w tle.</p>
-{% endif %}{% endif %}{% if part > 1 %}<a class="b" href="{{ link(f=fmt, c=part - 1) }}">&laquo; Poprzednia część</a>
-{% endif %}<p><a href="{{ link(f=other, c=part) }}">Nie działa? Spróbuj {{ formats[other].name }}</a></p>
-{% else %}<div class="e">{{ status.message }}</div>
+{% endif %}{% endif %}{% if part > 1 %}<a class="b" href="{{ link(f=fmt, c=part - 1) }}" accesskey="1">&laquo; Poprzednia część</a>
+{% endif %}{% if other %}<p><a href="{{ link(f=other, c=part) }}">Nie działa? Spróbuj {{ formats[other].name }}</a></p>
+{% endif %}{% else %}<div class="e">{{ status.message }}</div>
 {% if status.blocked %}<a class="b" href="{{ referer or src }}">Otwórz bezpośrednio w Operze</a>
 <p><a href="{{ link(f=fmt, c=part, znowu=1) }}">Spróbuj ponownie w Szukajce</a></p>
 {% else %}<a class="b" href="{{ link(f=fmt, c=part, znowu=1) }}">Spróbuj ponownie</a>
-{% endif %}
+{% endif %}{% if other %}
 <p><a href="{{ link(f=other, c=part) }}">Spróbuj {{ formats[other].name }}</a></p>
-{% endif %}</div>
+{% endif %}{% endif %}</div>
 <div class="f"><a href="{{ src }}">[Oryginał filmu]</a></div>
 {% endblock %}
 """,
@@ -3399,13 +3539,15 @@ app.jinja_env.globals["dark_style"] = DARK_STYLE
 app.jinja_env.globals.update(inline_links=inline_links, visible=visible, infobox_rows=infobox_rows)
 app.jinja_env.filters["mmss"] = mmss
 app.jinja_env.filters["mb"] = megabytes
+app.jinja_env.filters["host"] = lambda url: host_of(url)
+app.jinja_env.filters["mb1"] = lambda value: f"{value:.1f} MB".replace(".", ",") if value >= 1 else f"{round(value * 1000)} KB"
 
 
 def video_progress(src, referer, fmt, part, retry=False):
     """Stan przygotowania części filmu; uruchamia zadanie, gdy trzeba (także następną część w tle, gdy ta jest gotowa).
     Zwraca dict: mode (work/busy/done/error), status, key, fmt, other, part, part_total, has_next, next_ready."""
     key = video_key(src, fmt, part - 1)
-    info = {"key": key, "fmt": fmt, "other": "3gp" if fmt == "mp4" else "mp4", "part": part, "status": None,
+    info = {"key": key, "fmt": fmt, "other": {"mp4": "3gp", "3gp": "mp4"}.get(fmt), "part": part, "status": None,
             "part_total": None, "has_next": False, "next_ready": False}
     status = read_status(key)
     if status is None or (status.get("state") == "error" and retry):
@@ -3439,14 +3581,16 @@ def server_timing(article, total):
 
 
 def video_items(article):
-    """Filmy dla czytnika: adres, miniatura podana przez stronę i zdjęcie strony jako zapasowa miniatura."""
+    """Filmy i nagrania dla czytnika: adres, miniatura podana przez stronę i zdjęcie strony jako zapasowa miniatura."""
     posters = article.get("posters") or {}
-    return [{"url": v, "poster": posters.get(v), "fallback": posters.get("")} for v in article.get("videos", [])]
+    return ([{"url": v, "poster": posters.get(v), "fallback": posters.get(""), "audio": False} for v in article.get("videos", [])]
+            + [{"url": a, "poster": None, "fallback": posters.get(""), "audio": True} for a in article.get("audios", [])])
 
 
 @app.route("/")
 def home():
-    return render_template("home.html", q="")
+    weather, rates = home_widgets(user_city())
+    return render_template("home.html", q="", weather=weather, rates=rates, bookmarks_count=len(read_bookmarks()))
 
 
 @app.route("/link")
@@ -3518,7 +3662,7 @@ def read():
     try:
         article = get_article(url)
     except VideoLink as found:
-        return redirect(url_for("video", u=found.url, q=query or None, rp=results_page))
+        return redirect(url_for("video", u=found.url, q=query or None, rp=results_page, a=1 if found.audio else None))
     except FetchError as err:
         return render_template("error.html", message=err.message, original=url, retry=request.full_path, blocked=err.blocked,
                                **common), err.status
@@ -3531,7 +3675,8 @@ def read():
         return render_template(
             "find.html", title=article["title"], url=url, original=article["url"], host=host_of(article["url"]), s=phrase,
             fixed_url=url, hits=hits[(find_page - 1) * FIND_PER_PAGE:find_page * FIND_PER_PAGE], total=total,
-            sp=find_page, pages=count, theme=article.get("theme"), images=images_enabled(), **common,
+            sp=find_page, pages=count, theme=article.get("theme"), images=images_enabled(), links=links_enabled(),
+            has_images=False, has_links=False, bookmark_url=article["url"], bookmarked=is_bookmarked(article["url"]), **common,
         )
     page = min(page, len(pages))
     parts = urlparse(article["url"])
@@ -3539,7 +3684,8 @@ def read():
     film = None
     chosen = clamp_int(request.args.get("wf"), 0, 0, len(videos))
     if chosen and page == 1:  # film przygotowywany w ramce z miniaturą, na tej samej stronie
-        fmt = request.args.get("wfmt") if request.args.get("wfmt") in VIDEO_FORMATS else "mp4"
+        choices = AUDIO_CHOICES if videos[chosen - 1]["audio"] else VIDEO_CHOICES
+        fmt = request.args.get("wfmt") if request.args.get("wfmt") in choices else choices[0]
         film = video_progress(videos[chosen - 1]["url"], article["url"], fmt,
                               clamp_int(request.args.get("wc"), 1, 1, VIDEO_MAX_PARTS), retry=bool(request.args.get("znowu")))
         film["index"] = chosen
@@ -3551,7 +3697,8 @@ def read():
         videos=videos, film=film, formats=VIDEO_FORMATS, theme=theme_cache.get(parts.hostname or "") or article.get("theme"),
         tick=int(time.time()) % 100000,
         links=links_enabled(), has_links=any(b[0] in ("pl", "ib") for p in pages for b in p),
-        crumbs=article.get("crumbs") or [], site_name=article.get("site_name"), **common,
+        crumbs=article.get("crumbs") or [], site_name=article.get("site_name"), bookmark_url=article["url"],
+        bookmarked=is_bookmarked(article["url"]), **common,
     ), 200, {"Server-Timing": server_timing(article, time.monotonic() - started)}
 
 
@@ -3576,7 +3723,7 @@ def video():
 
     def link(**changes):
         args = {"u": src, "r": referer or None, "t": title if title != "Film" else None, "q": query or None, "rp": results_page,
-                "p": poster or None, "fb": fallback or None}
+                "p": poster or None, "fb": fallback or None, "a": request.args.get("a") or None}
         args.update(changes)
         return url_for("video", **args)
 
@@ -3589,8 +3736,14 @@ def video():
                 first_minutes=part_length(0) // 60, link=link, status=None, part_total=None, has_next=False,
                 next_ready=False, **common)
     os.makedirs(VIDEO_DIR, exist_ok=True)
-    if fmt not in VIDEO_FORMATS:
-        ready = {f: (read_status(video_key(src, f, part - 1)) or {}).get("state") == "done" for f in VIDEO_FORMATS}
+    audio = request.args.get("a") == "1" or is_audio_url(src)
+    choices = AUDIO_CHOICES if audio else VIDEO_CHOICES
+    page["formats"] = {f: VIDEO_FORMATS[f] for f in choices}
+    page["audio"] = audio
+    if fmt not in choices and len(choices) == 1:
+        fmt = choices[0]  # nagranie: jeden format – bez strony wyboru
+    if fmt not in choices:
+        ready = {f: (read_status(video_key(src, f, part - 1)) or {}).get("state") == "done" for f in choices}
         return render_template("film.html", mode="choose", ready=ready, **page)
     here = link(f=fmt, c=part)
     progress = video_progress(src, referer, fmt, part, retry=bool(request.args.get("znowu")))
@@ -3612,7 +3765,7 @@ def video_file(key, ext):
         abort(404)
     return send_file(
         path, mimetype=VIDEO_FORMATS[ext]["mime"], conditional=True, as_attachment=request.args.get("d") == "1",
-        download_name=f"film-{key[:6]}.{ext}", max_age=VIDEO_KEEP_SECONDS,
+        download_name=f"{'nagranie' if ext == 'mp3' else 'film'}-{key[:6]}.{ext}", max_age=VIDEO_KEEP_SECONDS,
     )
 
 
@@ -3701,6 +3854,213 @@ def video_poster_response(url, referer):
     if not data:
         return Response("", status=404)
     return Response(data, mimetype="image/jpeg", headers={"Cache-Control": "public, max-age=86400"})
+
+
+# ---------- Zakładki (w ciasteczku telefonu – przetrwają restarty serwera) ----------
+BOOKMARKS_COOKIE = "zakl"
+BOOKMARKS_MAX = 40
+BOOKMARKS_BYTES = 3600  # ciasteczko ma limit ok. 4 KB – najstarsze zakładki wypadają
+
+
+def read_bookmarks():
+    raw = request.cookies.get(BOOKMARKS_COOKIE) or ""
+    try:
+        data = json.loads(zlib.decompress(base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4))).decode("utf-8"))
+    except (ValueError, zlib.error, TypeError):
+        return []
+    return [(u, t) for u, t in data if isinstance(u, str) and isinstance(t, str)][:BOOKMARKS_MAX] if isinstance(data, list) else []
+
+
+def encode_bookmarks(items):
+    items = items[:BOOKMARKS_MAX]
+    while True:
+        raw = base64.urlsafe_b64encode(zlib.compress(json.dumps(items, ensure_ascii=False).encode("utf-8"), 9)).decode().rstrip("=")
+        if len(raw) <= BOOKMARKS_BYTES or not items:
+            return raw
+        items = items[:-1]
+
+
+def is_bookmarked(url):
+    return any(u == url for u, _ in read_bookmarks())
+
+
+@app.route("/zakladki")
+def bookmarks():
+    return render_template("bookmarks.html", items=read_bookmarks(), q="")
+
+
+@app.route("/zakladki/dodaj")
+def bookmark_add():
+    url, title = (request.args.get("u") or "").strip(), shorten(squash(request.args.get("t") or ""), 70)
+    resp = redirect(safe_next(request.args.get("next")))
+    if re.match(r"^https?://", url, re.I) and len(url) <= 600:
+        items = [(url, title or host_of(url))] + [(u, t) for u, t in read_bookmarks() if u != url]
+        resp.set_cookie(BOOKMARKS_COOKIE, encode_bookmarks(items), max_age=5 * 365 * 24 * 3600, samesite="Lax")
+    return resp
+
+
+@app.route("/zakladki/usun")
+def bookmark_remove():
+    url = (request.args.get("u") or "").strip()
+    resp = redirect(safe_next(request.args.get("next")))
+    resp.set_cookie(BOOKMARKS_COOKIE, encode_bookmarks([(u, t) for u, t in read_bookmarks() if u != url]),
+                    max_age=5 * 365 * 24 * 3600, samesite="Lax")
+    return resp
+
+
+# ---------- Pogoda (Open-Meteo, zapasowo wttr.in) i kursy walut (NBP) – bez kluczy API ----------
+DEFAULT_CITY = "Warszawa"
+WEATHER_CODES = {
+    0: "bezchmurnie", 1: "przeważnie pogodnie", 2: "częściowe zachmurzenie", 3: "pochmurno", 45: "mgła", 48: "mgła z szadzią",
+    51: "lekka mżawka", 53: "mżawka", 55: "gęsta mżawka", 56: "marznąca mżawka", 57: "marznąca mżawka", 61: "słaby deszcz",
+    63: "deszcz", 65: "ulewa", 66: "marznący deszcz", 67: "marznący deszcz", 71: "słaby śnieg", 73: "śnieg",
+    75: "intensywny śnieg", 77: "ziarnisty śnieg", 80: "przelotny deszcz", 81: "przelotny deszcz", 82: "gwałtowna ulewa",
+    85: "przelotny śnieg", 86: "przelotny śnieg", 95: "burza", 96: "burza z gradem", 99: "burza z gradem",
+}
+CURRENCIES = ("EUR", "USD", "GBP", "CHF")
+DAY_NAMES = ("pon.", "wt.", "śr.", "czw.", "pt.", "sob.", "niedz.")
+weather_cache = DiskCache("pogoda", ttl=1800, max_files=200)
+places_cache = DiskCache("miejsca", ttl=30 * 24 * 3600, max_files=500)
+rates_cache = DiskCache("kursy", ttl=3 * 3600, max_files=5)
+
+
+def user_city():
+    return squash(unquote(request.cookies.get("miasto") or ""))[:60] or DEFAULT_CITY
+
+
+def day_label(date_text, index):
+    if index == 0:
+        return "dziś"
+    if index == 1:
+        return "jutro"
+    try:
+        return DAY_NAMES[time.strptime(date_text, "%Y-%m-%d").tm_wday]
+    except ValueError:
+        return date_text
+
+
+def fetch_weather(city):
+    """{"city", "temp", "desc", "days": [{"label", "min", "max", "desc"}]} albo None (gdy miasto nieznane)."""
+    key = fold(city)
+    cached = weather_cache.get(key)
+    if cached is not None:
+        return cached or None
+    weather = None
+    try:
+        place = places_cache.get(key)
+        if place is None:
+            found = read_json("https://geocoding-api.open-meteo.com/v1/search?count=1&language=pl&format=json&name="
+                              + quote(city)).get("results") or []
+            place = found[0] if found else {}
+            places_cache.set(key, place)
+        if place:
+            data = read_json(f"https://api.open-meteo.com/v1/forecast?latitude={place['latitude']}&longitude={place['longitude']}"
+                             "&current=temperature_2m,weather_code&daily=temperature_2m_max,temperature_2m_min,weather_code"
+                             "&timezone=auto&forecast_days=4")
+            daily = data["daily"]
+            weather = {
+                "city": place.get("name") or city, "temp": round(data["current"]["temperature_2m"]),
+                "desc": WEATHER_CODES.get(data["current"]["weather_code"], ""),
+                "days": [{"label": day_label(d, i), "min": round(lo), "max": round(hi), "desc": WEATHER_CODES.get(c, "")}
+                         for i, (d, lo, hi, c) in enumerate(zip(daily["time"], daily["temperature_2m_min"],
+                                                                daily["temperature_2m_max"], daily["weather_code"]))],
+            }
+    except (FetchError, KeyError, TypeError, IndexError):
+        weather = None
+    if weather is None:
+        weather = fetch_weather_wttr(city)
+    weather_cache.set(key, weather or {})
+    return weather
+
+
+def fetch_weather_wttr(city):
+    """Zapasowe źródło: wttr.in (opisy po polsku)."""
+    try:
+        data = read_json("https://wttr.in/" + quote(city) + "?format=j1&lang=pl")
+        now = data["current_condition"][0]
+        desc = lambda item: ((item.get("lang_pl") or item.get("weatherDesc") or [{}])[0].get("value") or "").lower()
+        return {
+            "city": city, "temp": int(now["temp_C"]), "desc": desc(now),
+            "days": [{"label": day_label(day["date"], i), "min": int(day["mintempC"]), "max": int(day["maxtempC"]),
+                      "desc": desc(day["hourly"][min(4, len(day["hourly"]) - 1)])} for i, day in enumerate(data["weather"][:4])],
+        }
+    except (FetchError, KeyError, TypeError, IndexError, ValueError):
+        return None
+
+
+def fetch_rates():
+    """Średnie kursy NBP (tabela A): {"date", "rates": [(kod, kurs)]} albo None."""
+    cached = rates_cache.get("A")
+    if cached is not None:
+        return cached or None
+    try:
+        table = read_json("https://api.nbp.pl/api/exchangerates/tables/A/?format=json")[0]
+        mids = {r["code"]: r["mid"] for r in table["rates"]}
+        rates = {"date": table["effectiveDate"], "rates": [(c, f"{mids[c]:.2f}".replace(".", ",")) for c in CURRENCIES if c in mids]}
+    except (FetchError, KeyError, TypeError, IndexError, ValueError):
+        rates = None
+    rates_cache.set("A", rates or {})
+    return rates
+
+
+def home_widgets(city, wait=2.0):
+    """Pogoda i kursy na stronę główną – pobierane równolegle; strona nie czeka dłużej niż `wait` sekund
+    (co nie zdąży, pokaże się przy następnym wejściu, bo wynik i tak trafi do pamięci podręcznej)."""
+    result = {}
+
+    def load(name, function, *args):
+        result[name] = function(*args)
+
+    threads = [threading.Thread(target=load, args=("weather", fetch_weather, city), daemon=True),
+               threading.Thread(target=load, args=("rates", fetch_rates), daemon=True)]
+    for thread in threads:
+        thread.start()
+    deadline = time.monotonic() + wait
+    for thread in threads:
+        thread.join(timeout=max(0.0, deadline - time.monotonic()))
+    return result.get("weather"), result.get("rates")
+
+
+@app.route("/pogoda")
+def weather_page():
+    city = squash(request.args.get("miasto") or "")[:60]
+    resp_city = city or user_city()
+    weather, rates = home_widgets(resp_city, wait=8.0)
+    body = render_template("weather.html", weather=weather, rates=rates, city=resp_city, q="")
+    resp = app.make_response(body)
+    if city:
+        resp.set_cookie("miasto", quote(city), max_age=365 * 24 * 3600, samesite="Lax")  # zakodowane: polskie litery
+    return resp
+
+
+@app.route("/ustaw")
+def settings():
+    """Zmienia ustawienie (zapamiętane w telefonie na rok) i wraca na tę samą stronę."""
+    key, value = request.args.get("k") or "", (request.args.get("v") or "").strip()
+    resp = redirect(safe_next(request.args.get("next")))
+    if key in SETTINGS and (value in SETTINGS[key] if SETTINGS[key] else 0 < len(value) <= 60):
+        resp.set_cookie(key, value, max_age=365 * 24 * 3600, samesite="Lax")
+    return resp
+
+
+@app.context_processor
+def page_settings():
+    return {"text_css": text_css(), "saving": saving_enabled(), "data_mb": data_used() / 1_000_000,
+            "text_size": request.cookies.get("tekst") or "m"}
+
+
+@app.after_request
+def count_data(resp):
+    """Licznik danych w ciasteczku („RRRRMM:bajty”): każda strona, obrazek i plik wysłany przez Szukajkę.
+    Przybliżony – Opera Mini dodatkowo kompresuje strony, a równoległe pobrania obrazków mogą się nadpisać."""
+    if request.endpoint in (None, "healthz", "robots", "icon", "diag") or resp.status_code >= 400:
+        return resp
+    size = resp.content_length or resp.calculate_content_length() or 0
+    if size:
+        resp.set_cookie(DATA_COOKIE, f"{time.strftime('%Y%m')}:{data_used() + size}", max_age=40 * 24 * 3600, samesite="Lax")
+        if "public" in (resp.headers.get("Cache-Control") or ""):
+            resp.headers["Cache-Control"] = resp.headers["Cache-Control"].replace("public", "private")
+    return resp
 
 
 @app.route("/linki")
