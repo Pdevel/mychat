@@ -22,6 +22,7 @@ from collections import OrderedDict
 from urllib.parse import parse_qs, urljoin, urlparse
 
 import requests
+import urllib3.util.connection as urllib3_connection
 from bs4 import BeautifulSoup
 from flask import Flask, Response, redirect, render_template, request, url_for
 from jinja2 import DictLoader
@@ -53,6 +54,12 @@ DDG_REGION = "pl-pl"
 BRAVE_API = "https://api.search.brave.com/res/v1/web/search"
 BRAVE_API_KEY = os.environ.get("BRAVE_API_KEY", "").strip()  # opcjonalny (darmowy plan); bez niego tylko DuckDuckGo
 
+
+# Tylko IPv4: na serwerach bez działającego IPv6 połączenie z adresem IPv6 wisi aż do limitu czasu, a duże serwisy
+# (np. za Cloudflare) podają oba rodzaje adresów. Prawie każda strona działa przez IPv4. FORCE_IPV4=0 wyłącza.
+FORCE_IPV4 = os.environ.get("FORCE_IPV4", "1") != "0"
+if FORCE_IPV4:
+    urllib3_connection.HAS_IPV6 = False  # urllib3 (requests) pyta wtedy DNS tylko o adresy IPv4
 
 # Błędy pobierania trafiają do logów (na Render: zakładka Logs), żeby było widać, która strona i dlaczego zawiodła.
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -111,7 +118,8 @@ def check_public_url(url):
     except ValueError:
         raise FetchError("Nieprawidłowy adres strony.", 400)
     try:
-        infos = socket.getaddrinfo(parts.hostname, port, proto=socket.IPPROTO_TCP)
+        family = socket.AF_INET if FORCE_IPV4 else socket.AF_UNSPEC  # sprawdzamy te same adresy, z którymi się połączymy
+        infos = socket.getaddrinfo(parts.hostname, port, family, proto=socket.IPPROTO_TCP)
     except (socket.gaierror, UnicodeError):
         raise FetchError("Nie znaleziono serwera tej strony. Sprawdź adres.", 502)
     for info in infos:
