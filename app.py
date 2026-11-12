@@ -2347,6 +2347,24 @@ STYLE = (
     ".q{width:140px}.u{width:200px}.hl{background:#fff3a0}.e{background:#fff4e5;border:1px solid #f0c890;padding:6px;margin:6px 0}"
 )
 
+# Ciemny wygląd strony głównej i wyników: duże logo, zaokrąglone pole wyszukiwania z lupą (tabela zamiast flexboxa).
+# Wysyłany tylko na tych stronach – czytnik ma barwy odwiedzanego serwisu.
+DARK_STYLE = (
+    ".dk{background:#202124;color:#e8eaed}.dk a{color:#8ab4f8}"
+    ".hm{padding:44px 10px 0;text-align:center}.hm .m{margin:14px 0 0}"
+    ".logo{font-size:34px;font-weight:bold;letter-spacing:-1px;color:#fff;margin:0 0 22px}"
+    ".pill{width:100%;background:#4d5156;border-radius:24px}.pill td{padding:6px 0;vertical-align:middle}"
+    ".pl{width:28px;text-align:center}.pl a{color:#e8eaed;font-size:22px;text-decoration:none}"
+    ".pill .pq{padding:6px 0 6px 14px}.pill .pl+.pq{padding-left:2px}"
+    ".pi{width:100%;background:#4d5156;border:0;color:#e8eaed;font-size:15px;padding:4px 0}"
+    ".pr{width:36px;text-align:center}"
+    ".sh{padding:8px 8px 2px}.sh .m{margin:6px 4px 0}.lg{font-size:20px;font-weight:bold;color:#fff;margin:0 0 8px 4px}"
+    ".lg a{color:#fff;text-decoration:none}"
+    ".dk .m{color:#9aa0a6}.dk .r{border-color:#3c4043}.dk .h,.dk .s{color:#bdc1c6}.dk h2{color:#e8eaed}"
+    ".dk .b{background:#303134;border-color:#5f6368;color:#8ab4f8}.dk .e{background:#3b2a1a;border-color:#8a6d3b;color:#f6d7a7}"
+    ".dk .u,.dk .q{background:#303134;color:#e8eaed;border:1px solid #5f6368}"
+)
+
 TEMPLATES = {
     "base.html": """<!DOCTYPE html>
 <html lang="pl">
@@ -2354,10 +2372,10 @@ TEMPLATES = {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width">
 <title>{% block title %}Szukaj{% endblock %}</title>
-<style>{{ style }}</style>{% if theme %}
+<style>{{ style }}</style>{% block extra_style %}{% endblock %}{% if theme %}
 <style>{{ theme_css(theme) }}</style>{% endif %}
 {% block head %}{% endblock %}</head>
-<body>
+<body{% block bodyattr %}{% endblock %}>
 {% block body %}{% endblock %}
 </body>
 </html>
@@ -2376,13 +2394,25 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 <input type="submit" value="{{ 'Szukaj na stronie' if fixed_url else 'Otwórz' }}">
 </form>
 """,
+    "_pill.html": """<form action="{{ url_for('search') }}" method="get"><table class="pill" cellspacing="0" cellpadding="0"><tr>{% if plus %}<td class="pl"><a href="{{ url_for('link_page') }}">+</a></td>{% endif %}<td class="pq"><input class="pi" type="text" name="q" value="{{ q or '' }}" maxlength="200"></td><td class="pr"><input type="image" src="{{ url_for('icon', name='lupa') }}" width="20" height="20" alt="Szukaj" value="Szukaj"></td></tr></table></form>
+""",
     "home.html": """{% extends "base.html" %}
-{% block body %}<div class="bar"><b>Szukajka</b></div>
+{% block extra_style %}<style>{{ dark_style }}</style>{% endblock %}
+{% block bodyattr %} class="dk"{% endblock %}
+{% block body %}<div class="hm">
+<div class="logo">Szukajka</div>
+{% set plus = True %}{% include "_pill.html" %}<p class="m">Wpisz hasło albo adres strony.</p>
+</div>
+{% endblock %}
+""",
+    "link.html": """{% extends "base.html" %}
+{% block title %}Masz dokładny link?{% endblock %}
+{% block extra_style %}<style>{{ dark_style }}</style>{% endblock %}
+{% block bodyattr %} class="dk"{% endblock %}
+{% block body %}<div class="sh"><div class="lg"><a href="{{ url_for('home') }}">Szukajka</a></div></div>
 <div class="w">
-{% include "_form.html" %}
-<p class="m">Szukaj w sieci i czytaj strony w lekkiej wersji, wygodnej na telefonie z klawiaturą.</p>
 <h2>Masz dokładny link?</h2>
-{% include "_find_form.html" %}<p class="m">Otwiera tę stronę od razu. Gdy podasz słowo, pokaże tylko fragmenty strony z tym słowem (polskie znaki można pominąć). Link wpisany w górne pole też otwiera stronę od razu.</p>
+{% include "_find_form.html" %}<p class="m">Otwiera tę stronę od razu. Gdy podasz słowo, pokaże tylko fragmenty strony z tym słowem (polskie znaki można pominąć). Link wpisany w zwykłe pole wyszukiwania też otwiera stronę od razu.</p>
 </div>
 {% endblock %}
 """,
@@ -2404,16 +2434,18 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 """,
     "search.html": """{% extends "base.html" %}
 {% block title %}{{ q }} - szukaj{% endblock %}
-{% block body %}<div class="bar"><b>Szukajka</b> &middot; wyniki{% if page > 1 %}, str. {{ page }}{% endif %}</div>
+{% block extra_style %}<style>{{ dark_style }}</style>{% endblock %}
+{% block bodyattr %} class="dk"{% endblock %}
+{% block body %}<div class="sh"><div class="lg">Szukajka</div>
+{% set plus = False %}{% include "_pill.html" %}<div class="m">wyniki{% if page > 1 %}, str. {{ page }}{% endif %}</div></div>
 <div class="w">
-<h1>{{ q }}</h1>
 {% if error %}<div class="e">{{ error }}</div>
 {% endif %}{% for r in results %}<div class="r"><a class="t" href="{{ url_for('read', url=r.url, q=q, rp=page) }}">{{ r.title }}</a><br>
 <span class="h">{{ r.host }}</span>{% if r.snippet %}<br><span class="s">{{ r.snippet }}</span>{% endif %} <a class="o" href="{{ r.url }}">[Oryginał]</a></div>
 {% endfor %}{% if not results and not error %}<p>Brak wyników.</p>
 {% endif %}{% if has_more %}<a class="b" href="{{ url_for('search', q=q, p=page + 1) }}">Następna strona &raquo;</a>
 {% endif %}{% if page > 1 %}<a class="b" href="{{ url_for('search', q=q, p=page - 1) }}">&laquo; Poprzednia strona</a>
-{% endif %}{% include "_form.html" %}</div>
+{% endif %}</div>
 {% endblock %}
 """,
     "read.html": """{% extends "base.html" %}
@@ -2569,6 +2601,7 @@ app = Flask(__name__)
 app.jinja_loader = DictLoader(TEMPLATES)
 app.jinja_env.globals["style"] = STYLE
 app.jinja_env.globals["theme_css"] = theme_css
+app.jinja_env.globals["dark_style"] = DARK_STYLE
 app.jinja_env.filters["mmss"] = mmss
 app.jinja_env.filters["mb"] = megabytes
 
@@ -2606,6 +2639,35 @@ def video_items(article):
 @app.route("/")
 def home():
     return render_template("home.html", q="")
+
+
+@app.route("/link")
+def link_page():
+    return render_template("link.html", q="")
+
+
+_icons = {}
+
+
+def draw_magnifier():
+    """Ikona lupy (PNG z przezroczystością, 40 px – wyświetlana jako 20 px, ostra także na gęstszych ekranach)."""
+    image = Image.new("RGBA", (40, 40), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    color = (232, 234, 237, 255)
+    draw.ellipse((5, 5, 27, 27), outline=color, width=4)
+    draw.line((25, 25, 35, 35), fill=color, width=5)
+    out = io.BytesIO()
+    image.save(out, "PNG", optimize=True)
+    return out.getvalue()
+
+
+@app.route("/ikona/<name>.png")
+def icon(name):
+    if name != "lupa":
+        abort(404)
+    if name not in _icons:
+        _icons[name] = draw_magnifier()
+    return Response(_icons[name], mimetype="image/png", headers={"Cache-Control": "public, max-age=604800"})
 
 
 @app.route("/search")

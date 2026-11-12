@@ -4,7 +4,8 @@ Wyszukiwarka i czytnik stron dla Opera Mini na telefonach z klawiaturą (Nokia 2
 Prosty HTML bez JavaScriptu i bez plików CSS (tylko mały wbudowany `<style>`, ok. 1 KB, bez flex/grid),
 nawigacja samymi strzałkami.
 
-- `/` – formularz wyszukiwania
+- `/` – strona główna: ciemna, duże logo, zaokrąglone pole wyszukiwania z lupą; „+” prowadzi do `/link`
+- `/link` – „Masz dokładny link?”: otwarcie konkretnej strony albo szukanie słowa tylko na niej
 - `/search?q=…` – wyniki z DuckDuckGo Lite (region polski), 10 na stronę, z linkiem [Oryginał]; wpisany link
   (np. `rp.pl`, `www.onet.pl`, `https://…`) otwiera stronę od razu
 - `/read?url=…` – czytnik: sam tekst strony (tytuł, nagłówki, akapity), podzielony na strony po ok. 3000 znaków
