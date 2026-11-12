@@ -13,6 +13,13 @@ nawigacja samymi strzałkami.
 - `/img?u=…` – obrazki z artykułów zmniejszone dla telefonu (szczegóły niżej)
 - `/film?u=…` – filmy ze stron przekodowane dla telefonu (szczegóły niżej)
 
+## Strony z listą (strony główne, sklepy, katalogi)
+
+Strona główna serwisu i strony z małą ilością tekstu są pokazywane jako lista: każdy tytuł to link, obok miniatura.
+Czytnik rozpoznaje też siatki „kafelków” – link z obrazkiem i tytułem w zwykłym `<div>`/`<span>`, w `title` albo
+`alt`, kafelki w osobnych `<article>` i w `<li>` (np. tytuł · cena). Menu nieoznaczone jako `<nav>` (ciąg krótkich
+linków) jest pomijane, żeby nie przewijać dziesiątek pozycji przed treścią.
+
 ## Obrazki dla Nokii 235 4G / 3210 4G
 
 Serwer pobiera obrazek, zmniejsza go do 220 px szerokości (ekran ma 240 px), zapisuje jako zwykły JPEG

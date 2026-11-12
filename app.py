@@ -620,14 +620,60 @@ def is_small_image(img):
     return False
 
 
-def collect_blocks(root, base_url, with_images=False, skip_images=frozenset(), image_kind="img", max_images=IMAGES_PER_ARTICLE):
+def card_link(link, base_url):
+    """Adres linku-kafelka albo None (javascript:, kotwica na tej samej stronie, plik graficzny z galerii)."""
+    href = urljoin(base_url, link["href"].strip())
+    if urlparse(href).scheme not in ("http", "https") or href.split("#")[0] == base_url.split("#")[0]:
+        return None
+    if IMAGE_FILE.search(urlparse(href).path):
+        return None
+    return href
+
+
+def collect_blocks(root, base_url, with_images=False, skip_images=frozenset(), image_kind="img", max_images=IMAGES_PER_ARTICLE,
+                   cards=False):
     """Zbiera z drzewa nagłówki i akapity w kolejności występowania, bez powtarzania zagnieżdżonych.
     Blok to (rodzaj, tekst, adres_linku_lub_None); ten sam adres linkujemy tylko raz.
     Z with_images=True dochodzą bloki (image_kind, opis, adres_obrazka) – najwyżej max_images
-    ("img" – zdjęcie w artykule, "thumb" – miniatura na stronie z listą)."""
+    ("img" – zdjęcie w artykule, "thumb" – miniatura na stronie z listą).
+    cards=True (strony z listą): także „kafelki” – linki z obrazkiem i tytułem w zwykłym <div>/<span>, w title
+    albo w alt obrazka (sklepy, katalogi, serwisy z przepisami…), które nie leżą w nagłówku ani akapicie."""
     blocks, linked, images = [], set(), set()
-    for node in root.find_all(BLOCK_TAGS + (["img"] if with_images else [])):
+    consumed, card_hrefs, best_text = set(), set(), {}
+    if cards:  # najlepszy tytuł dla adresu: kafelek bywa obrazkiem-linkiem, a tytuł osobnym linkiem obok
+        for link in root.find_all("a", href=True):
+            href = card_link(link, base_url)
+            if href:
+                for candidate in (node_text(link), squash(link.get("title") or "")):
+                    if len(candidate) > len(best_text.get(href, "")):
+                        best_text[href] = candidate
+    tags = BLOCK_TAGS + (["img"] if with_images else []) + (["a"] if cards else [])
+    for node in root.find_all(tags):
+        if node.name == "a":
+            if node.get("href") is None or node.find(BLOCK_TAGS) is not None:
+                continue  # tytuł w nagłówku/akapicie wewnątrz linku – obsłuży go zwykła ścieżka
+            if any(parent.name in BLOCK_TAGS for parent in node.parents):
+                continue
+            href = card_link(node, base_url)
+            if not href or href in linked:
+                continue
+            img = node.find("img")
+            text = best_text.get(href) or squash(node.get("title") or "") or squash(img.get("alt") or "" if img else "")
+            if not (len(text) >= 25 or len(text.split()) >= 4 or (img is not None and len(text) >= 2)):
+                continue  # „Więcej”, „Zobacz”, numery stron…
+            if img is not None:
+                consumed.add(id(img))
+                src = image_source(img, base_url) if with_images else None
+                if src and src not in images and src not in skip_images and len(images) < max_images:
+                    images.add(src)
+                    blocks.append((image_kind, "", src))
+            linked.add(href)
+            card_hrefs.add(href)
+            blocks.append(("p", shorten(text, 200), href))
+            continue
         if node.name == "img":
+            if id(node) in consumed:
+                continue
             src = image_source(node, base_url)
             if src and src not in images and src not in skip_images and len(images) < max_images:
                 images.add(src)
@@ -639,6 +685,28 @@ def collect_blocks(root, base_url, with_images=False, skip_images=frozenset(), i
         if not text:
             continue
         href = primary_link(node, base_url)
+        if cards and node.name == "li" and node.find("img") is not None:
+            # kafelek w <li> (obrazek + tytuł + cena): miniatura przed tytułem, tytuł z linku, reszta tekstu po kropce
+            hrefs = [h for h in (card_link(a, base_url) for a in node.find_all("a", href=True)) if h]
+            if hrefs:
+                href = max(set(hrefs), key=hrefs.count)
+                if href in linked:
+                    continue
+                rest = squash(" ".join(t for t in node.find_all(string=True) if t.find_parent("a") is None))
+                title = best_text.get(href) or text
+                text = title + (" · " + rest if rest and len(rest) < 80 else "")
+                img = node.find("img")
+                consumed.add(id(img))
+                src = image_source(img, base_url) if with_images else None
+                if src and src not in images and src not in skip_images and len(images) < max_images:
+                    images.add(src)
+                    blocks.append((image_kind, "", src))
+                linked.add(href)
+                card_hrefs.add(href)
+                blocks.append(("p", "• " + text, href))
+                continue
+        if href in card_hrefs and len(text) < 200:
+            continue  # tytuł kafelka już pokazany (np. <h3> pod obrazkiem-linkiem do tego samego adresu)
         if href in linked:
             href = None
         elif href:
@@ -652,6 +720,34 @@ def collect_blocks(root, base_url, with_images=False, skip_images=frozenset(), i
     return blocks
 
 
+def is_menu_entry(block):
+    kind, text, href = block
+    text = text[2:] if text.startswith("• ") else text
+    return kind in ("p", "h") and href is not None and len(text) <= 25 and len(text.split()) <= 3
+
+
+def drop_menus(blocks, run=6):
+    """Usuwa menu nieoznaczone jako <nav>: ciąg co najmniej `run` krótkich linków z rzędu (np. „Filmy”, „Seriale”,
+    „Rankingi”…) bez obrazków. Na telefonie z klawiaturą to dziesiątki skoków strzałką przed treścią."""
+    def neutral(block):  # krótki podpis bez linku (np. „Na VOD”) nie przerywa menu
+        return block[0] in ("p", "h") and block[2] is None and len(block[1]) <= 25
+
+    out, i = [], 0
+    while i < len(blocks):
+        j, links = i, 0
+        while j < len(blocks) and (is_menu_entry(blocks[j]) or (links and neutral(blocks[j]))):
+            links += is_menu_entry(blocks[j])
+            j += 1
+        while j > i and not is_menu_entry(blocks[j - 1]):
+            j -= 1  # podpis na końcu ciągu należy już do treści
+        if links >= run:
+            i = j  # menu – pomijamy cały ciąg
+            continue
+        out.extend(blocks[i:j] if j > i else blocks[i:i + 1])
+        i = j if j > i else i + 1
+    return out
+
+
 def fallback_blocks(soup, base_url, skip_images=frozenset()):
     """Gdy readability zawiedzie: usuń śmieci (skrypty, menu, reklamy…) i weź tekst z <article>/<main>/<body>."""
     for tag in soup(JUNK_TAGS):
@@ -662,10 +758,16 @@ def fallback_blocks(soup, base_url, skip_images=frozenset()):
         hint = " ".join(tag.get("class") or []) + " " + (tag.get("id") or "")
         if hint.strip() and JUNK_HINT.search(hint) and tag.name not in ("body", "html", "article", "main"):
             tag.decompose()
-    root = soup.find("article") or soup.find("main") or soup.body or soup
+    articles = soup.find_all("article")
+    if len(articles) == 1:
+        root = articles[0]
+    else:  # wiele <article> to zwykle kafelki listy – bierzemy ich wspólny kontener, a nie pierwszy kafelek
+        root = soup.find("main") or soup.body or soup
     blocks = collect_blocks(
-        root, base_url, with_images=True, skip_images=skip_images, image_kind="thumb", max_images=THUMBS_PER_LISTING
+        root, base_url, with_images=True, skip_images=skip_images, image_kind="thumb", max_images=THUMBS_PER_LISTING,
+        cards=True,
     )
+    blocks = drop_menus(blocks)
     if not [b for b in blocks if b[0] != "thumb"]:  # strona bez akapitów – bierzemy linie tekstu
         blocks = [("p", line, None) for line in (squash(x) for x in root.get_text("\n").split("\n")) if len(line) > 1]
     return blocks
@@ -746,9 +848,12 @@ def extract_article(html, url, videos=None, posters=None):
     # Artykuły i Wikipedia mają w readability tysiące znaków – zostają przy niej (bez list „czytaj też”).
     # Strony z listą dostają małe miniatury (THUMB_MAX_SIZE), żeby dziesiątki obrazków nie przeciążyły telefonu.
     readability_chars = sum(len(b[1]) for b in blocks if b[0] != "img")
-    if readability_chars < 1500:
+    # Strona główna serwisu to lista (nawet gdy wkleja kilka pełnych newsów, które readability bierze za artykuł).
+    front_page = re.fullmatch(r"/?|/(home|index|start|main|default)(\.\w+)?/?", urlparse(url).path or "/", re.I) is not None
+    if readability_chars < 1500 or front_page:
         fallback = fallback_blocks(soup, url, skip_images=small_images)
-        if sum(len(b[1]) for b in fallback if b[0] != "thumb") > readability_chars:
+        fallback_links = sum(1 for b in fallback if b[0] in ("h", "p") and b[2])
+        if sum(len(b[1]) for b in fallback if b[0] != "thumb") > readability_chars or (front_page and fallback_links >= 10):
             blocks = fallback
     if gallery:
         blocks = apply_gallery(blocks, gallery)
