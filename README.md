@@ -19,6 +19,9 @@ Strona główna serwisu i strony z małą ilością tekstu są pokazywane jako l
 Czytnik rozpoznaje też siatki „kafelków” – link z obrazkiem i tytułem w zwykłym `<div>`/`<span>`, w `title` albo
 `alt`, kafelki w osobnych `<article>` i w `<li>` (np. tytuł · cena). Menu nieoznaczone jako `<nav>` (ciąg krótkich
 linków) jest pomijane, żeby nie przewijać dziesiątek pozycji przed treścią.
+Listy, które strona wyświetla dopiero JavaScriptem, czytnik bierze z danych wbudowanych w HTML (`__NEXT_DATA__`
+z Next.js, inne `<script type="application/json">`, JSON-LD `ItemList`): obiekty z tytułem, adresem i obrazkiem.
+Menu i stopki z tych danych (krótkie tytuły bez obrazków) są pomijane.
 
 ## Obrazki dla Nokii 235 4G / 3210 4G
 

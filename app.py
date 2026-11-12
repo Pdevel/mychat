@@ -620,6 +620,10 @@ def is_small_image(img):
     return False
 
 
+def letters(text):
+    return sum(char.isalpha() for char in text)
+
+
 def card_link(link, base_url):
     """Adres linku-kafelka albo None (javascript:, kotwica na tej samej stronie, plik graficzny z galerii)."""
     href = urljoin(base_url, link["href"].strip())
@@ -645,8 +649,8 @@ def collect_blocks(root, base_url, with_images=False, skip_images=frozenset(), i
             href = card_link(link, base_url)
             if href:
                 for candidate in (node_text(link), squash(link.get("title") or "")):
-                    if len(candidate) > len(best_text.get(href, "")):
-                        best_text[href] = candidate
+                    if letters(candidate) > letters(best_text.get(href, "")):
+                        best_text[href] = candidate  # tytuł ma najwięcej liter (nie „8,77 10 988 tys. ocen”)
     tags = BLOCK_TAGS + (["img"] if with_images else []) + (["a"] if cards else [])
     for node in root.find_all(tags):
         if node.name == "a":
@@ -755,7 +759,9 @@ def fallback_blocks(soup, base_url, skip_images=frozenset()):
     for tag in soup.find_all(True):
         if tag.attrs is None:
             continue
-        hint = " ".join(tag.get("class") or []) + " " + (tag.get("id") or "")
+        # klasy BEM „blok__element” (np. card__header) to części kafelka, a nie nagłówek/stopka strony
+        names = [c for c in (tag.get("class") or []) + [tag.get("id") or ""] if c and "__" not in c]
+        hint = " ".join(names)
         if hint.strip() and JUNK_HINT.search(hint) and tag.name not in ("body", "html", "article", "main"):
             tag.decompose()
     articles = soup.find_all("article")
@@ -818,6 +824,106 @@ def apply_gallery(blocks, gallery):
     return upgraded
 
 
+# Listy w danych strony: nowoczesne strony (Next.js, Nuxt…) wysyłają zawartość list jako JSON w HTML, a wyświetla ją
+# dopiero JavaScript. Szukamy w tych danych list obiektów z tytułem i adresem (np. {"title": …, "url": …, "image": …}).
+JSON_TITLE_KEYS = ("title", "name", "headline", "label", "heading", "displayName", "originalTitle")
+JSON_IMAGE_KEYS = ("image", "img", "thumbnail", "thumbnailUrl", "thumb", "photo", "picture", "poster", "cover",
+                   "imageUrl", "image_url", "posterUrl", "coverUrl", "mainImage", "photos", "images")
+JSON_URL_KEY = re.compile(r"url|link|href|path|permalink", re.I)
+JSON_MAX_ITEMS = 200
+
+
+def json_value_url(value, base_url, image=False):
+    if isinstance(value, list):
+        value = value[0] if value else None
+    if isinstance(value, dict):
+        value = value.get("url") or value.get("src") or value.get("link") or value.get("href")
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    if not value.startswith(("http://", "https://", "/")) or len(value) > MAX_URL_LENGTH:
+        return None
+    full = urljoin(base_url, value)
+    if urlparse(full).scheme not in ("http", "https"):
+        return None
+    is_image = IMAGE_FILE.search(urlparse(full).path) is not None
+    if not image and is_image:
+        return None
+    return full
+
+
+def json_item(obj, base_url):
+    """(tytuł, adres, obrazek_albo_None) z obiektu JSON albo None."""
+    if isinstance(obj.get("item"), dict):  # schema.org ListItem {"item": {...}}
+        obj = dict(obj["item"], **{k: v for k, v in obj.items() if k != "item"})
+    title = next((squash(obj[k]) for k in JSON_TITLE_KEYS if isinstance(obj.get(k), str) and 2 <= len(squash(obj[k])) <= 200), None)
+    if not title:
+        return None
+    url = None
+    for key, value in obj.items():
+        if JSON_URL_KEY.search(key) and not any(word in key.lower() for word in ("image", "img", "thumb", "photo", "poster", "cover", "logo", "icon")):
+            url = json_value_url(value, base_url)
+            if url:
+                break
+    if not url:
+        return None
+    image = next((u for u in (json_value_url(obj.get(k), base_url, image=True) for k in JSON_IMAGE_KEYS) if u), None)
+    return title, url, image
+
+
+def json_listing(soup, base_url):
+    """Pozycje list z danych JSON wbudowanych w stronę (__NEXT_DATA__, application/json, JSON-LD ItemList)."""
+    found, seen = [], set()
+
+    def walk(value, depth):
+        if depth > 14 or len(found) >= JSON_MAX_ITEMS:
+            return
+        if isinstance(value, list):
+            items = [json_item(v, base_url) for v in value[:300] if isinstance(v, dict)]
+            items = [i for i in items if i]
+            with_image = sum(1 for i in items if i[2])
+            long_titles = sum(1 for i in items if len(i[0]) >= 25 or len(i[0].split()) >= 4)
+            if len(items) >= 4 and (with_image * 2 >= len(items) or long_titles * 2 >= len(items)):  # nie menu/stopka
+                for item in items:
+                    if item[1] not in seen and item[1].split("#")[0] != base_url.split("#")[0]:
+                        seen.add(item[1])
+                        found.append(item)
+            for v in value[:300]:
+                walk(v, depth + 1)
+        elif isinstance(value, dict):
+            for v in value.values():
+                walk(v, depth + 1)
+
+    for script in soup.find_all("script", type=("application/json", "application/ld+json")):
+        text = script.string or ""
+        if not text.strip() or len(text) > 3_000_000:
+            continue
+        try:
+            walk(json.loads(text), 0)
+        except (ValueError, RecursionError):
+            continue
+    return found[:JSON_MAX_ITEMS]
+
+
+def add_json_listing(blocks, embedded):
+    """Dokłada pozycje z danych JSON, których nie było w HTML. Gdy jest ich więcej niż linków w HTML (lista
+    wyświetlana dopiero przez JavaScript), idą na początek, w przeciwnym razie na koniec w sekcji „Więcej ze strony”."""
+    linked = {b[2] for b in blocks if b[0] in ("h", "p") and b[2]}
+    new = [item for item in embedded if item[1] not in linked]
+    if len(new) < 4:
+        return blocks
+    thumbs = sum(1 for b in blocks if b[0] == "thumb")
+    section = []
+    for title, href, image in new:
+        if image and thumbs < THUMBS_PER_LISTING:
+            section.append(("thumb", "", image))
+            thumbs += 1
+        section.append(("p", title, href))
+    if len(new) > len(linked):
+        return section + blocks
+    return blocks + [("h", "Więcej ze strony", None)] + section
+
+
 def extract_article(html, url, videos=None, posters=None):
     """Zwraca (tytuł, bloki), gdzie blok to ("h" | "p", tekst, adres_linku_lub_None).
     Gdy podano listę `videos`, trafiają do niej adresy filmów ze strony."""
@@ -825,6 +931,7 @@ def extract_article(html, url, videos=None, posters=None):
     soup = BeautifulSoup(html, "lxml")
     title = node_text(soup.title) or host_of(url)
     gallery = gallery_images(soup, url)  # przed czyszczeniem – readability wycina galerie
+    embedded = json_listing(soup, url)
     if videos is not None:
         videos.extend(find_videos(soup, url, posters=posters))  # przed czyszczeniem – readability usuwa znaczniki <video>
         lead = lead_image(soup, url)
@@ -850,11 +957,15 @@ def extract_article(html, url, videos=None, posters=None):
     readability_chars = sum(len(b[1]) for b in blocks if b[0] != "img")
     # Strona główna serwisu to lista (nawet gdy wkleja kilka pełnych newsów, które readability bierze za artykuł).
     front_page = re.fullmatch(r"/?|/(home|index|start|main|default)(\.\w+)?/?", urlparse(url).path or "/", re.I) is not None
+    listing = readability_chars < 1500
     if readability_chars < 1500 or front_page:
         fallback = fallback_blocks(soup, url, skip_images=small_images)
         fallback_links = sum(1 for b in fallback if b[0] in ("h", "p") and b[2])
         if sum(len(b[1]) for b in fallback if b[0] != "thumb") > readability_chars or (front_page and fallback_links >= 10):
             blocks = fallback
+            listing = True
+    if listing and embedded:  # tylko strony z listą – w artykułach dane JSON to zwykle „polecane”
+        blocks = add_json_listing(blocks, embedded)
     if gallery:
         blocks = apply_gallery(blocks, gallery)
     if blocks and blocks[0][0] == "h" and blocks[0][1] == title:
