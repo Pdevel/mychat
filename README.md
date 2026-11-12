@@ -66,6 +66,11 @@ Popularne odtwarzacze z publicznym API obsługuje wprost: Vimeo, JW Player, Wist
 (zwykły plik albo strumień HLS – wtedy najniższą jakość, która wypełni ekran), przekodowuje go ffmpegiem i podaje
 gotowy plik, który otwiera odtwarzacz telefonu:
 
+Film przygotowuje się w ramce z miniaturą na tej samej stronie czytnika (bez przechodzenia na osobną stronę): po wybraniu
+miniatury strona wraca do filmu (`#film1`), pokazuje postęp i odświeża się sama co 8 s, a gotowy film ma tam „Odtwórz”,
+następną część, zapis w telefonie i przełączenie na 3GP. Z kilku źródeł w `<video>` czytnik bierze najmniejszą jakość
+wypełniającą ekran i pomija DASH (`.mpd`). Strona `/film` zostaje dla linków prosto do plików filmów.
+
 Każdy film ma miniaturę (220 px, ok. 2–4 KB) ze znakiem „odtwórz”: obrazek podany przez stronę (`poster`,
 `og:image`, JSON-LD), miniaturę z API odtwarzacza (Vimeo, JW Player, Wistia, Kaltura), a gdy jej brak – klatkę z filmu
 (serwer pobiera tylko początek pliku i, przez `Range`, jego koniec albo jeden odcinek strumienia HLS).

@@ -1413,6 +1413,34 @@ def player_key(url):
     return re.sub(r"[?#].*$", "", url.lower()).replace("wistia.net", "wistia.com").replace("/medias/", "/iframe/").rstrip("/")
 
 
+def pick_video_source(video):
+    """Źródło z <video>: pomija blob:/data: i DASH (.mpd), a z kilku jakości wybiera najmniejszą, która wypełni
+    ekran telefonu (wysokość ≥ 216 px wg data-height/height/res/size/label), w przeciwnym razie pierwsze."""
+    options = []
+    for tag in [video] + video.find_all("source"):
+        value = (tag.get("src") or tag.get("data-src") or "").strip()
+        kind = (tag.get("type") or "").lower()
+        if not value or value.startswith(("blob:", "data:")) or "dash" in kind or urlparse(value).path.lower().endswith(".mpd"):
+            continue
+        height = 0
+        for attr in ("data-height", "height", "res", "size", "data-res", "label", "data-quality"):
+            match = re.search(r"(\d{3,4})", str(tag.get(attr) or ""))
+            if match:
+                height = int(match.group(1))
+                break
+        if not height:
+            match = re.search(r"(\d{3,4})p\b", value)
+            height = int(match.group(1)) if match else 0
+        options.append((height, value))
+    if not options:
+        return None
+    sized = [o for o in options if o[0]]
+    enough = [o for o in sized if o[0] >= 216]
+    if enough:
+        return min(enough)[1]
+    return options[0][1]
+
+
 def first_image_url(value):
     """thumbnailUrl / image z JSON-LD bywa napisem, listą albo obiektem ImageObject."""
     if isinstance(value, list):
@@ -1464,12 +1492,9 @@ def find_videos(soup, base_url, deep=False, posters=None):
             found_posters[src] = urljoin(base_url, poster)
 
     for video in soup.find_all("video"):
-        candidates = [video.get("src"), video.get("data-src")]
-        candidates += [s.get("src") or s.get("data-src") for s in video.find_all("source")]
-        for value in candidates:
-            if value and not value.strip().startswith(("blob:", "data:")):
-                add(value, direct, poster=video.get("poster") or video.get("data-poster"))
-                break
+        value = pick_video_source(video)
+        if value:
+            add(value, direct, poster=video.get("poster") or video.get("data-poster"))
     og_type = soup.find("meta", attrs={"property": "og:video:type"})
     og_type = (og_type.get("content") or "").lower() if og_type is not None else ""
     og_direct = og_type.startswith("video/") or "mpegurl" in og_type
@@ -1501,7 +1526,8 @@ def find_videos(soup, base_url, deep=False, posters=None):
                 stack.extend(v for v in item.values() if isinstance(v, (list, dict)))
     for tag in soup.find_all(True):  # atrybuty typu data-video-src="…mp4", data-hls="…m3u8", <param value="…">
         for name, value in tag.attrs.items():
-            if isinstance(value, str) and (name.startswith("data-") or name in ("value", "content")) and VIDEO_HINT.search(value):
+            if (isinstance(value, str) and (name.startswith("data-") or name in ("value", "content")) and "/" in value
+                    and VIDEO_HINT.search(value)):  # sama nazwa wariantu (np. „480p.vp9.webm”) to nie adres
                 thumb = next((tag.get(a) for a in ("data-poster", "poster", "data-thumbnail", "data-thumb", "data-image")
                               if isinstance(tag.get(a), str)), None)
                 add(value, direct, need_ext=True, poster=thumb)
@@ -2310,8 +2336,8 @@ STYLE = (
     ".it img{float:left;width:80px;margin:0 6px 0 0}"
     ".it a{font-weight:bold;text-decoration:none}.it a.n{display:block;margin-left:86px}"
     ".ph{margin:4px 0 10px}.ph img{max-width:100%;border:0}"
-    ".v{display:block;margin:6px 0 10px;padding:4px;text-align:center;font-weight:bold;text-decoration:none;"
-    "background:#eef3fd;border:1px solid #c6d5f5}.v img{max-width:100%;margin:0 0 4px}"
+    ".v{margin:6px 0 10px;padding:4px;text-align:center;background:#eef3fd;border:1px solid #c6d5f5}"
+    ".v img{max-width:100%;margin:0 0 4px;border:0}.v a{font-weight:bold}"
     ".r{border-bottom:1px solid #e3e3e3;padding:6px 0}"
     ".r a.t{font-weight:bold;text-decoration:none}"
     ".h{color:#1e7d32;font-size:12px}.s{color:#444}.o{font-size:12px}"
@@ -2392,10 +2418,22 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 """,
     "read.html": """{% extends "base.html" %}
 {% block title %}{{ title }}{% endblock %}
+{% block head %}{% if film and film.mode in ("work", "busy") %}<meta http-equiv="refresh" content="{{ 8 if film.mode == 'work' else 15 }};url={{ url_for('read', url=url, q=q, rp=rp, wf=film.index, wfmt=film.fmt, wc=film.part, n=tick) }}#film{{ film.index }}">{% endif %}{% endblock %}
 {% block body %}{% include "_nav.html" %}<div class="w">
 <h1>{{ title }}</h1>
 <p class="m">{{ host }}{% if pages > 1 %} &middot; strona {{ page }} z {{ pages }}{% endif %}</p>
-{% if page == 1 %}{% for v in videos %}<a class="v" href="{{ url_for('video', u=v.url, r=original, t=title, q=q, rp=rp, p=v.poster, fb=v.fallback) }}">{% if images %}<img src="{{ url_for('image', u=v.url, v=1, p=v.poster, f=v.fallback, r=site) }}" alt=""><br>{% endif %}Film{% if videos|length > 1 %} {{ loop.index }}{% endif %}: obejrzyj na telefonie</a>
+{% if page == 1 %}{% for v in videos %}{% set i = loop.index %}{% set start = url_for('read', url=url, q=q, rp=rp, wf=i) ~ '#film' ~ i %}<div class="v" id="film{{ i }}">{% if images %}<a href="{{ start }}"><img src="{{ url_for('image', u=v.url, v=1, p=v.poster, f=v.fallback, r=site) }}" alt=""></a><br>{% endif %}
+{% if film and film.index == i %}{% set f = film %}{% set again = url_for('read', url=url, q=q, rp=rp, wf=i, wfmt=f.fmt, wc=f.part, n=tick) ~ '#film' ~ i %}{% if f.mode == "work" %}<b>Przygotowuję film{% if f.part > 1 or (f.part_total and f.part_total > 1) %}, część {{ f.part }}{% endif %}&hellip;</b><br>
+{% if f.status.state == "download" %}Pobieranie: {{ f.status.got|mb }}{% if f.status.progress %} ({{ f.status.progress }}%){% endif %}{% else %}Zmniejszanie dla telefonu: {{ f.status.progress }}%{% endif %}<br>
+<a href="{{ again }}">Odśwież</a> <span class="m">&ndash; samo co 8 s</span>
+{% elif f.mode == "busy" %}Serwer kończy inny film &ndash; ten zacznie się za chwilę.<br><a href="{{ again }}">Odśwież</a>
+{% elif f.mode == "done" %}<a href="{{ url_for('video_file', key=f.key, ext=f.fmt) }}">Odtwórz film ({{ formats[f.fmt].name }}, {{ f.status.size|mb }})</a><br>
+<span class="m">{% if f.part_total and f.part_total > 1 %}Część {{ f.part }} z {{ f.part_total }} &middot; {% endif %}{{ f.status.length|mmss }}</span><br>
+{% if f.has_next %}<a href="{{ url_for('read', url=url, q=q, rp=rp, wf=i, wfmt=f.fmt, wc=f.part + 1) }}#film{{ i }}">Następna część{% if f.next_ready %} (gotowa){% endif %} &raquo;</a><br>
+{% endif %}{% if f.part > 1 %}<a href="{{ url_for('read', url=url, q=q, rp=rp, wf=i, wfmt=f.fmt, wc=f.part - 1) }}#film{{ i }}">&laquo; Poprzednia część</a><br>
+{% endif %}<span class="m"><a href="{{ url_for('video_file', key=f.key, ext=f.fmt, d=1) }}">Zapisz w telefonie</a> &middot; <a href="{{ url_for('read', url=url, q=q, rp=rp, wf=i, wfmt=f.other, wc=f.part) }}#film{{ i }}">Nie działa? {{ formats[f.other].name }}</a></span>
+{% else %}{{ f.status.message }}<br>{% if f.status.blocked %}<a href="{{ original }}">Otwórz bezpośrednio w Operze</a>{% else %}<a href="{{ url_for('read', url=url, q=q, rp=rp, wf=i, wfmt=f.fmt, wc=f.part, znowu=1) }}#film{{ i }}">Spróbuj ponownie</a> &middot; <a href="{{ url_for('read', url=url, q=q, rp=rp, wf=i, wfmt=f.other, wc=f.part) }}#film{{ i }}">{{ formats[f.other].name }}</a>{% endif %}
+{% endif %}{% else %}<a href="{{ start }}">Film{% if videos|length > 1 %} {{ i }}{% endif %}: obejrzyj na telefonie</a>{% endif %}</div>
 {% endfor %}{% endif %}{% for it in items %}{% if it.kind == "item" %}<div class="it">{% if it.img and images %}<img src="{{ url_for('image', u=it.img, r=site, t=1) }}" alt="">{% endif %}<a{% if it.img and images %} class="n"{% endif %} href="{{ url_for('read', url=it.href, q=q, rp=rp) }}">{{ it.text }}</a></div>
 {% elif it.kind == "img" %}{% if images %}<div class="ph"><a href="{{ url_for('image', u=it.href, r=site, hq=1) }}" target="_blank"><img src="{{ url_for('image', u=it.href, r=site) }}" alt="{{ it.text or 'obrazek' }}"></a></div>
 {% endif %}{% elif it.kind == "h" %}<h2>{{ it.text }}</h2>
@@ -2535,6 +2573,30 @@ app.jinja_env.filters["mmss"] = mmss
 app.jinja_env.filters["mb"] = megabytes
 
 
+def video_progress(src, referer, fmt, part, retry=False):
+    """Stan przygotowania części filmu; uruchamia zadanie, gdy trzeba (także następną część w tle, gdy ta jest gotowa).
+    Zwraca dict: mode (work/busy/done/error), status, key, fmt, other, part, part_total, has_next, next_ready."""
+    key = video_key(src, fmt, part - 1)
+    info = {"key": key, "fmt": fmt, "other": "3gp" if fmt == "mp4" else "mp4", "part": part, "status": None,
+            "part_total": None, "has_next": False, "next_ready": False}
+    status = read_status(key)
+    if status is None or (status.get("state") == "error" and retry):
+        if not start_video_job(key, src, referer, fmt, part - 1):
+            return dict(info, mode="busy")
+        status = read_status(key) or {"state": "download", "got": 0, "progress": 0}
+    info["status"] = status
+    state = status.get("state")
+    if status.get("total"):
+        info["part_total"] = part_count(status["total"])
+        info["has_next"] = part < info["part_total"]
+    if state == "done" and info["has_next"]:  # oglądasz tę część – następna przygotowuje się w tle
+        next_key = video_key(src, fmt, part)
+        start_video_job(next_key, src, referer, fmt, part, auto=True)
+        info["next_ready"] = (read_status(next_key) or {}).get("state") == "done"
+    info["mode"] = "work" if state in VIDEO_ACTIVE else ("done" if state == "done" else "error")
+    return info
+
+
 def video_items(article):
     """Filmy dla czytnika: adres, miniatura podana przez stronę i zdjęcie strony jako zapasowa miniatura."""
     posters = article.get("posters") or {}
@@ -2600,11 +2662,19 @@ def read():
         )
     page = min(page, len(pages))
     parts = urlparse(article["url"])
+    videos = video_items(article)
+    film = None
+    chosen = clamp_int(request.args.get("wf"), 0, 0, len(videos))
+    if chosen and page == 1:  # film przygotowywany w ramce z miniaturą, na tej samej stronie
+        fmt = request.args.get("wfmt") if request.args.get("wfmt") in VIDEO_FORMATS else "mp4"
+        film = video_progress(videos[chosen - 1]["url"], article["url"], fmt,
+                              clamp_int(request.args.get("wc"), 1, 1, VIDEO_MAX_PARTS), retry=bool(request.args.get("znowu")))
+        film["index"] = chosen
     return render_template(
         "read.html", title=article["title"], url=url, original=article["url"], host=host_of(article["url"]),
         items=page_items(pages[page - 1]), page=page, pages=len(pages), images=images_enabled(),
         has_images=any(b[0] in ("img", "thumb") for p in pages for b in p), site=f"{parts.scheme}://{parts.netloc}",
-        videos=video_items(article), theme=article.get("theme"), **common,
+        videos=videos, film=film, formats=VIDEO_FORMATS, theme=article.get("theme"), tick=int(time.time()) % 100000, **common,
     )
 
 
@@ -2645,26 +2715,14 @@ def video():
     if fmt not in VIDEO_FORMATS:
         ready = {f: (read_status(video_key(src, f, part - 1)) or {}).get("state") == "done" for f in VIDEO_FORMATS}
         return render_template("film.html", mode="choose", ready=ready, **page)
-    key = video_key(src, fmt, part - 1)
     here = link(f=fmt, c=part)
-    page.update(fmt=fmt, fmt_name=VIDEO_FORMATS[fmt]["name"], other="3gp" if fmt == "mp4" else "mp4", key=key, here=here)
-    status = read_status(key)
-    if status is None or (status.get("state") == "error" and request.args.get("znowu")):
-        if not start_video_job(key, src, referer, fmt, part - 1):
-            return render_template("film.html", mode="busy", refresh=15, **page)
-        status = read_status(key) or {"state": "download", "got": 0, "progress": 0}
-    page["status"] = status
-    state = status.get("state")
-    if status.get("total"):
-        page["part_total"] = part_count(status["total"])
-        page["has_next"] = part < page["part_total"]
-    if state == "done" and page["has_next"]:  # oglądasz tę część – następna przygotowuje się w tle
-        next_key = video_key(src, fmt, part)
-        start_video_job(next_key, src, referer, fmt, part, auto=True)
-        page["next_ready"] = (read_status(next_key) or {}).get("state") == "done"
-    if state in VIDEO_ACTIVE:
-        return render_template("film.html", mode="work", refresh=8, **page)
-    return render_template("film.html", mode="done" if state == "done" else "error", **page)
+    progress = video_progress(src, referer, fmt, part, retry=bool(request.args.get("znowu")))
+    page.update(fmt=fmt, fmt_name=VIDEO_FORMATS[fmt]["name"], other=progress["other"], key=progress["key"], here=here,
+                status=progress["status"], part_total=progress["part_total"], has_next=progress["has_next"],
+                next_ready=progress["next_ready"])
+    mode = progress["mode"]
+    refresh = {"busy": 15, "work": 8}.get(mode)
+    return render_template("film.html", mode=mode, refresh=refresh, **page)
 
 
 @app.route("/film/<key>.<ext>")
