@@ -1129,6 +1129,8 @@ def clean_document(soup):
     """Usuwa z dokumentu to, co na telefonie tylko przeszkadza: znaczniki przypisów („[1]”, „[a]”), linki „edytuj”,
     szablony nawigacyjne i spisy treści. Zwraca wiersze tabeli informacyjnej (infobox) jako [(etykieta, wartość)];
     sama tabela znika z treści – pokazujemy ją zwięźle po pierwszym akapicie, jak w mobilnej wersji serwisów."""
+    for tag in soup(["script", "style", "svg", "template"]):
+        tag.decompose()  # do treści niepotrzebne, a to często większość HTML – readability działa wtedy kilka razy szybciej
     for sup in soup.find_all("sup"):
         classes = " ".join(sup.get("class") or [])
         if "reference" in classes or (FOOTNOTE.fullmatch(sup.get_text("", strip=True)) and sup.find("a", href=re.compile(r"^#"))):
@@ -1304,6 +1306,7 @@ def get_article(url):
 
 
 def load_article(url):
+    started = time.monotonic()
     final_url, resp = http_request(url)
     if resp.status_code >= 400:
         resp.close()
@@ -1319,6 +1322,7 @@ def load_article(url):
         resp.close()
         raise FetchError("To nie jest strona z tekstem (np. PDF albo obrazek). Otwórz [Oryginał].", 415)
     text = decode_html(read_body(resp), resp)
+    fetched = time.monotonic()
     if CHALLENGE_TITLE.search(text[:5000]) and len(text) < 60_000:
         log.warning("strona pokazała sprawdzanie przeglądarki: %s", final_url)
         raise FetchError(BLOCKED_MESSAGE, 403, blocked=True)
@@ -1341,12 +1345,22 @@ def load_article(url):
         kept.append(block)
     if truncated:
         kept.append(("p", "[Artykuł skrócony – całość w oryginale.]", None))
+    extracted = time.monotonic()
     try:
-        theme = site_theme(text, final_url) if content_type != "text/plain" else None
+        theme = None
+        if content_type != "text/plain":
+            theme = theme_cache.get(urlparse(final_url).hostname or "")
+            if theme is None:
+                theme = site_theme(text, final_url, fetch=False)
+                if theme is None or theme.get("partial"):  # pełne barwy (z plików CSS) w tle – od następnej strony serwisu
+                    threading.Thread(target=complete_theme, args=(text, final_url), daemon=True).start()
     except Exception:  # wygląd to dodatek – błąd nie może zablokować czytania
         log.exception("motyw strony: %s", final_url)
         theme = None
-    article = {"title": title, "url": final_url, "pages": paginate(kept, ARTICLE_PAGE_CHARS), "videos": videos,
+    done = time.monotonic()
+    timing = {"pobranie": fetched - started, "tresc": extracted - fetched, "wyglad": done - extracted}
+    log.info("czytnik %s: %s", final_url, ", ".join(f"{k} {v:.1f}s" for k, v in timing.items()))
+    article = {"title": title, "url": final_url, "pages": paginate(kept, ARTICLE_PAGE_CHARS), "videos": videos, "timing": timing,
                "posters": posters, "theme": theme}
     article_cache.set(url, article)
     return article
@@ -1414,8 +1428,8 @@ CSS_LINK = re.compile(r"(?:^|[}\s,])a(?::link)?\s*\{([^}]*)\}", re.I)
 DARK_HINT = re.compile(r"<(?:html|body)[^>]*(?:class|data-theme|data-bs-theme|data-color-mode)=[\"'][^\"']*\bdark", re.I)
 THEME_CSS_BYTES = 400_000
 THEME_STYLESHEETS = 4
-theme_cache = TTLCache(maxsize=200, ttl=6 * 3600)  # motyw serwisu (wg hosta) – także dla stron filmów
-stylesheet_cache = TTLCache(maxsize=60, ttl=24 * 3600)
+theme_cache = DiskCache("motywy", ttl=6 * 3600, max_files=300)  # motyw serwisu (wg hosta) – także dla stron filmów
+stylesheet_cache = DiskCache("arkusze", ttl=24 * 3600, max_files=200)
 
 
 def parse_color(value):
@@ -1526,8 +1540,10 @@ def fetch_stylesheet(url, site):
     return css
 
 
-def site_theme(html, base_url):
-    """Motyw strony: kolory (hex) dla paska, linków, tła, tekstu, przycisków i ikona serwisu – albo None."""
+def site_theme(html, base_url, fetch=True):
+    """Motyw strony: kolory (hex) dla paska, linków, tła, tekstu, przycisków i ikona serwisu – albo None.
+    fetch=False: bez pobierania arkuszy CSS (tylko te już zapamiętane) – szybki motyw na pierwszą stronę serwisu;
+    wtedy w motywie jest "partial": True, a pełny warto policzyć w tle."""
     parts = urlparse(base_url)
     site = f"{parts.scheme}://{parts.netloc}"
     head = BeautifulSoup(html[:600_000], "lxml", parse_only=SoupStrainer(["meta", "link", "style"]))
@@ -1539,6 +1555,12 @@ def site_theme(html, base_url):
     css = "\n".join(tag.get_text() for tag in head.find_all("style"))
     sheets = [urljoin(base_url, link["href"]) for link in head.find_all("link", href=True)
               if "stylesheet" in [r.lower() for r in (link.get("rel") or [])]][:THEME_STYLESHEETS]
+    partial = False
+    if sheets and not fetch:
+        known = [stylesheet_cache.get(url) for url in sheets]
+        partial = any(css_text is None for css_text in known)
+        css += "\n" + "\n".join(css_text or "" for css_text in known)
+        sheets = []
     if sheets:
         results = [""] * len(sheets)
 
@@ -1592,7 +1614,10 @@ def site_theme(html, base_url):
         "button": hex_color(mix(background, link, 0.12)), "button_line": hex_color(mix(background, link, 0.4)),
         "icon": icon or f"{site}/favicon.ico", "site": site,
     }
-    theme_cache.set(parts.hostname or "", theme)
+    if partial:
+        theme["partial"] = True
+    else:
+        theme_cache.set(parts.hostname or "", theme)
     return theme
 
 
@@ -2925,6 +2950,19 @@ def video_progress(src, referer, fmt, part, retry=False):
     return info
 
 
+def complete_theme(html, url):
+    try:
+        site_theme(html, url, fetch=True)
+    except Exception:
+        log.exception("motyw strony (w tle): %s", url)
+
+
+def server_timing(article, total):
+    """Nagłówek Server-Timing: ile trwało pobranie strony, wydobycie treści i odczyt wyglądu (do pomiarów z zewnątrz)."""
+    parts = [f"{name};dur={int(value * 1000)}" for name, value in (article.get("timing") or {}).items()]
+    return ", ".join(parts + [f"razem;dur={int(total * 1000)}"])
+
+
 def video_items(article):
     """Filmy dla czytnika: adres, miniatura podana przez stronę i zdjęcie strony jako zapasowa miniatura."""
     posters = article.get("posters") or {}
@@ -3001,6 +3039,7 @@ def read():
     common = {"q": query, "rp": results_page}
     if len(url) > MAX_URL_LENGTH:
         return render_template("error.html", message="Adres jest za długi.", original=None, **common), 400
+    started = time.monotonic()
     try:
         article = get_article(url)
     except VideoLink as found:
@@ -3033,9 +3072,10 @@ def read():
         "read.html", title=article["title"], url=url, original=article["url"], host=host_of(article["url"]),
         items=page_items(pages[page - 1]), page=page, pages=len(pages), images=images_enabled(),
         has_images=any(b[0] in ("img", "thumb") for p in pages for b in p), site=f"{parts.scheme}://{parts.netloc}",
-        videos=videos, film=film, formats=VIDEO_FORMATS, theme=article.get("theme"), tick=int(time.time()) % 100000,
+        videos=videos, film=film, formats=VIDEO_FORMATS, theme=theme_cache.get(parts.hostname or "") or article.get("theme"),
+        tick=int(time.time()) % 100000,
         links=links_enabled(), has_links=any(b[0] == "pl" for p in pages for b in p), **common,
-    )
+    ), 200, {"Server-Timing": server_timing(article, time.monotonic() - started)}
 
 
 @app.route("/film")

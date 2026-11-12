@@ -120,6 +120,9 @@ Strojenie: `VIDEO_FIRST_PARTS_MINUTES` (3,6,12), `VIDEO_PART_MINUTES` (15), `VID
   procesów serwera, więc powtórka i powrót „Wstecz” są natychmiastowe,
 - po pokazaniu wyników serwer w tle wczytuje 2 pierwsze strony (`PREFETCH_RESULTS`), więc kliknięty wynik otwiera się
   od razu; gdy klikniesz stronę, która właśnie się wczytuje, czytnik czeka na nią zamiast pobierać drugi raz,
+- przed wydobyciem treści serwer usuwa skrypty, style i grafiki SVG (zwykle większość HTML), a barwy serwisu przy pierwszej
+  stronie bierze z samej strony – pliki CSS doczytuje w tle (pełny wygląd od następnej strony tego serwisu),
+- odpowiedź czytnika ma nagłówek `Server-Timing` (pobranie strony, wydobycie treści, wygląd) – do pomiarów,
 - DuckDuckGo blokuje serwery w chmurze: po porażce aplikacja pyta od razu FrogFind, a kolejną próbę DuckDuckGo robi
   po coraz dłuższej przerwie (10 min, 20 min, 40 min… do 6 h),
 - darmowy plan Render usypia aplikację po 15 min bez ruchu – pierwsze wejście trwa wtedy 30–60 s. Pomaga darmowy
