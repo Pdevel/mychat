@@ -9,24 +9,30 @@ Strony to czysty HTML: bez CSS, bez JavaScriptu, z jak najmniejszą liczbą link
              wyniki przychodzą przez FrogFind (frogfind.com – prosta nakładka na DuckDuckGo, bez klucza API);
              opcjonalnie jeszcze Brave Search API (klucz w zmiennej BRAVE_API_KEY)
   /read    – czytnik: pobiera stronę, zostawia sam tekst (tytuł, nagłówki, akapity) i dzieli go na strony
+  /film    – filmy ze stron przekodowane dla telefonu (MP4 H.264 320×240 albo 3GP H.263 176×144)
 """
 
+import hashlib
 import io
 import ipaddress
 import json
 import logging
 import os
 import re
+import shutil
 import socket
+import subprocess
+import tempfile
 import threading
 import time
+import uuid
 from collections import OrderedDict
 from urllib.parse import parse_qs, urljoin, urlparse
 
 import requests
 import urllib3.util.connection as urllib3_connection
 from bs4 import BeautifulSoup
-from flask import Flask, Response, redirect, render_template, request, url_for
+from flask import Flask, Response, abort, redirect, render_template, request, send_file, url_for
 from jinja2 import DictLoader
 from PIL import Image, ImageOps
 
@@ -65,6 +71,20 @@ THUMB_MAX_SIZE = int(os.environ.get("THUMB_MAX_SIZE", "80"))  # najdłuższy bok
 THUMBS_PER_LISTING = 30
 THUMB_WEIGHT = 300  # ok. 10 miniatur na jedną stronę czytnika
 Image.MAX_IMAGE_PIXELS = 25_000_000  # ochrona przed „bombami” (ogromne wymiary w małym pliku)
+
+# Filmy: serwer pobiera plik (albo strumień HLS .m3u8), przekodowuje go ffmpegiem do małego pliku, który odtwarzacz
+# wideo Nokii 235 4G / 3210 4G udźwignie, i podaje go do pobrania. Długie filmy dzielimy na części.
+VIDEO_DIR = os.environ.get("VIDEO_DIR") or os.path.join(tempfile.gettempdir(), "szukajka-filmy")
+VIDEO_PART_SECONDS = int(os.environ.get("VIDEO_PART_MINUTES", "15")) * 60  # długość jednej części filmu
+VIDEO_MAX_PARTS = 20
+VIDEO_SOURCE_MAX_BYTES = int(os.environ.get("VIDEO_SOURCE_MAX_MB", "400")) * 1_000_000  # większych plików nie pobieramy
+VIDEO_DOWNLOAD_DEADLINE = 600  # s na pobranie źródła
+VIDEO_CONVERT_DEADLINE = int(os.environ.get("VIDEO_CONVERT_MINUTES", "40")) * 60  # dłużej ffmpeg nie pracuje
+VIDEO_JOBS = int(os.environ.get("VIDEO_JOBS", "1"))  # ile filmów naraz przygotowuje serwer (darmowy Render: 1)
+VIDEO_KEEP_SECONDS = 3 * 3600  # gotowe pliki trzymamy tyle czasu
+VIDEO_DISK_LIMIT = int(os.environ.get("VIDEO_DISK_MB", "1500")) * 1_000_000
+VIDEO_STALE = 180  # zadanie bez znaku życia przez tyle sekund uznajemy za przerwane (np. restart serwera)
+VIDEOS_PER_ARTICLE = 5
 
 DDG_LITE = "https://lite.duckduckgo.com/lite/"
 DDG_HTML = "https://html.duckduckgo.com/html/"
@@ -630,11 +650,14 @@ def fallback_blocks(soup, base_url, skip_images=frozenset()):
 CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")  # przez nie readability (lxml) odmawia pracy
 
 
-def extract_article(html, url):
-    """Zwraca (tytuł, bloki), gdzie blok to ("h" | "p", tekst, adres_linku_lub_None)."""
+def extract_article(html, url, videos=None):
+    """Zwraca (tytuł, bloki), gdzie blok to ("h" | "p", tekst, adres_linku_lub_None).
+    Gdy podano listę `videos`, trafiają do niej adresy filmów ze strony."""
     html = CONTROL_CHARS.sub("", html)
     soup = BeautifulSoup(html, "lxml")
     title = node_text(soup.title) or host_of(url)
+    if videos is not None:
+        videos.extend(find_videos(soup, url))  # przed czyszczeniem – readability usuwa znaczniki <video>
     # readability usuwa z obrazków width/height – ikonki rozpoznajemy po wymiarach z oryginalnej strony
     small_images = {image_source(img, url, check_size=False) for img in soup.find_all("img") if is_small_image(img)}
     blocks = []
@@ -727,15 +750,21 @@ def get_article(url):
         log.warning("strona zwróciła %s: %s", resp.status_code, final_url)
         raise FetchError(f"Strona zwróciła błąd {resp.status_code}.", 502)
     content_type = resp.headers.get("Content-Type", "").split(";")[0].strip().lower()
+    if is_video_response(content_type, final_url):
+        resp.close()
+        raise VideoLink(final_url)  # sam film, nie strona – czytnik przekieruje do /film
     if content_type and not (content_type.startswith("text/") or "html" in content_type or "xml" in content_type):
         resp.close()
         raise FetchError("To nie jest strona z tekstem (np. PDF albo obrazek). Otwórz [Oryginał].", 415)
     text = decode_html(read_body(resp), resp)
+    videos = []
     if content_type == "text/plain":
         title = host_of(final_url)
         blocks = [("p", squash(part), None) for part in re.split(r"\n\s*\n", text) if squash(part)]
     else:
-        title, blocks = extract_article(text, final_url)
+        title, blocks = extract_article(text, final_url, videos)
+    if not blocks and videos:
+        blocks = [("p", "Na tej stronie jest film – wybierz go wyżej.", None)]
     if not blocks:
         raise FetchError("Nie udało się wydobyć tekstu z tej strony. Otwórz [Oryginał].", 422)
     truncated, total, kept = False, 0, []
@@ -747,7 +776,7 @@ def get_article(url):
         kept.append(block)
     if truncated:
         kept.append(("p", "[Artykuł skrócony – całość w oryginale.]", None))
-    article = {"title": title, "url": final_url, "pages": paginate(kept, ARTICLE_PAGE_CHARS)}
+    article = {"title": title, "url": final_url, "pages": paginate(kept, ARTICLE_PAGE_CHARS), "videos": videos}
     article_cache.set(url, article)
     return article
 
@@ -779,6 +808,552 @@ def shrink_image(raw, max_width=IMAGE_MAX_WIDTH, max_height=IMAGE_MAX_HEIGHT):
 
 def images_enabled():
     return request.cookies.get("obrazki") != "0"
+
+
+# ---------- Filmy dopasowane do telefonu ----------
+# Odtwarzacz Nokii 235 4G / 3210 4G nie udźwignie filmu HD ani strumienia ze strony. Serwer pobiera więc film
+# (plik albo strumień HLS .m3u8), przekodowuje go ffmpegiem do małego pliku i podaje do pobrania – telefon otwiera go
+# swoim odtwarzaczem. Stan zadań trzymamy w plikach w VIDEO_DIR, więc widzą go wszystkie procesy Gunicorna.
+VIDEO_FILE = re.compile(r"\.(mp4|m4v|mov|webm|mkv|3gp|3g2|avi|flv|mpe?g|m3u8)$", re.I)
+SCRIPT_VIDEO = re.compile(
+    r"""https?:(?:\\?/){2}[^"'\s<>]+?\.(?:mp4|m4v|webm|m3u8|mov|3gp)(?:\?[^"'\s<>]*)?(?=["'\s<>\\]|$)""", re.I
+)
+KALTURA_PARTNER = re.compile(r"""(?:partner_?id["']?\s*[:=]\s*["']?|/p/)(\d{3,9})""", re.I)
+KALTURA_ENTRY = re.compile(r"""(?:entry_?id["']?\s*[:=/]\s*["']?)([01]_[a-z0-9]{8})""", re.I)
+# ffmpeg czyta tylko lokalne pliki i tylko zwykłe formaty filmów – nigdy list (HLS, concat), które mogłyby wskazać
+# pliki serwera albo adresy w sieci wewnętrznej. Listy HLS rozkładamy sami i pobieramy przez http_request.
+VIDEO_INPUT_FORMATS = "mov,mp4,m4a,3gp,3g2,mj2,matroska,webm,avi,flv,mpegts,mpeg,ogg,asf,aac,mp3,wav"
+VIDEO_FORMATS = {
+    "mp4": {"name": "MP4", "mime": "video/mp4", "about": "H.264, do 320×240, ok. 2 MB na minutę"},
+    "3gp": {"name": "3GP", "mime": "video/3gpp", "about": "H.263, 176×144, ok. 1,2 MB na minutę – dla starszych odtwarzaczy"},
+}
+VIDEO_ACTIVE = ("download", "convert")
+_ffmpeg = {}
+_video_start_lock = threading.Lock()
+
+
+class VideoLink(Exception):
+    """Pod adresem otwieranym w czytniku jest film, a nie strona."""
+
+    def __init__(self, url):
+        super().__init__(url)
+        self.url = url
+
+
+def is_video_url(url):
+    return bool(VIDEO_FILE.search(urlparse(url).path))
+
+
+def is_video_response(content_type, url):
+    if content_type.startswith("video/") or "mpegurl" in content_type:
+        return True
+    return is_video_url(url) and ("html" not in content_type)
+
+
+def find_videos(soup, base_url):
+    """Adresy filmów na stronie: <video>/<source>, og:video, JSON-LD (VideoObject), linki do plików wideo, a gdy nic
+    nie ma – adresy .mp4/.m3u8 zapisane w skryptach odtwarzaczy i odtwarzacz Kaltura."""
+    found = []
+
+    def add(value, need_ext=False):
+        value = (value or "").strip().replace("\\/", "/").replace("\\u0026", "&").replace("&amp;", "&")
+        if not value or value.startswith(("blob:", "data:")):
+            return
+        src = urljoin(base_url, value)
+        if urlparse(src).scheme not in ("http", "https") or len(src) > MAX_URL_LENGTH:
+            return
+        if need_ext and not is_video_url(src):
+            return
+        if src not in found:
+            found.append(src)
+
+    for video in soup.find_all("video"):
+        candidates = [video.get("src"), video.get("data-src")]
+        candidates += [s.get("src") or s.get("data-src") for s in video.find_all("source")]
+        for value in candidates:
+            if value and not value.strip().startswith(("blob:", "data:")):
+                add(value)
+                break
+    og_type = soup.find("meta", attrs={"property": "og:video:type"})
+    og_type = (og_type.get("content") or "").lower() if og_type is not None else ""
+    direct = og_type.startswith("video/") or "mpegurl" in og_type
+    for name in ("og:video:secure_url", "og:video:url", "og:video", "twitter:player:stream"):
+        for meta in soup.find_all("meta", attrs={"property": name}) + soup.find_all("meta", attrs={"name": name}):
+            add(meta.get("content"), need_ext=not direct)  # og:video bywa stroną z odtwarzaczem, a nie plikiem
+    for script in soup.find_all("script", type="application/ld+json"):
+        try:
+            stack = [json.loads(script.string or "")]
+        except ValueError:
+            continue
+        while stack:
+            item = stack.pop()
+            if isinstance(item, list):
+                stack.extend(item)
+            elif isinstance(item, dict):
+                if "Video" in str(item.get("@type", "")) and isinstance(item.get("contentUrl"), str):
+                    add(item["contentUrl"])
+                stack.extend(v for v in item.values() if isinstance(v, (list, dict)))
+    for link in soup.find_all("a", href=True):
+        add(link["href"], need_ext=True)
+    if not found:
+        scripts = "\n".join(s.string or "" for s in soup.find_all("script"))
+        for match in SCRIPT_VIDEO.finditer(scripts):
+            add(match.group(), need_ext=True)
+            if len(found) >= VIDEOS_PER_ARTICLE:
+                break
+        if not found:  # Kaltura (m.in. uczelniane serwisy wideo): strumień HLS z ich publicznego CDN
+            page = str(soup)
+            partner, entry = KALTURA_PARTNER.search(page), KALTURA_ENTRY.search(page)
+            if partner and entry and "kaltura" in page.lower():
+                pid, eid = partner.group(1), entry.group(1)
+                add(f"https://cdnapisec.kaltura.com/p/{pid}/sp/{pid}00/playManifest/entryId/{eid}"
+                    f"/format/applehttp/protocol/https/a.m3u8")
+    return found[:VIDEOS_PER_ARTICLE]
+
+
+def ffmpeg_info():
+    """(ścieżka do ffmpeg, lista koderów). ffmpeg pochodzi z pakietu imageio-ffmpeg (instaluje go pip na Render),
+    a gdy go brak – z systemu. Bez ffmpeg zwraca (None, "")."""
+    if "exe" not in _ffmpeg:
+        exe = os.environ.get("FFMPEG_BINARY")
+        if not exe:
+            try:
+                import imageio_ffmpeg
+
+                exe = imageio_ffmpeg.get_ffmpeg_exe()
+            except Exception:
+                exe = shutil.which("ffmpeg")
+        encoders = ""
+        if exe:
+            try:
+                encoders = subprocess.run([exe, "-hide_banner", "-encoders"], capture_output=True, text=True, timeout=30).stdout
+            except (OSError, subprocess.SubprocessError):
+                exe = None
+        _ffmpeg.update(exe=exe, encoders=encoders)
+    return _ffmpeg["exe"], _ffmpeg["encoders"]
+
+
+def encode_args(fmt):
+    """Ustawienia ffmpeg dla telefonu. MP4: H.264 Baseline (poziom 1.3) do 320×240, 15 kl./s, AAC mono.
+    3GP: H.263 176×144 z dźwiękiem AMR – format, który odtwarza praktycznie każdy telefon z klawiaturą."""
+    _, encoders = ffmpeg_info()
+    if fmt == "3gp":
+        audio = (["-c:a", "libopencore_amrnb", "-ar", "8000", "-b:a", "12.2k"] if "libopencore_amrnb" in encoders
+                 else ["-c:a", "aac", "-ar", "16000", "-b:a", "24k"])
+        return ["-vf", "scale=176:144:force_original_aspect_ratio=decrease,pad=176:144:(ow-iw)/2:(oh-ih)/2,setsar=1",
+                "-r", "15", "-c:v", "h263", "-b:v", "110k", "-maxrate", "160k", "-bufsize", "320k",
+                *audio, "-ac", "1", "-movflags", "+faststart", "-f", "3gp"]
+    video = (["-c:v", "libx264", "-preset", "veryfast", "-profile:v", "baseline", "-level", "1.3", "-crf", "28",
+              "-maxrate", "240k", "-bufsize", "480k", "-g", "30"] if "libx264" in encoders
+             else ["-c:v", "mpeg4", "-q:v", "7", "-g", "30"])
+    return ["-vf", "scale='if(gt(iw,ih),320,240)':'if(gt(iw,ih),240,320)':force_original_aspect_ratio=decrease"
+                   ":force_divisible_by=2,setsar=1",
+            "-fpsmax", "15", *video, "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "32k", "-ac", "1", "-ar", "22050",
+            "-movflags", "+faststart", "-f", "mp4"]
+
+
+def video_path(name):
+    return os.path.join(VIDEO_DIR, name)
+
+
+def video_key(src, fmt, part):
+    return hashlib.sha1(f"{src}\n{fmt}\n{part}".encode("utf-8")).hexdigest()[:32]
+
+
+def read_status(key):
+    try:
+        with open(video_path(key + ".json"), encoding="utf-8") as handle:
+            status = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    if status.get("state") in VIDEO_ACTIVE and time.time() - status.get("updated", 0) > VIDEO_STALE:
+        status.update(state="error", message="Przygotowanie filmu zostało przerwane (np. restart serwera). Spróbuj ponownie.")
+    if status.get("state") == "done" and not os.path.isfile(video_path(f"{key}.{status.get('fmt')}")):
+        return None  # plik już usunięty – trzeba przygotować od nowa
+    return status
+
+
+def write_status(key, status):
+    status["updated"] = time.time()
+    tmp = video_path(f"{key}.{uuid.uuid4().hex}.tmp")
+    with open(tmp, "w", encoding="utf-8") as handle:
+        json.dump(status, handle)
+    os.replace(tmp, video_path(key + ".json"))
+
+
+def active_video_jobs():
+    count = 0
+    for name in os.listdir(VIDEO_DIR):
+        if name.endswith(".json"):
+            status = read_status(name[:-5])
+            count += bool(status and status.get("state") in VIDEO_ACTIVE)
+    return count
+
+
+def cleanup_videos():
+    """Usuwa pliki starsze niż VIDEO_KEEP_SECONDS, a gdy zajmują za dużo miejsca – najstarsze gotowe filmy i źródła."""
+    now, files = time.time(), []
+    for name in os.listdir(VIDEO_DIR):
+        path = video_path(name)
+        try:
+            info = os.stat(path)
+        except OSError:
+            continue
+        if now - info.st_mtime > VIDEO_KEEP_SECONDS:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+        elif not name.endswith((".json", ".claim", ".tmp")):
+            files.append((info.st_mtime, info.st_size, path))
+    total = sum(size for _, size, _ in files)
+    for mtime, size, path in sorted(files):
+        if total <= VIDEO_DISK_LIMIT:
+            break
+        if now - mtime < 3600 or ".work." in path or path.endswith(".dl"):
+            continue  # pliki zadań, które jeszcze trwają
+        try:
+            os.remove(path)
+            total -= size
+        except OSError:
+            pass
+
+
+class Download:
+    """Pobieranie filmu na dysk (w kawałkach – nie w pamięci) z limitem rozmiaru i czasu oraz raportem postępu."""
+
+    def __init__(self, report, segments=0):
+        self.report, self.segments = report, segments
+        self.got, self.done_segments, self.last = 0, 0, 0.0
+        self.started = time.monotonic()
+
+    def copy(self, resp, handle, expected=0):
+        try:
+            for chunk in resp.iter_content(65536):
+                handle.write(chunk)
+                self.got += len(chunk)
+                if self.got > VIDEO_SOURCE_MAX_BYTES:
+                    raise FetchError(f"Film jest za duży (limit {VIDEO_SOURCE_MAX_BYTES // 1_000_000} MB).", 413)
+                if time.monotonic() - self.started > VIDEO_DOWNLOAD_DEADLINE:
+                    raise FetchError("Pobieranie filmu trwało za długo. Spróbuj ponownie później.", 504)
+                if time.monotonic() - self.last > 2:
+                    self.tick(expected)
+        except requests.exceptions.RequestException:
+            raise FetchError("Połączenie z serwerem filmu zostało przerwane. Spróbuj ponownie.", 502)
+        finally:
+            resp.close()
+
+    def tick(self, expected=0):
+        self.last = time.monotonic()
+        if self.segments:
+            progress = self.done_segments * 100 // self.segments
+        else:
+            progress = self.got * 100 // expected if expected else 0
+        self.report(got=self.got, progress=min(progress, 99))
+
+
+def open_media(url, headers):
+    _, resp = http_request(url, extra_headers=headers)
+    if resp.status_code >= 400:
+        resp.close()
+        log.warning("serwer filmu zwrócił %s: %s", resp.status_code, url)
+        raise FetchError(f"Serwer filmu zwrócił błąd {resp.status_code}.", 502)
+    return resp
+
+
+HLS_ATTR = re.compile(r'([A-Z0-9-]+)=("[^"]*"|[^,]*)')
+
+
+def hls_attrs(line):
+    return {name: value.strip('"') for name, value in HLS_ATTR.findall(line.split(":", 1)[1])}
+
+
+def parse_m3u8(text, base_url):
+    """Lista HLS: warianty jakości (lista główna) albo odcinki filmu z czasem trwania."""
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines or not lines[0].startswith("#EXTM3U"):
+        raise FetchError("Nieprawidłowa lista odtwarzania (HLS).", 415)
+    playlist = {"variants": [], "media": [], "segments": [], "init": None, "key": None, "byterange": False}
+    pending, duration = None, None
+    for line in lines:
+        if line.startswith("#EXT-X-STREAM-INF:"):
+            pending = hls_attrs(line)
+        elif line.startswith("#EXT-X-MEDIA:"):
+            playlist["media"].append(hls_attrs(line))
+        elif line.startswith("#EXTINF:"):
+            try:
+                duration = float(line[8:].split(",")[0])
+            except ValueError:
+                duration = 0.0
+        elif line.startswith("#EXT-X-KEY:"):
+            method = hls_attrs(line).get("METHOD", "NONE")
+            if method != "NONE":
+                playlist["key"] = method
+        elif line.startswith("#EXT-X-MAP:"):
+            playlist["init"] = urljoin(base_url, hls_attrs(line).get("URI", ""))
+        elif line.startswith("#EXT-X-BYTERANGE"):
+            playlist["byterange"] = True
+        elif not line.startswith("#"):
+            uri = urljoin(base_url, line)
+            if pending is not None:
+                playlist["variants"].append(dict(pending, uri=uri))
+                pending = None
+            elif duration is not None:
+                playlist["segments"].append((duration, uri))
+                duration = None
+    return playlist
+
+
+def choose_variant(variants):
+    """Najniższa jakość, która nadal wypełni ekran 240×320 – najmniej danych do pobrania i dekodowania."""
+    def height(variant):
+        match = re.match(r"\d+x(\d+)", variant.get("RESOLUTION", ""))
+        return int(match.group(1)) if match else 0
+
+    def bandwidth(variant):
+        try:
+            return int(variant.get("BANDWIDTH") or 0)
+        except ValueError:
+            return 0
+
+    with_video = [v for v in variants if height(v) or not re.fullmatch(r"\s*mp4a[^,]*", v.get("CODECS", ""))]
+    with_video = with_video or variants
+    enough = [v for v in with_video if height(v) >= 216]
+    if enough:
+        return min(enough, key=lambda v: (height(v), bandwidth(v)))
+    if any(height(v) for v in with_video):
+        return max(with_video, key=lambda v: (height(v), -bandwidth(v)))
+    return min(with_video, key=bandwidth)
+
+
+def fetch_playlist(url, headers):
+    resp = open_media(url, headers)
+    return parse_m3u8(read_body(resp, limit=2_000_000).decode("utf-8", "replace"), url)
+
+
+def pick_segments(playlist, start, end):
+    """Odcinki HLS pokrywające czas [start, end) i przesunięcie początku części względem pierwszego z nich."""
+    chosen, moment, offset = [], 0.0, None
+    for duration, uri in playlist["segments"]:
+        if moment + duration > start and moment < end:
+            if offset is None:
+                offset = start - moment
+            chosen.append(uri)
+        moment += duration
+        if moment >= end:
+            break
+    return chosen, max(0.0, offset or 0.0)
+
+
+def prepare_hls(url, text, headers, part, report):
+    """Pobiera odcinki strumienia HLS dla danej części filmu i skleja je w jeden plik (osobno obraz i dźwięk)."""
+    playlist, audio = parse_m3u8(text, url), None
+    if playlist["variants"]:
+        variant = choose_variant(playlist["variants"])
+        group = variant.get("AUDIO")
+        options = [m for m in playlist["media"] if m.get("TYPE") == "AUDIO" and m.get("GROUP-ID") == group and m.get("URI")]
+        if group and options:
+            chosen = next((m for m in options if m.get("DEFAULT") == "YES"), options[0])
+            audio = fetch_playlist(urljoin(url, chosen["URI"]), headers)
+        playlist = fetch_playlist(variant["uri"], headers)
+    lists = [("v", playlist)] + ([("a", audio)] if audio else [])
+    for _, item in lists:
+        if item["variants"] or not item["segments"]:
+            raise FetchError("Nie udało się odczytać strumienia (HLS).", 415)
+        if item["key"]:
+            raise FetchError("Ten film jest zaszyfrowany (DRM) – nie da się go przekodować. Otwórz [Oryginał].", 415)
+        if item["byterange"]:
+            raise FetchError("Ten rodzaj strumienia HLS nie jest obsługiwany.", 415)
+    total = sum(duration for duration, _ in playlist["segments"])
+    start = part * VIDEO_PART_SECONDS
+    if start >= total:
+        raise FetchError("Ten film nie ma takiej części.", 404)
+    base = "hls-" + hashlib.sha1(f"{url}\n{part}".encode("utf-8")).hexdigest()[:32]
+    picked = [(suffix, item) + pick_segments(item, start, start + VIDEO_PART_SECONDS) for suffix, item in lists]
+    download = Download(report, segments=sum(len(uris) + bool(item["init"]) for _, item, uris, _ in picked))
+    inputs = []
+    for suffix, item, uris, offset in picked:
+        path = video_path(f"{base}.{suffix}")
+        if not os.path.isfile(path):
+            tmp = f"{path}.{uuid.uuid4().hex}.dl"
+            try:
+                with open(tmp, "wb") as handle:
+                    for uri in ([item["init"]] if item["init"] else []) + uris:
+                        download.copy(open_media(uri, headers), handle)
+                        download.done_segments += 1
+                        download.tick()
+                os.replace(tmp, path)
+            finally:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+        else:
+            os.utime(path)
+        inputs.append((path, offset))
+    return inputs, total
+
+
+def prepare_source(src, referer, part, report, depth=0):
+    """Pobiera źródło filmu na dysk. Zwraca ([(plik, przesunięcie_początku_s)], długość_całości_s albo None)."""
+    headers = {"Accept": "*/*"}
+    if referer:
+        headers["Referer"] = referer
+    cached = video_path("src-" + hashlib.sha1(src.encode("utf-8")).hexdigest()[:32] + ".bin")
+    if os.path.isfile(cached):
+        os.utime(cached)
+        return [(cached, part * VIDEO_PART_SECONDS)], None
+    resp = open_media(src, headers)
+    final_url = resp.url or src
+    content_type = resp.headers.get("Content-Type", "").split(";")[0].strip().lower()
+    if "mpegurl" in content_type or urlparse(final_url).path.lower().endswith(".m3u8"):
+        return prepare_hls(final_url, read_body(resp, limit=2_000_000).decode("utf-8", "replace"), headers, part, report)
+    if "html" in content_type:  # adres strony z filmem – szukamy w niej pliku
+        html = decode_html(read_body(resp), resp)
+        videos = find_videos(BeautifulSoup(CONTROL_CHARS.sub("", html), "lxml"), final_url) if depth == 0 else []
+        if not videos:
+            raise FetchError("Na tej stronie nie znalazłem pliku filmu (może to YouTube albo film chroniony).", 415)
+        return prepare_source(videos[0], final_url, part, report, depth + 1)
+    expected = int(resp.headers.get("Content-Length") or 0)
+    if expected > VIDEO_SOURCE_MAX_BYTES:
+        resp.close()
+        raise FetchError(f"Film jest za duży ({expected // 1_000_000} MB, limit {VIDEO_SOURCE_MAX_BYTES // 1_000_000} MB).", 413)
+    tmp = f"{cached}.{uuid.uuid4().hex}.dl"
+    try:
+        with open(tmp, "wb") as handle:
+            Download(report).copy(resp, handle, expected)
+        os.replace(tmp, cached)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+    return [(cached, part * VIDEO_PART_SECONDS)], None
+
+
+def probe_video(exe, path):
+    """(długość w s albo None, czy jest obraz) – z opisu pliku, który ffmpeg wypisuje przy otwarciu."""
+    try:
+        out = subprocess.run(
+            [exe, "-hide_banner", "-nostdin", "-protocol_whitelist", "file", "-format_whitelist", VIDEO_INPUT_FORMATS,
+             "-i", path], capture_output=True, text=True, errors="replace", timeout=60,
+        ).stderr
+    except subprocess.TimeoutExpired:
+        raise FetchError("Nie udało się odczytać pliku filmu.", 415)
+    match = re.search(r"Duration: (\d+):(\d+):(\d+(?:\.\d+)?)", out)
+    duration = int(match.group(1)) * 3600 + int(match.group(2)) * 60 + float(match.group(3)) if match else None
+    return duration, bool(re.search(r"Stream #\S+.*: Video:", out))
+
+
+def run_ffmpeg(cmd, length, report):
+    if shutil.which("nice"):
+        cmd = ["nice", "-n", "10"] + cmd  # strony czytnika mają pierwszeństwo przed przekodowaniem
+    with tempfile.TemporaryFile() as errors:
+        proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=errors, text=True)
+        timed_out = threading.Event()
+
+        def stop():
+            timed_out.set()
+            proc.kill()
+
+        timer = threading.Timer(VIDEO_CONVERT_DEADLINE, stop)
+        timer.start()
+        last = 0.0
+        try:
+            for line in proc.stdout:
+                if line.startswith("out_time_us=") and time.monotonic() - last > 2:
+                    try:
+                        done = int(line.split("=", 1)[1]) / 1_000_000
+                    except ValueError:
+                        continue
+                    last = time.monotonic()
+                    report(progress=max(0, min(99, int(done * 100 / max(length, 1)))))
+            code = proc.wait()
+        finally:
+            timer.cancel()
+        if code != 0:
+            errors.seek(0)
+            log.warning("ffmpeg zakończył się kodem %s: %s", code, errors.read()[-600:].decode("utf-8", "replace"))
+            if timed_out.is_set():
+                raise FetchError("Przekodowanie trwało za długo. Spróbuj krótszego filmu.", 504)
+            raise FetchError("Nie udało się przekodować filmu (nieobsługiwany format?).", 415)
+
+
+def video_job(key, src, referer, fmt, part):
+    """Zadanie w tle: pobranie źródła, przekodowanie, zapis gotowego pliku. Postęp zapisuje do <key>.json."""
+    status = {"state": "download", "fmt": fmt, "part": part, "got": 0, "progress": 0}
+
+    def report(**changes):
+        status.update(changes)
+        write_status(key, status)
+
+    out_tmp = video_path(f"{key}.work.{fmt}")
+    try:
+        cleanup_videos()
+        exe, _ = ffmpeg_info()
+        if not exe:
+            raise FetchError("Na serwerze brakuje programu ffmpeg (pakiet imageio-ffmpeg).", 500)
+        inputs, total = prepare_source(src, referer, part, report)
+        duration, has_video = probe_video(exe, inputs[0][0])
+        if not has_video:
+            raise FetchError("W tym pliku nie ma obrazu albo jego format nie jest obsługiwany.", 415)
+        total = total or duration
+        start = part * VIDEO_PART_SECONDS
+        if total and start >= total:
+            raise FetchError("Ten film nie ma takiej części.", 404)
+        length = min(VIDEO_PART_SECONDS, total - start) if total else VIDEO_PART_SECONDS
+        report(state="convert", progress=0, total=total, length=length)
+        cmd = [exe, "-hide_banner", "-nostdin", "-y", "-loglevel", "error"]
+        for path, offset in inputs:
+            cmd += ["-protocol_whitelist", "file", "-format_whitelist", VIDEO_INPUT_FORMATS]
+            if offset > 0.05:
+                cmd += ["-ss", f"{offset:.2f}"]
+            cmd += ["-i", path]
+        cmd += ["-t", str(VIDEO_PART_SECONDS), "-map", "0:v:0", "-map", "1:a:0?" if len(inputs) > 1 else "0:a:0?",
+                "-sn", "-dn", "-map_metadata", "-1", "-threads", "2", *encode_args(fmt),
+                "-progress", "pipe:1", "-nostats", out_tmp]
+        run_ffmpeg(cmd, length, report)
+        out = video_path(f"{key}.{fmt}")
+        os.replace(out_tmp, out)
+        report(state="done", progress=100, size=os.path.getsize(out))
+        log.info("film gotowy: %s część %s (%s, %d B)", src, part + 1, fmt, status["size"])
+    except FetchError as err:
+        log.warning("film nieudany: %s – %s", src, err.message)
+        report(state="error", message=err.message)
+    except Exception:
+        log.exception("film nieudany: %s", src)
+        report(state="error", message="Nie udało się przygotować filmu. Spróbuj ponownie albo wybierz inny format.")
+    finally:
+        for path in (out_tmp, video_path(key + ".claim")):
+            if os.path.exists(path):
+                os.remove(path)
+
+
+def start_video_job(key, src, referer, fmt, part):
+    """Uruchamia przygotowanie filmu w tle. False, gdy serwer zajmuje się już VIDEO_JOBS innymi filmami."""
+    os.makedirs(VIDEO_DIR, exist_ok=True)
+    with _video_start_lock:
+        current = read_status(key)
+        if current and current.get("state") in VIDEO_ACTIVE + ("done",):
+            return True
+        if active_video_jobs() >= VIDEO_JOBS:
+            return False
+        claim = video_path(key + ".claim")  # chroni przed startem tego samego zadania w drugim procesie Gunicorna
+        try:
+            os.close(os.open(claim, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+        except FileExistsError:
+            if time.time() - os.path.getmtime(claim) < 30:
+                return True
+            os.utime(claim)
+        write_status(key, {"state": "download", "fmt": fmt, "part": part, "got": 0, "progress": 0})
+    threading.Thread(target=video_job, args=(key, src, referer, fmt, part), daemon=True).start()
+    return True
+
+
+def mmss(seconds):
+    seconds = int(seconds or 0)
+    hours, rest = divmod(seconds, 3600)
+    return f"{hours}:{rest // 60:02d}:{rest % 60:02d}" if hours else f"{rest // 60}:{rest % 60:02d}"
+
+
+def megabytes(size):
+    return f"{(size or 0) / 1_000_000:.1f} MB".replace(".", ",")
 
 
 # ---------- Szablony ----------
@@ -814,7 +1389,7 @@ TEMPLATES = {
 <meta name="viewport" content="width=device-width">
 <title>{% block title %}Szukaj{% endblock %}</title>
 <style>{{ style }}</style>
-</head>
+{% block head %}{% endblock %}</head>
 <body>
 {% block body %}{% endblock %}
 </body>
@@ -854,7 +1429,8 @@ TEMPLATES = {
 {% block body %}{% include "_nav.html" %}<div class="w">
 <h1>{{ title }}</h1>
 <p class="m">{{ host }}{% if pages > 1 %} &middot; strona {{ page }} z {{ pages }}{% endif %}</p>
-{% for it in items %}{% if it.kind == "item" %}<div class="it">{% if it.img and images %}<img src="{{ url_for('image', u=it.img, r=site, t=1) }}" alt="">{% endif %}<a{% if it.img and images %} class="n"{% endif %} href="{{ url_for('read', url=it.href, q=q, rp=rp) }}">{{ it.text }}</a></div>
+{% if page == 1 %}{% for v in videos %}<a class="b" href="{{ url_for('video', u=v, r=original, t=title, q=q, rp=rp) }}">Film{% if videos|length > 1 %} {{ loop.index }}{% endif %}: obejrzyj na telefonie</a>
+{% endfor %}{% endif %}{% for it in items %}{% if it.kind == "item" %}<div class="it">{% if it.img and images %}<img src="{{ url_for('image', u=it.img, r=site, t=1) }}" alt="">{% endif %}<a{% if it.img and images %} class="n"{% endif %} href="{{ url_for('read', url=it.href, q=q, rp=rp) }}">{{ it.text }}</a></div>
 {% elif it.kind == "img" %}{% if images %}<div class="ph"><img src="{{ url_for('image', u=it.href, r=site) }}" alt="{{ it.text or 'obrazek' }}"></div>
 {% endif %}{% elif it.kind == "h" %}<h2>{{ it.text }}</h2>
 {% else %}<p>{{ it.text }}</p>
@@ -862,6 +1438,36 @@ TEMPLATES = {
 {% endif %}{% if page > 1 %}<a class="b" href="{{ url_for('read', url=url, q=q, rp=rp, page=page - 1) }}">&laquo; Wstecz</a>
 {% endif %}</div>
 {% include "_nav.html" %}<div class="f"><a href="{{ original }}">[Oryginał]</a>{% if has_images %} &middot; <a href="{{ url_for('toggle_images', wl=0 if images else 1, next=request.full_path) }}">Obrazki: {{ "wyłącz" if images else "włącz" }}</a>{% endif %}</div>
+{% endblock %}
+""",
+    "film.html": """{% extends "base.html" %}
+{% block title %}{{ title }}{% endblock %}
+{% block head %}{% if refresh %}<meta http-equiv="refresh" content="{{ refresh }};url={{ here }}">{% endif %}{% endblock %}
+{% block body %}<div class="bar">{% if referer %}<a href="{{ url_for('read', url=referer, q=q, rp=rp) }}">&laquo; Wróć do strony</a> | {% elif q %}<a href="{{ url_for('search', q=q, p=rp) }}">&laquo; Wróć do wyników</a> | {% endif %}<a href="{{ url_for('home') }}">Nowe szukanie</a></div>
+<div class="w">
+<h1>{{ title }}</h1>
+<p class="m">{{ host }}{% if status and status.total %} &middot; {{ status.total|mmss }}{% endif %}{% if part > 1 or (status and status.total and status.total > part_seconds) %} &middot; część {{ part }}{% if status and status.total %} z {{ (status.total / part_seconds)|round(0, 'ceil')|int }}{% endif %}{% endif %}</p>
+{% if mode == "choose" %}{% for f, info in formats.items() %}<a class="b" href="{{ link(f=f) }}">{{ info.name }}{% if ready[f] %} &ndash; gotowy{% endif %}</a>
+<p class="m">{{ info.about }}</p>
+{% endfor %}<p>Serwer pobiera film i zmniejsza go dla telefonu. Krótki film jest gotowy po chwili, długi po kilku minutach. Gotowy plik otworzy odtwarzacz telefonu. Długie filmy są dzielone na części po {{ part_minutes }} min.</p>
+<p class="m">Zacznij od MP4. Gdy telefon go nie odtworzy, wybierz 3GP.</p>
+{% elif mode == "busy" %}<p>Serwer przygotowuje teraz inny film. Ten zacznie się zaraz po nim &ndash; strona odświeża się sama.</p>
+<a class="b" href="{{ here }}">Odśwież</a>
+{% elif mode == "work" %}<p><b>Przygotowuję film {{ fmt_name }}&hellip;</b></p>
+<p>{% if status.state == "download" %}Pobieranie: {{ status.got|mb }}{% if status.progress %} ({{ status.progress }}%){% endif %}{% else %}Zmniejszanie dla telefonu: {{ status.progress }}%{% endif %}</p>
+<a class="b" href="{{ here }}">Odśwież</a>
+<p class="m">Strona odświeża się sama co {{ refresh }} s. Możesz też wyjść i wrócić tu później.</p>
+{% elif mode == "done" %}<a class="b" href="{{ url_for('video_file', key=key, ext=fmt) }}">Odtwórz film ({{ fmt_name }}, {{ status.size|mb }})</a>
+<p class="m">{% if status.length %}Czas: {{ status.length|mmss }}. {% endif %}Plik otworzy odtwarzacz telefonu.</p>
+<p><a href="{{ url_for('video_file', key=key, ext=fmt, d=1) }}">Zapisz w pamięci telefonu</a></p>
+{% if status.total and status.total > part * part_seconds %}<a class="b" href="{{ link(f=fmt, c=part + 1) }}">Następna część ({{ part + 1 }}) &raquo;</a>
+{% endif %}{% if part > 1 %}<a class="b" href="{{ link(f=fmt, c=part - 1) }}">&laquo; Poprzednia część</a>
+{% endif %}<p><a href="{{ link(f=other, c=part) }}">Nie działa? Spróbuj {{ formats[other].name }}</a></p>
+{% else %}<div class="e">{{ status.message }}</div>
+<a class="b" href="{{ link(f=fmt, c=part, znowu=1) }}">Spróbuj ponownie</a>
+<p><a href="{{ link(f=other, c=part) }}">Spróbuj {{ formats[other].name }}</a></p>
+{% endif %}</div>
+<div class="f"><a href="{{ src }}">[Oryginał filmu]</a></div>
 {% endblock %}
 """,
     "error.html": """{% extends "base.html" %}
@@ -895,6 +1501,8 @@ def page_items(blocks):
 app = Flask(__name__)
 app.jinja_loader = DictLoader(TEMPLATES)
 app.jinja_env.globals["style"] = STYLE
+app.jinja_env.filters["mmss"] = mmss
+app.jinja_env.filters["mb"] = megabytes
 
 
 @app.route("/")
@@ -936,6 +1544,8 @@ def read():
         return render_template("error.html", message="Adres jest za długi.", original=None, **common), 400
     try:
         article = get_article(url)
+    except VideoLink as found:
+        return redirect(url_for("video", u=found.url, q=query or None, rp=results_page))
     except FetchError as err:
         return render_template("error.html", message=err.message, original=url, retry=request.full_path, **common), err.status
     pages = article["pages"]
@@ -944,7 +1554,64 @@ def read():
     return render_template(
         "read.html", title=article["title"], url=url, original=article["url"], host=host_of(article["url"]),
         items=page_items(pages[page - 1]), page=page, pages=len(pages), images=images_enabled(),
-        has_images=any(b[0] in ("img", "thumb") for p in pages for b in p), site=f"{parts.scheme}://{parts.netloc}", **common,
+        has_images=any(b[0] in ("img", "thumb") for p in pages for b in p), site=f"{parts.scheme}://{parts.netloc}",
+        videos=article.get("videos", []), **common,
+    )
+
+
+@app.route("/film")
+def video():
+    """Film dla telefonu: wybór formatu, postęp przygotowania i link do gotowego pliku."""
+    src = (request.args.get("u") or "").strip()
+    referer = (request.args.get("r") or "").strip()
+    query = squash(request.args.get("q", ""))[:200]
+    results_page = clamp_int(request.args.get("rp"), 1, 1, MAX_RESULT_PAGES)
+    fmt = request.args.get("f")
+    part = clamp_int(request.args.get("c"), 1, 1, VIDEO_MAX_PARTS)
+    common = {"q": query, "rp": results_page}
+    if not re.match(r"^https?://", src, re.I) or len(src) > MAX_URL_LENGTH:
+        return render_template("error.html", message="Nieprawidłowy adres filmu.", original=None, **common), 400
+    if not re.match(r"^https?://", referer, re.I) or len(referer) > MAX_URL_LENGTH:
+        referer = ""
+    title = squash(request.args.get("t", ""))[:200] or "Film"
+
+    def link(**changes):
+        args = {"u": src, "r": referer or None, "t": title if title != "Film" else None, "q": query or None, "rp": results_page}
+        args.update(changes)
+        return url_for("video", **args)
+
+    page = dict(src=src, referer=referer, title=title, host=host_of(src), part=part, formats=VIDEO_FORMATS,
+                part_seconds=VIDEO_PART_SECONDS, part_minutes=VIDEO_PART_SECONDS // 60, link=link, status=None, **common)
+    os.makedirs(VIDEO_DIR, exist_ok=True)
+    if fmt not in VIDEO_FORMATS:
+        ready = {f: (read_status(video_key(src, f, part - 1)) or {}).get("state") == "done" for f in VIDEO_FORMATS}
+        return render_template("film.html", mode="choose", ready=ready, **page)
+    key = video_key(src, fmt, part - 1)
+    here = link(f=fmt, c=part)
+    page.update(fmt=fmt, fmt_name=VIDEO_FORMATS[fmt]["name"], other="3gp" if fmt == "mp4" else "mp4", key=key, here=here)
+    status = read_status(key)
+    if status is None or (status.get("state") == "error" and request.args.get("znowu")):
+        if not start_video_job(key, src, referer, fmt, part - 1):
+            return render_template("film.html", mode="busy", refresh=15, **page)
+        status = read_status(key) or {"state": "download", "got": 0, "progress": 0}
+    page["status"] = status
+    state = status.get("state")
+    if state in VIDEO_ACTIVE:
+        return render_template("film.html", mode="work", refresh=8, **page)
+    return render_template("film.html", mode="done" if state == "done" else "error", **page)
+
+
+@app.route("/film/<key>.<ext>")
+def video_file(key, ext):
+    """Gotowy plik filmu (z obsługą wznawiania pobierania – nagłówek Range)."""
+    if not re.fullmatch(r"[0-9a-f]{32}", key) or ext not in VIDEO_FORMATS:
+        abort(404)
+    path = video_path(f"{key}.{ext}")
+    if not os.path.isfile(path):
+        abort(404)
+    return send_file(
+        path, mimetype=VIDEO_FORMATS[ext]["mime"], conditional=True, as_attachment=request.args.get("d") == "1",
+        download_name=f"film-{key[:6]}.{ext}", max_age=VIDEO_KEEP_SECONDS,
     )
 
 

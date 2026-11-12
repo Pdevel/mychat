@@ -8,6 +8,7 @@ nawigacja samymi strzałkami.
 - `/search?q=…` – wyniki z DuckDuckGo Lite (region polski), 10 na stronę, z linkiem [Oryginał]
 - `/read?url=…` – czytnik: sam tekst strony (tytuł, nagłówki, akapity), podzielony na strony po ok. 3000 znaków
 - `/img?u=…` – obrazki z artykułów zmniejszone dla telefonu (szczegóły niżej)
+- `/film?u=…` – filmy ze stron przekodowane dla telefonu (szczegóły niżej)
 
 ## Obrazki dla Nokii 235 4G / 3210 4G
 
@@ -23,6 +24,27 @@ Serwer pobiera obrazek, zmniejsza go do 220 px szerokości (ekran ma 240 px), za
 
 Strojenie zmiennymi środowiskowymi: `IMAGE_MAX_WIDTH` (220), `IMAGE_MAX_HEIGHT` (400), `IMAGE_QUALITY` (45),
 `THUMB_MAX_SIZE` (80).
+
+## Filmy dla Nokii 235 4G / 3210 4G
+
+Czytnik wykrywa filmy na stronie (`<video>`, `og:video`, JSON-LD, linki do plików .mp4/.webm/.m3u8…, adresy w skryptach
+odtwarzaczy, odtwarzacz Kaltura) i pokazuje przycisk „Film: obejrzyj na telefonie”. Link prosto do pliku filmu
+otwiera od razu stronę filmu. Serwer pobiera film (zwykły plik albo strumień HLS – wtedy najniższą jakość, która
+wypełni ekran), przekodowuje go ffmpegiem i podaje gotowy plik, który otwiera odtwarzacz telefonu:
+
+- **MP4** – H.264 Baseline (poziom 1.3), do 320×240 (pionowe do 240×320), 15 kl./s, AAC mono – ok. 2 MB na minutę,
+- **3GP** – H.263 176×144, dźwięk AMR – ok. 1 MB na minutę; najbardziej zgodny ze starszymi odtwarzaczami.
+
+Długie filmy są dzielone na części po 15 minut. Strona postępu odświeża się sama. Pliki można pobierać ze wznawianiem
+(Range), a gotowe filmy znikają po 3 godzinach. ffmpeg instaluje pip z pakietu `imageio-ffmpeg`, więc nie trzeba niczego
+doinstalowywać na Render.
+
+Nie zadziała dla YouTube, filmów z DRM/szyfrowaniem i stron za zabezpieczeniem Cloudflare („Just a moment…”).
+Na darmowym planie Render (słaby procesor) przygotowanie 10-minutowego filmu trwa kilka minut, a naraz
+przygotowywany jest jeden film (kolejne czekają).
+
+Strojenie: `VIDEO_PART_MINUTES` (15), `VIDEO_SOURCE_MAX_MB` (400), `VIDEO_CONVERT_MINUTES` (40), `VIDEO_JOBS` (1),
+`VIDEO_DISK_MB` (1500), `VIDEO_DIR`.
 
 ## Wdrożenie na Render.com
 
