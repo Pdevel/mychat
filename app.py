@@ -2191,15 +2191,6 @@ SCRIPT_PLAYER = re.compile(
     re.I,
 )
 VIMEO_PLAYER = re.compile(r"^https://player\.vimeo\.com/video/\d+", re.I)
-EMBED_HOSTS = re.compile(  # popularne serwisy hostujące filmy przez strony embed/player (tylko nazwa serwera)
-    r"//(?:[a-z0-9-]+\.)*(?:"
-    r"vidsrc\.(to|me|net|xyz|nl|pro|in|cc)|filemoon\.(sx|to|in|cc)|vidplay\.|doodstream\.|"
-    r"streamtape\.|upstream\.|mixdrop\.|fembed\.|gofile\.io|cloudvideo\.|vidlox\.|"
-    r"streamhub\.|vidhide\.|voe\.sx|vtbe\.|turbobit\.|rapidvideo\.|videovard\.|"
-    r"streamvid\.|filelions\.|vidmoly\.|dropload\.|vidhd\.|streamwish\.|filelion\.|"
-    r"embedsito\.|moonplayer\.|vidy\.st|supervideo\.|highvid\.|tubeload\.|"
-    r"multiembed\.|vidsrc2\.|embedrise\.|nontonfilm\.|smashy\.stream)", re.I
-)
 KNOWN_PLAYER_PAGE = re.compile(  # strony, z których film bierzemy przez publiczne API odtwarzacza
     r"^https?://(?:www\.)?(?:player\.vimeo\.com/video/|"
     r"(?:cdn\.jwplayer\.com|content\.jwplatform\.com)/(?:players|previews)/|fast\.wistia\.(?:net|com)/embed/)", re.I
@@ -2361,9 +2352,7 @@ def first_image_url(value):
 
 
 VIDEO_IN_HTML = re.compile(r"\.(?:mp4|m4v|webm|m3u8|mov|3gp|mkv|avi|flv|mpe?g)\b|<video|og:video|twitter:player|VideoObject|"
-                           r"player\.vimeo|jwplayer|jwplatform|wistia|kaltura|<iframe|"
-                           r"vidsrc\.|filemoon\.|doodstream\.|streamtape\.|vidplay\.|vidhide\.|streamwish\.|"
-                           r"vidy\.st|multiembed\.|furniturebeast\.", re.I)
+                           r"player\.vimeo|jwplayer|jwplatform|wistia|kaltura|<iframe", re.I)
 
 
 def find_videos(soup, base_url, deep=False, posters=None, raw=None):
@@ -2457,21 +2446,12 @@ def find_videos(soup, base_url, deep=False, posters=None, raw=None):
         wistia = re.search(r"wistia_async_([a-z0-9]{10})", classes)
         if wistia:
             add(f"https://fast.wistia.net/embed/iframe/{wistia.group(1)}", players)
-    for link in soup.find_all("a", href=True):
-        href = link.get("href", "")
-        if has_file:
-            add(href, direct, need_ext=True)
-        if not deep and EMBED_HOSTS.search(href):
-            add(href, players)
-    if not deep:  # przyciski/divy z adresem embed w atrybucie data-* (np. wmovies: <button data-src="…vidsrc…">)
-        for tag in soup.find_all(True):
-            for name, value in tag.attrs.items():
-                if isinstance(value, str) and name.startswith("data-") and EMBED_HOSTS.search(value):
-                    add(value, players)
+    for link in soup.find_all("a", href=True) if has_file else []:
+        add(link["href"], direct, need_ext=True)
     frame_srcs = list(filter(None, (f.get("src") or f.get("data-src") or f.get("data-lazy-src")
                                     for f in soup.find_all("iframe"))))
     for value in frame_srcs:
-        if deep or PLAYER_HINT.search(value) or EMBED_HOSTS.search(value):
+        if deep or PLAYER_HINT.search(value):
             add(value, players)
     if deep or not direct:
         scripts = "\n".join(s.string or "" for s in soup.find_all("script"))
@@ -2486,11 +2466,6 @@ def find_videos(soup, base_url, deep=False, posters=None, raw=None):
             del direct[before + 1:]  # w skryptach to zwykle ten sam film w kilku jakościach – w czytniku wystarczy jeden
         for match in SCRIPT_PLAYER.finditer(scripts):  # JW Player, Wistia, Vimeo wstawiane skryptem
             add(match.group(), players)
-        # adresy serwisów wideo w zmiennych JS (np. var Servers = {"embedru":"https://vidy.st/…"})
-        for match in re.finditer(r'https?://[A-Za-z0-9._~:/?#\[\]@!$&\'()*+,;%=\-]{8,}', scripts):
-            url = match.group().rstrip('",\'\\')
-            if EMBED_HOSTS.search(url):
-                add(url, players)
         page = raw if raw is not None else str(soup)
         partner, entry = (KALTURA_PARTNER.search(page), KALTURA_ENTRY.search(page)) if "kaltura" in page.lower() else (None, None)
         if partner and entry:  # Kaltura (m.in. uczelniane serwisy wideo)
@@ -2970,6 +2945,39 @@ def run_ffmpeg(cmd, length, report):
             raise FetchError("Nie udało się przekodować filmu (nieobsługiwany format?).", 415)
 
 
+# Martwe kafelki: odtwarzacze, z których nie dało się wziąć filmu (chroniony strumień, film tylko przez JavaScript).
+# Zapamiętujemy adres, a gdy z jednego serwera odtwarzaczy kolejne adresy też zawodzą (i żaden się nie udał) – cały
+# serwer. Takich kafelków czytnik już nie pokazuje.
+player_memory = DiskCache("odtwarzacze", ttl=14 * 24 * 3600, max_files=3000)
+DEAD_HOST_FAILS = 3
+
+
+def player_host(url):
+    host = (urlparse(url).hostname or "").lower()
+    return host[4:] if host.startswith("www.") else host
+
+
+def note_player(src, ok):
+    """Wynik pierwszej części filmu z adresu src: ok=True – film się udał, False – nic do wzięcia (błąd 415)."""
+    key = "u:" + player_key(src)
+    if not ok and player_memory.get(key):
+        return  # ten adres już jest policzony
+    player_memory.set(key, not ok)
+    if is_video_url(src) or is_audio_url(src):
+        return  # plik podany wprost – nie świadczy o całym serwerze
+    fails, oks = player_memory.get("h:" + player_host(src)) or (0, 0)
+    player_memory.set("h:" + player_host(src), (fails + (not ok), oks + bool(ok)))
+
+
+def dead_player(url):
+    if player_memory.get("u:" + player_key(url)):
+        return True
+    if is_video_url(url) or is_audio_url(url):
+        return False
+    fails, oks = player_memory.get("h:" + player_host(url)) or (0, 0)
+    return oks == 0 and fails >= DEAD_HOST_FAILS
+
+
 def video_job(key, src, referer, fmt, part, auto=False):
     """Zadanie w tle: pobranie źródła, przekodowanie, zapis gotowego pliku. Postęp zapisuje do <key>.json.
     auto=True: następna część przygotowywana z wyprzedzeniem – ustępuje miejsca filmom, które ktoś właśnie wybrał."""
@@ -3016,6 +3024,8 @@ def video_job(key, src, referer, fmt, part, auto=False):
         out = video_path(f"{key}.{fmt}")
         os.replace(out_tmp, out)
         report(state="done", progress=100, size=os.path.getsize(out))
+        if part == 0:
+            note_player(src, True)
         log.info("film gotowy: %s część %s (%s, %d B)", src, part + 1, fmt, status["size"])
         if not auto and total and part + 1 < part_count(total):  # następna część od razu, w tle
             start_video_job(video_key(src, fmt, part + 1), src, referer, fmt, part + 1, auto=True)
@@ -3026,6 +3036,8 @@ def video_job(key, src, referer, fmt, part, auto=False):
                 os.remove(path)  # zacznie się od nowa, gdy ktoś poprosi o tę część
     except FetchError as err:
         log.warning("film nieudany: %s – %s", src, err.message)
+        if err.status == 415 and part == 0:  # nie ma tu filmu, który dałoby się wziąć – kafelek jest martwy
+            note_player(src, False)
         status.update(state="error", message=err.message, blocked=err.blocked)
         write_status(key, status)
     except Exception:
@@ -3466,19 +3478,19 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 {% if crumbs and page == 1 %}<div class="bc">{% for name, href in crumbs %}{% if not loop.first %} / {% endif %}{% if href %}<a href="{{ url_for('read', url=href, q=q, rp=rp) }}">{{ name }}</a>{% else %}{{ name }}{% endif %}{% endfor %}</div>
 {% endif %}<h1>{{ title }}</h1>
 <p class="m">{{ site_name or host }}{% if pages > 1 %} &middot; strona {{ page }} z {{ pages }}{% endif %}</p>
-{% if page == 1 %}{% for v in videos %}{% set i = loop.index %}{% set start = url_for('read', url=url, q=q, rp=rp, wf=i) ~ '#film' ~ i %}{% set what = "nagranie" if v.audio else "film" %}<div class="v" id="film{{ i }}">{% if images and not v.audio %}<a href="{{ start }}"><img src="{{ url_for('image', u=v.url, v=1, p=v.poster, f=v.fallback, r=site) }}" alt=""></a><br>{% elif images and v.fallback %}<a href="{{ start }}"><img src="{{ url_for('image', u=v.fallback, r=site, t=1) }}" alt=""></a><br>{% endif %}
+{% if page == 1 %}{% for v in videos %}{% set i = loop.index %}{% set start = url_for('read', url=url, q=q, rp=rp, wf=i) ~ '#film' ~ i %}{% set what = "nagranie" if v.audio else "film" %}{% if not v.hide %}<div class="v" id="film{{ i }}">{% if images and not v.audio %}<a href="{{ start }}"><img src="{{ url_for('image', u=v.url, v=1, p=v.poster, f=v.fallback, r=site) }}" alt=""></a><br>{% elif images and v.fallback %}<a href="{{ start }}"><img src="{{ url_for('image', u=v.fallback, r=site, t=1) }}" alt=""></a><br>{% endif %}
 {% if film and film.index == i %}{% set f = film %}{% set again = url_for('read', url=url, q=q, rp=rp, wf=i, wfmt=f.fmt, wc=f.part, n=tick) ~ '#film' ~ i %}{% if f.mode == "work" %}<b>Przygotowuję {{ what }}{% if f.part > 1 or (f.part_total and f.part_total > 1) %}, część {{ f.part }}{% endif %}&hellip;</b><br>
 {% if f.status.state == "download" %}Pobieranie: {{ f.status.got|mb }}{% if f.status.progress %} ({{ f.status.progress }}%){% endif %}{% else %}Zmniejszanie dla telefonu: {{ f.status.progress }}%{% endif %}<br>
 <a href="{{ again }}">Odśwież</a> <span class="m">&ndash; samo co 8 s</span>
 {% elif f.mode == "busy" %}Serwer kończy inny film &ndash; {{ "to nagranie zacznie" if v.audio else "ten zacznie" }} się za chwilę.<br><a href="{{ again }}">Odśwież</a>
-{% elif f.mode == "done" %}<a href="{{ url_for('video_file', key=f.key, ext=f.fmt) }}"{% if i == 1 %} accesskey="5"{% endif %}>Odtwórz {{ what }} ({{ formats[f.fmt].name }}, {{ f.status.size|mb }})</a><br>
+{% elif f.mode == "done" %}<a href="{{ url_for('video_file', key=f.key, ext=f.fmt) }}"{% if v.n == 1 %} accesskey="5"{% endif %}>Odtwórz {{ what }} ({{ formats[f.fmt].name }}, {{ f.status.size|mb }})</a><br>
 <span class="m">{% if f.part_total and f.part_total > 1 %}Część {{ f.part }} z {{ f.part_total }} &middot; {% endif %}{{ f.status.length|mmss }}</span><br>
 {% if f.has_next %}<a href="{{ url_for('read', url=url, q=q, rp=rp, wf=i, wfmt=f.fmt, wc=f.part + 1) }}#film{{ i }}">Następna część{% if f.next_ready %} (gotowa){% endif %} &raquo;</a><br>
 {% endif %}{% if f.part > 1 %}<a href="{{ url_for('read', url=url, q=q, rp=rp, wf=i, wfmt=f.fmt, wc=f.part - 1) }}#film{{ i }}">&laquo; Poprzednia część</a><br>
 {% endif %}<span class="m"><a href="{{ url_for('video_file', key=f.key, ext=f.fmt, d=1) }}">Zapisz w telefonie</a>{% if f.other %} &middot; <a href="{{ url_for('read', url=url, q=q, rp=rp, wf=i, wfmt=f.other, wc=f.part) }}#film{{ i }}">Nie działa? {{ formats[f.other].name }}</a>{% endif %}</span>
 {% else %}{{ f.status.message }}<br>{% if f.status.blocked %}<a href="{{ original }}">Otwórz bezpośrednio w Operze</a>{% else %}<a href="{{ url_for('read', url=url, q=q, rp=rp, wf=i, wfmt=f.fmt, wc=f.part, znowu=1) }}#film{{ i }}">Spróbuj ponownie</a>{% if f.other %} &middot; <a href="{{ url_for('read', url=url, q=q, rp=rp, wf=i, wfmt=f.other, wc=f.part) }}#film{{ i }}">{{ formats[f.other].name }}</a>{% endif %}{% endif %}
-{% endif %}{% else %}<a href="{{ start }}"{% if i == 1 %} accesskey="5"{% endif %}>{% if v.audio %}Nagranie{% else %}Film{% endif %}{% if videos|length > 1 %} {{ i }}{% endif %}: {{ "posłuchaj" if v.audio else "obejrzyj" }} na telefonie</a>{% endif %}</div>
-{% endfor %}{% endif %}{% for it in items %}{% if it.kind == "item" %}<div class="it">{% if it.img and images %}<img src="{{ url_for('image', u=it.img, r=site, t=1) }}" alt="">{% endif %}<a{% if it.img and images %} class="n"{% endif %} href="{{ url_for('read', url=it.href, q=q, rp=rp) }}">{{ it.text }}</a></div>
+{% endif %}{% else %}<a href="{{ start }}"{% if v.n == 1 %} accesskey="5"{% endif %}>{% if v.audio %}Nagranie{% else %}Film{% endif %}{% if shown_videos > 1 %} {{ v.n }}{% endif %}: {{ "posłuchaj" if v.audio else "obejrzyj" }} na telefonie</a>{% endif %}</div>
+{% endif %}{% endfor %}{% endif %}{% for it in items %}{% if it.kind == "item" %}<div class="it">{% if it.img and images %}<img src="{{ url_for('image', u=it.img, r=site, t=1) }}" alt="">{% endif %}<a{% if it.img and images %} class="n"{% endif %} href="{{ url_for('read', url=it.href, q=q, rp=rp) }}">{{ it.text }}</a></div>
 {% elif it.kind == "grid" %}{% if images %}<div class="gr">{% for im in it.imgs %}<a href="{{ url_for('image', u=im.src, r=site, hq=1) }}" target="_blank"><img src="{{ url_for('image', u=im.src, r=site, t=2) }}" alt="{{ im.alt or 'obrazek' }}"></a>{% endfor %}</div>
 {% endif %}{% elif it.kind == "img" %}{% if images %}<div class="ph"><a href="{{ url_for('image', u=it.href, r=site, hq=1) }}" target="_blank"><img src="{{ url_for('image', u=it.href, r=site) }}" alt="{{ it.text or 'obrazek' }}"></a></div>
 {% endif %}{% elif it.kind == "h" %}<h2>{{ it.text }}</h2>
@@ -3780,12 +3792,18 @@ def read():
         film = video_progress(videos[chosen - 1]["url"], article["url"], fmt,
                               clamp_int(request.args.get("wc"), 1, 1, VIDEO_MAX_PARTS), retry=bool(request.args.get("znowu")))
         film["index"] = chosen
+    shown = 0
+    for number, video in enumerate(videos, 1):
+        video["hide"] = number != chosen and dead_player(video["url"])  # wybrany zostaje – pokazuje swój komunikat
+        if not video["hide"]:
+            shown += 1
+            video["n"] = shown
     return render_template(
         "read.html", title=article["title"], url=url, original=article["url"], host=host_of(article["url"]),
         items=page_items(pages[page - 1]), page=page, pages=len(pages), images=images_enabled(),
         has_images=any(b[0] in ("img", "gi", "thumb") or (b[0] == "ib" and '"img"' in b[1]) for p in pages for b in p),
         site=f"{parts.scheme}://{parts.netloc}",
-        videos=videos, film=film, formats=VIDEO_FORMATS, theme=theme_cache.get(parts.hostname or "") or article.get("theme"),
+        videos=videos, shown_videos=shown, film=film, formats=VIDEO_FORMATS, theme=theme_cache.get(parts.hostname or "") or article.get("theme"),
         tick=int(time.time()) % 100000,
         links=links_enabled(), has_links=any(b[0] in ("pl", "ib") for p in pages for b in p),
         crumbs=article.get("crumbs") or [], site_name=article.get("site_name"), bookmark_url=article["url"],
