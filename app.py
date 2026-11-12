@@ -68,6 +68,7 @@ IMAGE_QUALITY = int(os.environ.get("IMAGE_QUALITY", "45"))  # JPEG: mały plik, 
 IMAGE_MAX_BYTES = 4_000_000  # większych plików nie pobieramy
 IMAGE_MIN_SIZE = 48  # mniejsze to ikonki, flagi i piksele śledzące – na ekranie 240 px to tylko szum
 IMAGES_PER_ARTICLE = 12  # więcej obrazków to zbyt dużo danych i pracy dla telefonu i darmowego serwera
+GALLERY_MAX = 60  # obrazków z galerii (np. strony komiksu, zdjęcia z relacji) na jedną stronę serwisu
 IMAGE_WEIGHT = 600  # obrazek zajmuje na stronie czytnika tyle „znaków” z limitu ARTICLE_PAGE_CHARS
 # Miniatury na stronach z listą artykułów (np. główna serwisu): mniejsze i lżejsze niż zdjęcia w artykule.
 THUMB_MAX_SIZE = int(os.environ.get("THUMB_MAX_SIZE", "80"))  # najdłuższy bok miniatury w px (stoi obok tytułu)
@@ -654,12 +655,52 @@ def fallback_blocks(soup, base_url, skip_images=frozenset()):
 CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")  # przez nie readability (lxml) odmawia pracy
 
 
+IMAGE_FILE = re.compile(r"\.(jpe?g|png|webp|gif)$", re.I)
+
+
+def gallery_images(soup, base_url):
+    """Galeria z powiększeniem: miniatura w linku do pełnego pliku graficznego. Zwraca [(pełny_obrazek, miniatura, opis)]."""
+    found, seen = [], set()
+    for link in soup.find_all("a", href=True):
+        img = link.find("img")
+        full = urljoin(base_url, link["href"].strip())
+        if img is None or not IMAGE_FILE.search(urlparse(full).path) or urlparse(full).scheme not in ("http", "https"):
+            continue
+        if full in seen:
+            continue
+        seen.add(full)
+        found.append((full, image_source(img, base_url, check_size=False), shorten(squash(img.get("alt") or ""), 80)))
+        if len(found) >= GALLERY_MAX:
+            break
+    return found
+
+
+def apply_gallery(blocks, gallery):
+    """Obrazki z galerii: w treści podmieniamy miniatury na pełne obrazki, a brakujące (gdy galeria ma co najmniej
+    3 obrazki – np. strony komiksu) dokładamy na końcu w sekcji „Galeria”."""
+    by_thumb = {thumb: full for full, thumb, _ in gallery if thumb}
+    shown = set()
+    upgraded = []
+    for kind, text, href in blocks:
+        if kind in ("img", "thumb") and (href in by_thumb or href in {g[0] for g in gallery}):
+            href = by_thumb.get(href, href)
+            kind = "img"
+            shown.add(href)
+        upgraded.append((kind, text, href))
+    missing = [g for g in gallery if g[0] not in shown]
+    if len(gallery) >= 3 and missing:
+        upgraded.append(("h", "Galeria", None))
+        upgraded += [("img", alt, full) for full, _, alt in missing]
+    return upgraded
+
+
 def extract_article(html, url, videos=None, posters=None):
     """Zwraca (tytuł, bloki), gdzie blok to ("h" | "p", tekst, adres_linku_lub_None).
     Gdy podano listę `videos`, trafiają do niej adresy filmów ze strony."""
     html = CONTROL_CHARS.sub("", html)
     soup = BeautifulSoup(html, "lxml")
     title = node_text(soup.title) or host_of(url)
+    gallery = gallery_images(soup, url)  # przed czyszczeniem – readability wycina galerie
     if videos is not None:
         videos.extend(find_videos(soup, url, posters=posters))  # przed czyszczeniem – readability usuwa znaczniki <video>
         lead = lead_image(soup, url)
@@ -687,6 +728,8 @@ def extract_article(html, url, videos=None, posters=None):
         fallback = fallback_blocks(soup, url, skip_images=small_images)
         if sum(len(b[1]) for b in fallback if b[0] != "thumb") > readability_chars:
             blocks = fallback
+    if gallery:
+        blocks = apply_gallery(blocks, gallery)
     if blocks and blocks[0][0] == "h" and blocks[0][1] == title:
         blocks = blocks[1:]  # tytuł pokazujemy osobno
     # Zdjęcie główne serwisów informacyjnych stoi zwykle w nagłówku, poza treścią wybraną przez readability.

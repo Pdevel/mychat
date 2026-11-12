@@ -22,6 +22,8 @@ Serwer pobiera obrazek, zmniejsza go do 220 px szerokości (ekran ma 240 px), za
 - pomijane: ikonki i flagi (poniżej 48 px), piksele śledzące, SVG,
 - strony z listą artykułów (np. główna serwisu) mają małe miniatury do 80 px (ok. 2 KB) obok tytułów, najwyżej 30 na stronę
   serwisu i ok. 10 na jedną stronę czytnika,
+- galerie z powiększeniem (miniatura w linku do pełnego pliku .jpg/.png/.webp) pokazują pełne obrazy zmniejszone
+  dla telefonu; obrazki galerii pominięte przez czytnik trafiają do sekcji „Galeria” (do 60 na stronę),
 - gdy artykuł nie ma obrazka w treści, na początku pojawia się zdjęcie główne z `og:image`,
 - na dole artykułu link „Obrazki: wyłącz / włącz” (zapamiętany w ciasteczku).
 
