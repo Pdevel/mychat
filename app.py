@@ -32,6 +32,7 @@ import unicodedata
 import uuid
 import zlib
 from collections import OrderedDict
+from html import unescape
 from urllib.parse import parse_qs, quote, unquote, urljoin, urlparse
 
 import requests
@@ -3530,7 +3531,10 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 {% if crumbs and page == 1 %}<div class="bc">{% for name, href in crumbs %}{% if not loop.first %} / {% endif %}{% if href %}<a href="{{ url_for('read', url=href, q=q, rp=rp) }}">{{ name }}</a>{% else %}{{ name }}{% endif %}{% endfor %}</div>
 {% endif %}<h1>{{ title }}</h1>
 <p class="m">{{ site_name or host }}{% if pages > 1 %} &middot; strona {{ page }} z {{ pages }}{% endif %}</p>
-{% if page == 1 %}{% for v in videos %}{% set i = loop.index %}{% set start = url_for('read', url=url, q=q, rp=rp, wf=i) ~ '#film' ~ i %}{% set what = "nagranie" if v.audio else "film" %}{% if not v.hide %}<div class="v" id="film{{ i }}">{% set live = film and film.index == i and film.mode == "done" and film.fmt in ("mp4", "mp3") %}{% set file = url_for('video_file', key=film.key, ext=film.fmt) if live else "" %}{% if live and film.fmt == "mp4" %}<video src="{{ file }}" controls playsinline preload="metadata"{% if images %} poster="{{ url_for('image', u=v.url, v=1, p=v.poster, f=v.fallback, r=site) }}"{% endif %}><a href="{{ file }}">Odtwórz film</a></video><br>{% elif images and not v.audio %}<a href="{{ start }}"><img src="{{ url_for('image', u=v.url, v=1, p=v.poster, f=v.fallback, r=site) }}" alt=""></a><br>{% elif images and v.fallback %}<a href="{{ start }}"><img src="{{ url_for('image', u=v.fallback, r=site, t=1) }}" alt=""></a><br>{% endif %}{% if live and film.fmt == "mp3" %}<audio src="{{ file }}" controls preload="none"><a href="{{ file }}">Odtwórz nagranie</a></audio><br>{% endif %}
+{% if score %}<div class="ib"><b>{% if score.state == "live" %}Na żywo{% if score.status %} &middot; {{ score.status }}{% endif %}{% elif score.state == "fin" %}Koniec meczu{% else %}Przed meczem{% if score.status %} &middot; {{ score.status }}{% endif %}{% endif %}</b><br>
+{{ score.home }} &ndash; {{ score.away }}: <b>{{ score.score }}</b>{% if score.extra %} {{ score.extra }}{% endif %}<br>
+<a href="{{ url_for('read', url=score.href, q=q, rp=rp) }}">Szczegóły</a> &middot; <a href="{{ url_for('read', url=url, q=q, rp=rp, n=tick) }}">Odśwież</a> <span class="m">wg Flashscore</span></div>
+{% endif %}{% if page == 1 %}{% for v in videos %}{% set i = loop.index %}{% set start = url_for('read', url=url, q=q, rp=rp, wf=i) ~ '#film' ~ i %}{% set what = "nagranie" if v.audio else "film" %}{% if not v.hide %}<div class="v" id="film{{ i }}">{% set live = film and film.index == i and film.mode == "done" and film.fmt in ("mp4", "mp3") %}{% set file = url_for('video_file', key=film.key, ext=film.fmt) if live else "" %}{% if live and film.fmt == "mp4" %}<video src="{{ file }}" controls playsinline preload="metadata"{% if images %} poster="{{ url_for('image', u=v.url, v=1, p=v.poster, f=v.fallback, r=site) }}"{% endif %}><a href="{{ file }}">Odtwórz film</a></video><br>{% elif images and not v.audio %}<a href="{{ start }}"><img src="{{ url_for('image', u=v.url, v=1, p=v.poster, f=v.fallback, r=site) }}" alt=""></a><br>{% elif images and v.fallback %}<a href="{{ start }}"><img src="{{ url_for('image', u=v.fallback, r=site, t=1) }}" alt=""></a><br>{% endif %}{% if live and film.fmt == "mp3" %}<audio src="{{ file }}" controls preload="none"><a href="{{ file }}">Odtwórz nagranie</a></audio><br>{% endif %}
 {% if film and film.index == i %}{% set f = film %}{% set again = url_for('read', url=url, q=q, rp=rp, wf=i, wfmt=f.fmt, wc=f.part, n=tick) ~ '#film' ~ i %}{% if f.mode == "work" %}<b>Przygotowuję {{ what }}{% if f.part > 1 or (f.part_total and f.part_total > 1) %}, część {{ f.part }}{% endif %}&hellip;</b><br>
 {% if f.status.state == "download" %}Pobieranie: {{ f.status.got|mb }}{% if f.status.progress %} ({{ f.status.progress }}%){% endif %}{% else %}Zmniejszanie dla telefonu: {{ f.status.progress }}%{% endif %}<br>
 <a href="{{ again }}">Odśwież</a> <span class="m">&ndash; samo co 8 s</span>
@@ -3904,6 +3908,110 @@ def search():
     return resp
 
 
+# ---------- Wynik na żywo ----------
+# Relacje „na żywo” pokazują wynik w widżetach JavaScript (np. Statscore), których czytnik nie uruchomi. Gdy tytuł
+# strony wygląda na relację meczu („A - B … na żywo / wynik / relacja”), bierzemy wynik z m.flashscore.pl – lekkiej
+# wersji Flashscore dla telefonów (zwykły HTML z listą dzisiejszych meczów).
+LIVE_TRIGGER = re.compile(r"wynik|żywo|zywo|\blive\b|relacj|online", re.I)
+LIVE_SPORTS = (  # ścieżka na m.flashscore.pl, słowa rozpoznające dyscyplinę (w adresie, tytule, ścieżce nawigacji)
+    ("tenis/", ("tenis", "wta", "atp", "wimbledon", "roland garros", "us open", "australian open")),
+    ("siatkowka/", ("siatk", "plusliga", "volley")),
+    ("koszykowka/", ("koszyk", "nba", "euroleague", "basket")),
+    ("hokej/", ("hokej", "nhl")),
+    ("pilka-reczna/", ("reczn", "handball")),
+    ("", ("pilka", "nozna", "football", "soccer", "ekstraklasa", "liga", "uefa", "fifa", "mundial", "puchar")),
+)
+LIVE_STOPWORDS = {"na", "zywo", "live", "wynik", "wyniki", "relacja", "relacje", "online", "mecz", "meczu", "transmisja",
+                  "gdzie", "ogladac", "tv", "stream", "the", "fc", "sk", "kks", "i", "w", "o", "z"}
+FLASHSCORE = "https://m.flashscore.pl/"
+flashscore_cache = TTLCache(maxsize=12, ttl=30)
+LIVE_WAIT = 3.0  # najwyżej tyle s czekamy na Flashscore – czytnik nie może przez to zwolnić
+
+
+def live_pairs(title):
+    """Pary stron meczu z tytułu: [(słowa_gospodarzy, słowa_gości)] – po obu stronach separatora „-”, „–” albo „vs”."""
+    pairs = []
+    for match in re.finditer(r"\s(?:-|–|—|vs\.?)\s", title):
+        left = re.split(r"[:.|,;!?]", title[:match.start()])[-1]
+        right = re.split(r"[:.|,;!?]|\s(?:-|–|—)\s", title[match.end():])[0]
+        words = lambda text: [w for w in re.findall(r"[a-z0-9]{3,}", fold(text)) if w not in LIVE_STOPWORDS]
+        home, away = words(left)[-3:], words(right)[:3]
+        if home and away:
+            pairs.append((home, away))
+    return pairs
+
+
+def flashscore_matches(path):
+    """Dzisiejsze mecze z m.flashscore.pl/<path>: [{home, away, score, extra, status, state, href}]."""
+    cached = flashscore_cache.get(path)
+    if cached is not None:
+        return cached
+    _, resp = http_request(FLASHSCORE + path)
+    html = decode_html(read_body(resp, limit=1_000_000), resp)
+    start = html.find('id="score-data"')
+    matches = []
+    for chunk in re.split(r"<br\s*/?>", html[html.find(">", start) + 1:]) if start >= 0 else []:
+        link = re.search(r'<a href="(/mecz/[A-Za-z0-9]+/)" class="([a-z]+)">(.*?)</a>(.*)', chunk, re.S)
+        if not link:
+            continue
+        head = chunk[:link.start()]
+        status = re.search(r"<span[^>]*>([^<]*)</span>", head)
+        names = squash(unescape(re.sub(r"<[^>]+>", " ", re.sub(r"<span[^>]*>[^<]*</span>|<h4>.*?</h4>", " ", head, flags=re.S))))
+        home, sep, away = names.partition(" - ")
+        if not sep:
+            continue
+        matches.append({
+            "home": home.strip(), "away": away.strip(), "href": FLASHSCORE + link.group(1)[1:], "state": link.group(2),
+            "score": squash(unescape(re.sub(r"<[^>]+>", "", link.group(3)))).replace(" ", "") or "-",
+            "extra": squash(unescape(re.sub(r"<[^>]+>", "", link.group(4)))), "status": squash(status.group(1)) if status else "",
+        })
+    flashscore_cache.set(path, matches)
+    return matches
+
+
+def find_live_score(title, hints):
+    pairs = live_pairs(title)
+    if not pairs:
+        return None
+    text = fold(" ".join(hints))
+    path = next((p for p, words in LIVE_SPORTS if any(w in text for w in words)), "")
+    has = lambda tokens, name: any(re.search(rf"\b{t}\b", fold(name)) for t in tokens)
+    found = []
+    for m in flashscore_matches(path):
+        for home, away in pairs:
+            if (has(home, m["home"]) and has(away, m["away"])) or (has(home, m["away"]) and has(away, m["home"])):
+                found.append(m)
+                break
+    found.sort(key=lambda m: {"live": 0, "sched": 1, "fin": 2}.get(m["state"], 3))
+    return found[0] if found else None
+
+
+def live_score(article):
+    """Wynik meczu z relacji (albo None). Czeka na Flashscore najwyżej LIVE_WAIT s – wolniejszy wynik pojawi się
+    po odświeżeniu (zostaje w pamięci podręcznej)."""
+    title = article.get("title") or ""
+    site = fold(urlparse(article.get("url", "")).hostname or "")
+    if not LIVE_TRIGGER.search(title + " " + article.get("url", "")):
+        return None
+    if not [pair for pair in live_pairs(title) if not all(word in site for word in pair[1])]:
+        return None  # „… - Onet” to tylko nazwa serwisu w tytule, nie mecz
+    hints = [article.get("url", ""), title] + [name for name, _ in article.get("crumbs") or []]
+    box = {}
+
+    def work():
+        try:
+            box["score"] = find_live_score(title, hints)
+        except FetchError as err:
+            log.info("wynik na żywo: %s", err.message)
+        except Exception:
+            log.exception("wynik na żywo")
+
+    thread = threading.Thread(target=work, daemon=True)
+    thread.start()
+    thread.join(LIVE_WAIT)
+    return box.get("score")
+
+
 @app.route("/read")
 def read():
     url = (request.args.get("url") or "").strip()
@@ -3955,6 +4063,7 @@ def read():
         film = video_progress(videos[chosen - 1]["url"], article["url"], fmt,
                               clamp_int(request.args.get("wc"), 1, 1, VIDEO_MAX_PARTS), retry=bool(request.args.get("znowu")))
         film["index"] = chosen
+    score = live_score(article) if page == 1 and not phrase else None
     verdict = None
     if film:
         if film["mode"] == "done":
@@ -3972,7 +4081,7 @@ def read():
         items=page_items(pages[page - 1]), page=page, pages=len(pages), images=images_enabled(),
         has_images=any(b[0] in ("img", "gi", "thumb") or (b[0] == "ib" and '"img"' in b[1]) for p in pages for b in p),
         site=f"{parts.scheme}://{parts.netloc}",
-        videos=videos, shown_videos=shown, film=film, formats=VIDEO_FORMATS, theme=theme_cache.get(parts.hostname or "") or article.get("theme"),
+        videos=videos, shown_videos=shown, film=film, score=score, formats=VIDEO_FORMATS, theme=theme_cache.get(parts.hostname or "") or article.get("theme"),
         tick=int(time.time()) % 100000,
         links=links_enabled(), has_links=any(b[0] in ("pl", "ib") for p in pages for b in p),
         crumbs=article.get("crumbs") or [], site_name=article.get("site_name"), bookmark_url=article["url"],
