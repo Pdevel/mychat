@@ -60,6 +60,10 @@ IMAGE_MAX_BYTES = 4_000_000  # większych plików nie pobieramy
 IMAGE_MIN_SIZE = 48  # mniejsze to ikonki, flagi i piksele śledzące – na ekranie 240 px to tylko szum
 IMAGES_PER_ARTICLE = 12  # więcej obrazków to zbyt dużo danych i pracy dla telefonu i darmowego serwera
 IMAGE_WEIGHT = 600  # obrazek zajmuje na stronie czytnika tyle „znaków” z limitu ARTICLE_PAGE_CHARS
+# Miniatury na stronach z listą artykułów (np. główna serwisu): mniejsze i lżejsze niż zdjęcia w artykule.
+THUMB_MAX_SIZE = int(os.environ.get("THUMB_MAX_SIZE", "120"))  # najdłuższy bok miniatury w px
+THUMBS_PER_LISTING = 30
+THUMB_WEIGHT = 300  # ok. 10 miniatur na jedną stronę czytnika
 Image.MAX_IMAGE_PIXELS = 25_000_000  # ochrona przed „bombami” (ogromne wymiary w małym pliku)
 
 DDG_LITE = "https://lite.duckduckgo.com/lite/"
@@ -572,17 +576,18 @@ def is_small_image(img):
     return False
 
 
-def collect_blocks(root, base_url, with_images=False, skip_images=frozenset()):
+def collect_blocks(root, base_url, with_images=False, skip_images=frozenset(), image_kind="img", max_images=IMAGES_PER_ARTICLE):
     """Zbiera z drzewa nagłówki i akapity w kolejności występowania, bez powtarzania zagnieżdżonych.
     Blok to (rodzaj, tekst, adres_linku_lub_None); ten sam adres linkujemy tylko raz.
-    Z with_images=True dochodzą bloki ("img", opis, adres_obrazka) – najwyżej IMAGES_PER_ARTICLE."""
+    Z with_images=True dochodzą bloki (image_kind, opis, adres_obrazka) – najwyżej max_images
+    ("img" – zdjęcie w artykule, "thumb" – miniatura na stronie z listą)."""
     blocks, linked, images = [], set(), set()
     for node in root.find_all(BLOCK_TAGS + (["img"] if with_images else [])):
         if node.name == "img":
             src = image_source(node, base_url)
-            if src and src not in images and src not in skip_images and len(images) < IMAGES_PER_ARTICLE:
+            if src and src not in images and src not in skip_images and len(images) < max_images:
                 images.add(src)
-                blocks.append(("img", shorten(squash(node.get("alt") or ""), 80), src))
+                blocks.append((image_kind, shorten(squash(node.get("alt") or ""), 80), src))
             continue
         if any(parent.name in CONTAINER_TAGS for parent in node.parents):
             continue  # np. <p> wewnątrz <li> – tekst trafi już z rodzica
@@ -603,7 +608,7 @@ def collect_blocks(root, base_url, with_images=False, skip_images=frozenset()):
     return blocks
 
 
-def fallback_blocks(soup, base_url):
+def fallback_blocks(soup, base_url, skip_images=frozenset()):
     """Gdy readability zawiedzie: usuń śmieci (skrypty, menu, reklamy…) i weź tekst z <article>/<main>/<body>."""
     for tag in soup(JUNK_TAGS):
         tag.decompose()
@@ -614,8 +619,10 @@ def fallback_blocks(soup, base_url):
         if hint.strip() and JUNK_HINT.search(hint) and tag.name not in ("body", "html", "article", "main"):
             tag.decompose()
     root = soup.find("article") or soup.find("main") or soup.body or soup
-    blocks = collect_blocks(root, base_url)
-    if not blocks:  # strona bez akapitów – bierzemy linie tekstu
+    blocks = collect_blocks(
+        root, base_url, with_images=True, skip_images=skip_images, image_kind="thumb", max_images=THUMBS_PER_LISTING
+    )
+    if not [b for b in blocks if b[0] != "thumb"]:  # strona bez akapitów – bierzemy linie tekstu
         blocks = [("p", line, None) for line in (squash(x) for x in root.get_text("\n").split("\n")) if len(line) > 1]
     return blocks
 
@@ -644,17 +651,17 @@ def extract_article(html, url):
     # Gdy readability znalazła mało tekstu, to zwykle strona z listą artykułów (np. główna serwisu): readability wycina
     # bloki gęste od linków, czyli właśnie tytuły. Wtedy bierzemy całą treść strony (bez menu i stopki) z tytułami-linkami.
     # Artykuły i Wikipedia mają w readability tysiące znaków – zostają przy niej (bez list „czytaj też”).
-    # Strony z listą zostają bez obrazków: dziesiątki miniatur to za dużo dla telefonu i darmowego serwera.
+    # Strony z listą dostają małe miniatury (THUMB_MAX_SIZE), żeby dziesiątki obrazków nie przeciążyły telefonu.
     readability_chars = sum(len(b[1]) for b in blocks if b[0] != "img")
     if readability_chars < 1500:
-        fallback = fallback_blocks(soup, url)
-        if sum(len(b[1]) for b in fallback) > readability_chars:
+        fallback = fallback_blocks(soup, url, skip_images=small_images)
+        if sum(len(b[1]) for b in fallback if b[0] != "thumb") > readability_chars:
             blocks = fallback
     if blocks and blocks[0][0] == "h" and blocks[0][1] == title:
         blocks = blocks[1:]  # tytuł pokazujemy osobno
     # Zdjęcie główne serwisów informacyjnych stoi zwykle w nagłówku, poza treścią wybraną przez readability.
     # Strony podają je w znaczniku og:image – dokładamy je na początek, gdy w treści artykułu nie ma żadnego obrazka.
-    if blocks and blocks[0][2] is None and not any(b[0] == "img" for b in blocks) and readability_chars >= 1500:
+    if blocks and blocks[0][2] is None and not any(b[0] in ("img", "thumb") for b in blocks) and readability_chars >= 1500:
         lead = lead_image(soup, url)
         if lead:
             blocks.insert(0, ("img", lead[1], lead[0]))
@@ -694,11 +701,13 @@ def split_long(text, limit):
 def paginate(blocks, budget):
     """Rozkłada bloki na strony po ~budget znaków; nagłówek nie zostaje sam na końcu strony."""
     pages, size = [[]], 0
-    weight = lambda block: IMAGE_WEIGHT if block[0] == "img" else len(block[1])
+    weights = {"img": IMAGE_WEIGHT, "thumb": THUMB_WEIGHT}
+    weight = lambda block: weights.get(block[0], len(block[1]))
     for kind, text, href in blocks:
-        pieces = [text] if kind == "img" else split_long(text, budget)
+        is_image = kind in weights
+        pieces = [text] if is_image else split_long(text, budget)
         for number, piece in enumerate(pieces):
-            block = (kind, piece, href if number == 0 or kind == "img" else None)
+            block = (kind, piece, href if number == 0 or is_image else None)
             if size and size + weight(block) > budget:
                 carry = [pages[-1].pop()] if pages[-1] and pages[-1][-1][0] == "h" else []
                 pages.append(carry)
@@ -731,7 +740,7 @@ def get_article(url):
         raise FetchError("Nie udało się wydobyć tekstu z tej strony. Otwórz [Oryginał].", 422)
     truncated, total, kept = False, 0, []
     for block in blocks:
-        total += len(block[1]) if block[0] != "img" else 0
+        total += len(block[1]) if block[0] not in ("img", "thumb") else 0
         if total > ARTICLE_MAX_CHARS:
             truncated = True
             break
@@ -744,14 +753,14 @@ def get_article(url):
 
 
 # ---------- Obrazki dopasowane do telefonu ----------
-def shrink_image(raw):
+def shrink_image(raw, max_width=IMAGE_MAX_WIDTH, max_height=IMAGE_MAX_HEIGHT):
     """Zmniejsza obrazek do ekranu telefonu i zapisuje jako lekki JPEG (bez przezroczystości i metadanych).
     Zwraca None dla ikonek/pikseli śledzących i plików, których nie da się odczytać."""
     try:
         with Image.open(io.BytesIO(raw)) as source:
             if source.width < IMAGE_MIN_SIZE or source.height < IMAGE_MIN_SIZE:
                 return None
-            source.draft("RGB", (IMAGE_MAX_WIDTH * 2, IMAGE_MAX_HEIGHT * 2))  # JPEG: dekodowanie od razu w mniejszej skali
+            source.draft("RGB", (max_width * 2, max_height * 2))  # JPEG: dekodowanie od razu w mniejszej skali
             image = ImageOps.exif_transpose(source)  # zdjęcia z telefonów bywają obrócone w metadanych
             if image.mode in ("RGBA", "LA") or (image.mode == "P" and "transparency" in image.info):
                 rgba = image.convert("RGBA")
@@ -759,7 +768,7 @@ def shrink_image(raw):
                 image.paste(rgba, mask=rgba.getchannel("A"))  # przezroczystość na białym tle
             else:
                 image = image.convert("RGB")
-            image.thumbnail((IMAGE_MAX_WIDTH, IMAGE_MAX_HEIGHT), Image.Resampling.LANCZOS)
+            image.thumbnail((max_width, max_height), Image.Resampling.LANCZOS)
             out = io.BytesIO()
             image.save(out, "JPEG", quality=IMAGE_QUALITY, optimize=True, progressive=False)  # zwykły JPEG – najlżejszy do dekodowania
             return out.getvalue()
@@ -815,7 +824,7 @@ TEMPLATES = {
 {% block body %}{% include "_nav.html" %}
 <h2>{{ title }}</h2>
 {% if pages > 1 %}<p>Strona {{ page }} z {{ pages }}</p>
-{% endif %}{% for kind, text, href in blocks %}{% if kind == "img" %}{% if images %}<p><img src="{{ url_for('image', u=href, r=site) }}" alt="{{ text or 'obrazek' }}"></p>
+{% endif %}{% for kind, text, href in blocks %}{% if kind in ("img", "thumb") %}{% if images %}<p><img src="{{ url_for('image', u=href, r=site, t=1 if kind == 'thumb' else None) }}" alt="{{ text or 'obrazek' }}"></p>
 {% endif %}{% elif href %}{% set link %}<a href="{{ url_for('read', url=href, q=q, rp=rp) }}">{{ text }}</a>{% endset %}{% else %}{% set link = text %}{% endif %}{% if kind == "h" %}<h3>{{ link }}</h3>
 {% else %}<p>{{ link }}</p>
 {% endif %}{% endfor %}<p>{% if page < pages %}<a href="{{ url_for('read', url=url, q=q, rp=rp, page=page + 1) }}">Dalej &raquo;</a> ({{ page }}/{{ pages }})<br>{% endif %}
@@ -883,7 +892,7 @@ def read():
     return render_template(
         "read.html", title=article["title"], url=url, original=article["url"],
         blocks=pages[page - 1], page=page, pages=len(pages), images=images_enabled(),
-        has_images=any(b[0] == "img" for p in pages for b in p), site=f"{parts.scheme}://{parts.netloc}", **common,
+        has_images=any(b[0] in ("img", "thumb") for p in pages for b in p), site=f"{parts.scheme}://{parts.netloc}", **common,
     )
 
 
@@ -892,9 +901,10 @@ def image():
     """Obrazek z artykułu zmniejszony dla telefonu. r = adres serwisu (Referer – część serwerów obrazków go wymaga)."""
     url = (request.args.get("u") or "").strip()
     referer = (request.args.get("r") or "").strip()
+    thumb = request.args.get("t") == "1"  # miniatura ze strony z listą artykułów
     if not re.match(r"^https?://", url, re.I) or len(url) > MAX_URL_LENGTH:
         return Response("", status=400)
-    data = image_cache.get(url)
+    data = image_cache.get((url, thumb))
     if data is None:
         headers = {"Accept": "image/avif,image/webp,image/jpeg,image/png,image/*;q=0.8"}
         if re.match(r"^https?://[^/\s]+$", referer):
@@ -904,12 +914,13 @@ def image():
             if resp.status_code >= 400 or not resp.headers.get("Content-Type", "").lower().startswith("image/"):
                 resp.close()
                 return Response("", status=404)
-            data = shrink_image(read_body(resp, limit=IMAGE_MAX_BYTES))
+            size = (THUMB_MAX_SIZE, THUMB_MAX_SIZE) if thumb else (IMAGE_MAX_WIDTH, IMAGE_MAX_HEIGHT)
+            data = shrink_image(read_body(resp, limit=IMAGE_MAX_BYTES), *size)
         except FetchError as err:
             return Response("", status=err.status)
         if data is None:
             return Response("", status=404)
-        image_cache.set(url, data)
+        image_cache.set((url, thumb), data)
     return Response(data, mimetype="image/jpeg", headers={"Cache-Control": "public, max-age=86400"})
 
 

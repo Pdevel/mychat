@@ -14,11 +14,14 @@ Serwer pobiera obrazek, zmniejsza go do 220 px szerokości (ekran ma 240 px), za
 (jakość 45, bez metadanych, przezroczystość na białym tle) i dopiero taki wysyła. Typowe zdjęcie waży 5–10 KB.
 
 - najwyżej 12 obrazków na artykuł i ok. 5 na jedną stronę czytnika,
-- pomijane: ikonki i flagi (poniżej 48 px), piksele śledzące, SVG; strony z listą artykułów są bez miniatur,
+- pomijane: ikonki i flagi (poniżej 48 px), piksele śledzące, SVG,
+- strony z listą artykułów (np. główna serwisu) mają małe miniatury do 120 px (ok. 2 KB), najwyżej 30 na stronę
+  serwisu i ok. 10 na jedną stronę czytnika,
 - gdy artykuł nie ma obrazka w treści, na początku pojawia się zdjęcie główne z `og:image`,
 - na dole artykułu link „Obrazki: wyłącz / włącz” (zapamiętany w ciasteczku).
 
-Strojenie zmiennymi środowiskowymi: `IMAGE_MAX_WIDTH` (220), `IMAGE_MAX_HEIGHT` (400), `IMAGE_QUALITY` (45).
+Strojenie zmiennymi środowiskowymi: `IMAGE_MAX_WIDTH` (220), `IMAGE_MAX_HEIGHT` (400), `IMAGE_QUALITY` (45),
+`THUMB_MAX_SIZE` (120).
 
 ## Wdrożenie na Render.com
 
