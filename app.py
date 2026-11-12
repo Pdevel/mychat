@@ -3917,6 +3917,19 @@ WEATHER_CODES = {
     75: "intensywny śnieg", 77: "ziarnisty śnieg", 80: "przelotny deszcz", 81: "przelotny deszcz", 82: "gwałtowna ulewa",
     85: "przelotny śnieg", 86: "przelotny śnieg", 95: "burza", 96: "burza z gradem", 99: "burza z gradem",
 }
+WTTR_CODES = {  # kody pogody wttr.in (WWO) – jego prognoza godzinowa nie ma opisów po polsku
+    113: "bezchmurnie", 116: "częściowe zachmurzenie", 119: "pochmurno", 122: "całkowite zachmurzenie", 143: "zamglenie",
+    176: "miejscami przelotny deszcz", 179: "miejscami śnieg", 182: "miejscami deszcz ze śniegiem",
+    185: "miejscami marznąca mżawka", 200: "miejscami burze", 227: "zamieć śnieżna", 230: "zamieć", 248: "mgła",
+    260: "marznąca mgła", 263: "miejscami mżawka", 266: "mżawka", 281: "marznąca mżawka", 284: "silna marznąca mżawka",
+    293: "miejscami słaby deszcz", 296: "słaby deszcz", 299: "okresami deszcz", 302: "deszcz", 305: "okresami ulewa",
+    308: "ulewa", 311: "słaby marznący deszcz", 314: "marznący deszcz", 317: "słaby deszcz ze śniegiem",
+    320: "deszcz ze śniegiem", 323: "miejscami słaby śnieg", 326: "słaby śnieg", 329: "miejscami śnieg", 332: "śnieg",
+    335: "miejscami intensywny śnieg", 338: "intensywny śnieg", 350: "grad", 353: "przelotny słaby deszcz",
+    356: "przelotny deszcz", 359: "przelotna ulewa", 362: "przelotny deszcz ze śniegiem", 365: "przelotny deszcz ze śniegiem",
+    368: "przelotny słaby śnieg", 371: "przelotny śnieg", 374: "przelotny grad", 377: "przelotny grad",
+    386: "burza z deszczem", 389: "burza z ulewą", 392: "burza ze śniegiem", 395: "burza śnieżna",
+}
 CURRENCIES = ("EUR", "USD", "GBP", "CHF")
 DAY_NAMES = ("pon.", "wt.", "śr.", "czw.", "pt.", "sob.", "niedz.")
 weather_cache = DiskCache("pogoda", ttl=1800, max_files=200)
@@ -3978,7 +3991,9 @@ def fetch_weather_wttr(city):
     try:
         data = read_json("https://wttr.in/" + quote(city) + "?format=j1&lang=pl")
         now = data["current_condition"][0]
-        desc = lambda item: ((item.get("lang_pl") or item.get("weatherDesc") or [{}])[0].get("value") or "").lower()
+        def desc(item):
+            code = int(item.get("weatherCode") or 0)
+            return WTTR_CODES.get(code) or ((item.get("lang_pl") or item.get("weatherDesc") or [{}])[0].get("value") or "").lower()
         return {
             "city": city, "temp": int(now["temp_C"]), "desc": desc(now),
             "days": [{"label": day_label(day["date"], i), "min": int(day["mintempC"]), "max": int(day["maxtempC"]),
