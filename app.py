@@ -366,22 +366,36 @@ TEXT_BREAKS = {"br", "p", "div", "li", "td", "th", "tr", "dt", "dd", "ul", "ol",
                "section", "article", "h1", "h2", "h3", "h4", "h5", "h6", "figcaption", "caption", "hr"}
 
 
+GLUE_TAGS = {"span", "a", "time", "small", "label", "strong", "b", "em", "i", "button", "abbr"}
+
+
+def glued(previous, child):
+    """Dwa elementy w linii stojące tuż obok siebie (bez tekstu między nimi), np. <span>TV</span><span>SS 1</span>:
+    strony rozsuwają je stylem CSS, więc w tekście potrzebny jest odstęp (ale nie przed znakiem interpunkcyjnym)."""
+    if not isinstance(previous, Tag) or previous.name not in GLUE_TAGS or child.name not in GLUE_TAGS:
+        return False
+    text = child.get_text()
+    return bool(text) and text[0].isalnum()
+
+
 def node_text(node):
     if node is None:
         return ""
     parts = []
 
     def walk(current):
+        previous = None
         for child in current.children:
             if type(child) in (NavigableString, CData):
                 parts.append(str(child))
             elif isinstance(child, Tag):
                 breaks = child.name in TEXT_BREAKS
-                if breaks:
+                if breaks or glued(previous, child):
                     parts.append(" ")
                 walk(child)
                 if breaks:
                     parts.append(" ")  # odstęp także po elemencie blokowym („Tytuł” + „2026”)
+            previous = child
 
     if isinstance(node, Tag):
         walk(node)
@@ -405,11 +419,13 @@ def node_segments(node, base_url):
 
     def walk(current):
         nonlocal count
+        previous = None
         for child in current.children:
+            earlier, previous = previous, child
             if type(child) in (NavigableString, CData):
                 parts.append(str(child).replace("\x01", "").replace("\x02", "").replace("\x03", ""))
             elif isinstance(child, Tag):
-                if child.name in TEXT_BREAKS:
+                if child.name in TEXT_BREAKS or glued(earlier, child):
                     parts.append(" ")
                 if child.name == "a" and child.get("href"):
                     href = urljoin(base_url, child["href"].strip())
@@ -826,8 +842,113 @@ def card_link(link, base_url):
     return href
 
 
+TITLE_HINT = re.compile(r"title|name|heading|headline|tytul|nazwa", re.I)
+BACKGROUND_URL = re.compile(r"background(?:-image)?\s*:[^;]*url\(\s*['\"]?([^'\")\s]+)", re.I)
+HEADINGS = ("h1", "h2", "h3", "h4", "h5", "h6")
+
+
+def no_urls(text):
+    """Tekst bez adresów (strony trzymają czasem adres obrazka jako ukryty tekst w kafelku)."""
+    return squash(re.sub(r"\S*(?:https?://|www\.)\S+", " ", text)) if ("://" in text or "www." in text) else text
+
+
+def text_parts(node):
+    """Kawałki tekstu węzła rozdzielone granicami elementów blokowych: [(tekst, element_z_tym_tekstem)].
+    Dla kafelka to np. [("TV SS 1 EP 5", <div.meta>), ("Afro Samurai", <h3>)]."""
+    parts, current, holder = [], [], [None]
+
+    def flush():
+        text = squash("".join(current))
+        if text:
+            parts.append((text, holder[0]))
+        current.clear()
+        holder[0] = None
+
+    def walk(element):
+        previous = None
+        for child in element.children:
+            if type(child) in (NavigableString, CData):
+                if holder[0] is None and str(child).strip():
+                    holder[0] = element  # najgłębszy element z początkiem tego tekstu (np. <a class="name">)
+                current.append(str(child))
+            elif isinstance(child, Tag) and child.name not in ("script", "style", "noscript"):
+                if child.name in TEXT_BREAKS:
+                    flush()
+                    walk(child)
+                    flush()
+                else:
+                    if glued(previous, child):
+                        current.append(" ")
+                    walk(child)
+            previous = child
+
+    walk(node)
+    flush()
+    return parts
+
+
+def meta_like(text):
+    """Linijka danych, a nie tytuł: sporo cyfr („Movie 2026 107 min”, „TV SS 1 EP 5”, „8,77”) albo prawie bez liter."""
+    digits = sum(char.isdigit() for char in text)
+    return letters(text) < 3 or digits >= 0.2 * (letters(text) + digits)
+
+
+def title_hinted(holder, stop):
+    element = holder
+    while element is not None:
+        if element.name in HEADINGS or TITLE_HINT.search(" ".join(element.get("class") or [])):
+            return True
+        if element is stop:
+            break
+        element = element.parent
+    return False
+
+
+def pick_title(parts, container):
+    """Który kawałek kafelka jest tytułem: nie linijka danych; najlepiej nagłówek albo klasa typu title/name;
+    inaczej pierwszy kawałek z co najmniej dwoma słowami (nie etykieta działu typu „KRAJ”). None, gdy same dane."""
+    hinted = [part for part in parts if part[1] is not None and letters(part[0]) >= 1 and title_hinted(part[1], container)]
+    if hinted:
+        return hinted[0][0]  # także tytuły z cyframi („Apollo 13”), gdy strona oznacza je jako tytuł
+    candidates = [part for part in parts if not meta_like(part[0])]
+    if not candidates:
+        return None
+    solid = [part for part in candidates if len(part[0].split()) >= 2 or letters(part[0]) >= 12]
+    return (solid or candidates)[0][0]
+
+
+def card_container(link, href, base_url, root):
+    """Najwyższy element (do 4 poziomów w górę), w którym wszystkie linki prowadzą pod ten sam adres – cały kafelek,
+    gdy obrazek, dane i tytuł stoją obok siebie w osobnych znacznikach. Zbyt duży obszar (ponad 300 znaków) odrzucamy."""
+    container, element = link, link.parent
+    for _ in range(4):
+        if element is None or element is root or element.name in ("body", "html", "[document]", "main", "ul", "ol", "table"):
+            break
+        targets = {card_link(a, base_url) for a in element.find_all("a", href=True)}
+        if targets - {href, None} or len(element.get_text()) > 300:
+            break
+        container, element = element, element.parent
+    return container
+
+
+def card_image(container, base_url, check_size=True):
+    """Obrazek kafelka: <img> albo tło CSS (style="background-image:url(…)", data-bg, data-background)."""
+    img = container.find("img")
+    if img is not None:
+        return img, image_source(img, base_url, check_size)
+    for element in [container] + container.find_all(True):
+        value = element.get("data-bg") or element.get("data-background") or element.get("data-background-image")
+        match = BACKGROUND_URL.search(element.get("style") or "")
+        value = value or (match.group(1) if match else None)
+        if value and not value.startswith("data:"):
+            src = urljoin(base_url, value.strip())
+            if urlparse(src).scheme in ("http", "https") and not urlparse(src).path.lower().endswith(".svg"):
+                return None, src
+    return None, None
+
+
 def collect_blocks(root, base_url, with_images=False, skip_images=frozenset(), image_kind="img", max_images=IMAGES_PER_ARTICLE,
-                   cards=False, inline_links=False):
+                   cards=False, inline_links=False, protected=None):
     """Zbiera z drzewa nagłówki i akapity w kolejności występowania, bez powtarzania zagnieżdżonych.
     Blok to (rodzaj, tekst, adres_linku_lub_None); ten sam adres linkujemy tylko raz.
     Z with_images=True dochodzą bloki (image_kind, opis, adres_obrazka) – najwyżej max_images
@@ -835,41 +956,65 @@ def collect_blocks(root, base_url, with_images=False, skip_images=frozenset(), i
     cards=True (strony z listą): także „kafelki” – linki z obrazkiem i tytułem w zwykłym <div>/<span>, w title
     albo w alt obrazka (sklepy, katalogi, serwisy z przepisami…), które nie leżą w nagłówku ani akapicie."""
     blocks, linked, images = [], set(), set()
-    consumed, card_hrefs, best_text = set(), set(), {}
+    consumed, card_hrefs, best_text, best_title = set(), set(), {}, {}
     if cards:  # najlepszy tytuł dla adresu: kafelek bywa obrazkiem-linkiem, a tytuł osobnym linkiem obok
         for link in root.find_all("a", href=True):
             href = card_link(link, base_url)
             if href:
-                for candidate in (node_text(link), squash(link.get("title") or "")):
+                for candidate in (no_urls(node_text(link)), squash(link.get("title") or "")):
                     if letters(candidate) > letters(best_text.get(href, "")):
                         best_text[href] = candidate  # tytuł ma najwięcej liter (nie „8,77 10 988 tys. ocen”)
+                if len(squash(link.get("title") or "")) > len(best_title.get(href, "")):
+                    best_title[href] = squash(link["title"])
     tags = BLOCK_TAGS + (["img"] if with_images else []) + (["a"] if cards else [])
     for node in root.find_all(tags):
+        if id(node) in consumed:
+            continue  # część kafelka, który już pokazaliśmy
         if node.name == "a":
-            if node.get("href") is None or node.find(BLOCK_TAGS) is not None:
-                continue  # tytuł w nagłówku/akapicie wewnątrz linku – obsłuży go zwykła ścieżka
-            if any(parent.name in BLOCK_TAGS for parent in node.parents):
+            if node.get("href") is None or any(parent.name in BLOCK_TAGS for parent in node.parents):
                 continue
             href = card_link(node, base_url)
             if not href or href in linked:
                 continue
-            img = node.find("img")
-            text = best_text.get(href) or squash(node.get("title") or "") or squash(img.get("alt") or "" if img else "")
-            if not (len(text) >= 25 or len(text.split()) >= 4 or (img is not None and len(text) >= 2)):
-                continue  # „Więcej”, „Zobacz”, numery stron…
-            if img is not None:
-                consumed.add(id(img))
-                src = image_source(img, base_url) if with_images else None
-                if src and src not in images and src not in skip_images and len(images) < max_images:
-                    images.add(src)
-                    blocks.append((image_kind, "", src))
+            container = card_container(node, href, base_url, root)
+            parts = [(no_urls(text), holder) for text, holder in text_parts(container)]
+            parts = [part for part in parts if part[0]]
+            img, src = card_image(container, base_url)
+            has_image = img is not None or src is not None
+            named = squash(node.get("title") or "") or best_title.get(href, "")
+            elsewhere = best_text.get(href, "")  # tekst innego linku pod ten sam adres (np. tytuł obok obrazka-linku)
+            known = [(elsewhere, None)] if elsewhere and not any(fold(elsewhere) in fold(text) for text, _ in parts) else []
+            if named and len(named) >= 2:
+                title = named  # atrybut title linku to zwykle pełny tytuł
+            else:
+                title = pick_title(parts + known, container)
+            is_card = has_image or len(parts) >= 2
+            if title is None:  # same dane (np. „8,77 · 10 988 tys. ocen”) – zwykły link z tekstem w kolejności ze strony
+                title = no_urls(node_text(container)) or (squash(img.get("alt") or "") if img is not None else "")
+                is_card, parts = has_image, []
+            if not ((is_card and len(title) >= 2) or len(title) >= 25 or len(title.split()) >= 4):
+                continue  # „Więcej”, „Zobacz”, numery stron, pozycje menu…
+            shown = fold(title)  # bez powtórzeń tytułu, także uciętego („Pełny tyt…”)
+            extras = [text for text, _ in parts
+                      if fold(text) not in shown and not shown.startswith(fold(text).rstrip(".… "))]
+            for inner in container.find_all(BLOCK_TAGS + ["img"]):
+                consumed.add(id(inner))
+            if with_images and src and src not in images and src not in skip_images and len(images) < max_images:
+                images.add(src)
+                blocks.append((image_kind, "", src))
             linked.add(href)
             card_hrefs.add(href)
-            blocks.append(("p", shorten(text, 200), href))
+            if is_card and protected is not None:
+                protected.add(href)
+            short = " · ".join(extras)
+            if extras and len(short) <= 60:
+                blocks.append(("p", shorten(title, 160) + " · " + short, href))
+            else:
+                blocks.append(("p", shorten(title, 200), href))
+                if extras:  # dłuższy opis pod tytułem (np. zajawka artykułu)
+                    blocks.append(("p", shorten(" ".join(extras), 220), None))
             continue
         if node.name == "img":
-            if id(node) in consumed:
-                continue
             src = image_source(node, base_url)
             if src and src not in images and src not in skip_images and len(images) < max_images:
                 images.add(src)
@@ -899,6 +1044,10 @@ def collect_blocks(root, base_url, with_images=False, skip_images=frozenset(), i
                     blocks.append((image_kind, "", src))
                 linked.add(href)
                 card_hrefs.add(href)
+                if protected is not None:
+                    protected.add(href)
+                for inner in node.find_all(BLOCK_TAGS + ["img"]):
+                    consumed.add(id(inner))
                 blocks.append(("p", "• " + text, href))
                 continue
         if href in card_hrefs and len(text) < 200:
@@ -920,25 +1069,26 @@ def collect_blocks(root, base_url, with_images=False, skip_images=frozenset(), i
     return blocks
 
 
-def is_menu_entry(block):
+def is_menu_entry(block, protected=frozenset()):
     kind, text, href = block
     text = text[2:] if text.startswith("• ") else text
-    return kind in ("p", "h") and href is not None and len(text) <= 25 and len(text.split()) <= 3
+    return kind in ("p", "h") and href is not None and href not in protected and len(text) <= 25 and len(text.split()) <= 3
 
 
-def drop_menus(blocks, run=6):
+def drop_menus(blocks, run=6, protected=frozenset()):
     """Usuwa menu nieoznaczone jako <nav>: ciąg co najmniej `run` krótkich linków z rzędu (np. „Filmy”, „Seriale”,
     „Rankingi”…) bez obrazków. Na telefonie z klawiaturą to dziesiątki skoków strzałką przed treścią."""
     def neutral(block):  # krótki podpis bez linku (np. „Na VOD”) nie przerywa menu
         return block[0] in ("p", "h") and block[2] is None and len(block[1]) <= 25
 
+    is_entry = lambda block: is_menu_entry(block, protected)  # kafelki (obrazek, dane obok tytułu) to treść, nie menu
     out, i = [], 0
     while i < len(blocks):
         j, links = i, 0
-        while j < len(blocks) and (is_menu_entry(blocks[j]) or (links and neutral(blocks[j]))):
-            links += is_menu_entry(blocks[j])
+        while j < len(blocks) and (is_entry(blocks[j]) or (links and neutral(blocks[j]))):
+            links += is_entry(blocks[j])
             j += 1
-        while j > i and not is_menu_entry(blocks[j - 1]):
+        while j > i and not is_entry(blocks[j - 1]):
             j -= 1  # podpis na końcu ciągu należy już do treści
         if links >= run:
             i = j  # menu – pomijamy cały ciąg
@@ -948,28 +1098,51 @@ def drop_menus(blocks, run=6):
     return out
 
 
+WRAPPER_TAGS = {"form", "header", "aside", "nav", "menu", "dialog"}
+WRAPPER_SHARE = 0.35  # element z taką częścią tekstu strony to jej „ramka”, a nie menu, reklama czy stopka
+
+
 def fallback_blocks(soup, base_url, skip_images=frozenset()):
-    """Gdy readability zawiedzie: usuń śmieci (skrypty, menu, reklamy…) i weź tekst z <article>/<main>/<body>."""
-    for tag in soup(JUNK_TAGS):
+    """Strona z listą (albo gdy readability zawiedzie): usuń śmieci (skrypty, menu, reklamy…) i weź tekst
+    z <article>/<main>/<body>. Elementów obejmujących dużą część strony nie usuwamy, nawet gdy wyglądają na
+    „śmieci”: <form> wokół całej strony (ASP.NET), <aside> z listami, klasy typu „with-sidebar”, „header-fixed”."""
+    for tag in soup(["script", "style", "noscript", "template"]):
         tag.decompose()
+    total = max(len((soup.body or soup).get_text()), 1)
+    big = lambda tag: len(tag.get_text()) > WRAPPER_SHARE * total
+    for tag in soup(JUNK_TAGS):
+        if tag.attrs is None:
+            continue
+        if tag.name in WRAPPER_TAGS and big(tag):
+            tag.unwrap()
+        else:
+            tag.decompose()
     for tag in soup.find_all(True):
         if tag.attrs is None:
             continue
         # klasy BEM „blok__element” (np. card__header) to części kafelka, a nie nagłówek/stopka strony
         names = [c for c in (tag.get("class") or []) + [tag.get("id") or ""] if c and "__" not in c]
         hint = " ".join(names)
-        if hint.strip() and JUNK_HINT.search(hint) and tag.name not in ("body", "html", "article", "main"):
+        if hint.strip() and JUNK_HINT.search(hint) and tag.name not in ("body", "html", "article", "main") and not big(tag):
             tag.decompose()
+    body = soup.body or soup
+    total = max(len(body.get_text()), 1)
     articles = soup.find_all("article")
-    if len(articles) == 1:
+    main = soup.find("main")
+    if main is not None and (len(main.get_text()) > 0.5 * total or len(main.find_all("a", href=True)) >= 5):
+        area = main  # główna część strony; poza nią są zwykle stopki z dziesiątkami linków
+    else:
+        area = body  # brak <main> albo jest prawie pusty – treść leży gdzie indziej
+    if len(articles) == 1 and len(articles[0].get_text()) > 0.5 * len(area.get_text()):
         root = articles[0]
     else:  # wiele <article> to zwykle kafelki listy – bierzemy ich wspólny kontener, a nie pierwszy kafelek
-        root = soup.find("main") or soup.body or soup
+        root = area
+    protected = set()
     blocks = collect_blocks(
         root, base_url, with_images=True, skip_images=skip_images, image_kind="thumb", max_images=THUMBS_PER_LISTING,
-        cards=True,
+        cards=True, protected=protected,
     )
-    blocks = drop_menus(blocks)
+    blocks = drop_menus(blocks, protected=protected)
     if not [b for b in blocks if b[0] != "thumb"]:  # strona bez akapitów – bierzemy linie tekstu
         blocks = [("p", line, None) for line in (squash(x) for x in root.get_text("\n").split("\n")) if len(line) > 1]
     return blocks
@@ -1361,8 +1534,11 @@ def breadcrumbs(soup, base_url):
     crumbs = []
     for tag in soup.find_all(True):
         hint = " ".join(tag.get("class") or []) + " " + (tag.get("id") or "") + " " + (tag.get("aria-label") or "")
-        if re.search(r"breadcrumb|okruszk", hint, re.I):
-            crumbs = [(shorten(node_text(a), 40), urljoin(base_url, a["href"])) for a in tag.find_all("a", href=True) if node_text(a)]
+        if re.search(r"breadcrumb|okruszk", hint, re.I) and tag.name not in ("body", "html", "main"):
+            links = tag.find_all("a", href=True)
+            if not 1 <= len(links) <= 8 or len(tag.get_text()) > 300:
+                continue  # to nie ścieżka, tylko większy obszar z taką klasą (np. „has-breadcrumbs” na ramce strony)
+            crumbs = [(shorten(node_text(a), 40), urljoin(base_url, a["href"])) for a in links if node_text(a)]
             if crumbs:
                 tag.decompose()  # ścieżkę pokazujemy nad tytułem – nie powtarzamy jej w treści
                 break
