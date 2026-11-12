@@ -3331,7 +3331,7 @@ STYLE = (
     # Presto (Opera Mini na S30+) rozumie border-radius, box-shadow, rgba i box-sizing; starsze przeglądarki pokażą
     # po prostu kanciaste ramki. Na szerokim ekranie treść stoi w kolumnie 680 px, na telefonie zajmuje całą szerokość.
     "html{background:#e8eaed}"
-    "body{margin:0 auto;max-width:680px;min-height:100vh;font:14px/1.5 system-ui,Roboto,Arial,sans-serif;color:#1f1f1f;background:#fff}"
+    "body{margin:0 auto;max-width:680px;font:14px/1.5 system-ui,Roboto,Arial,sans-serif;color:#1f1f1f;background:#fff}"
     "a{color:#0b57d0;text-decoration:none}img{border:0}"
     ".bar{background:#0b57d0;color:#fff;padding:5px 6px;font-size:12px;line-height:1.7;box-shadow:0 1px 3px #999}"
     ".bar a{color:#fff;display:inline-block;padding:1px 7px;margin:1px 1px;border-radius:12px;background:rgba(128,128,128,.25)}"
@@ -3350,10 +3350,11 @@ STYLE = (
     ".ib{border:1px solid #dadce0;background:#f8f9fa;padding:8px 10px;margin:6px 0 12px;font-size:13px;line-height:1.4;"
     "border-radius:10px}"
     ".bc{font-size:12px;margin:8px 0 0;color:#5f6368}.ibt{font-weight:bold;text-align:center;margin:2px 0 6px}"
-    ".ibi{text-align:center;margin:4px 0 8px}.ib img{border-radius:6px}"
-    ".ib1 img{max-width:100%}.ib2{display:inline-block;width:48%;vertical-align:top;text-align:center}"
+    ".ibi{text-align:center;margin:4px 0 8px}.ib img{max-width:100%;border-radius:6px}"
+    ".ib2{display:inline-block;width:48%;vertical-align:top;text-align:center}"
     ".v{margin:8px 0 12px;padding:6px;text-align:center;background:#eef3fd;border:1px solid #d3e0fb;border-radius:12px}"
-    ".v img{max-width:100%;margin:0 0 6px;border-radius:8px}"
+    ".v img{max-width:100%;margin:0 0 6px;border-radius:8px}.v video,.v audio{width:100%;margin:0 0 6px}"
+    ".v video{max-width:480px;background:#000}"
     ".r{border-bottom:1px solid #eee;padding:9px 0}"
     ".h{color:#188038;font-size:12px}.s{color:#4d5156}.o{font-size:12px}"
     ".b{display:block;background:#eef3fd;border:1px solid #d3e0fb;padding:9px;margin:10px 0;"
@@ -3363,7 +3364,7 @@ STYLE = (
     ".q,.u{border:1px solid #c4c7c5;border-radius:16px;padding:5px 10px;font-size:14px;box-sizing:border-box}"
     ".q{width:150px}.u{width:100%;margin:2px 0 6px}"
     "input[type=submit]{background:#0b57d0;color:#fff;border:0;border-radius:16px;padding:6px 12px;font-weight:bold}"
-    ".hl{background:#fff3a0;border-radius:3px}"
+    ".hl{background:#fff3a0}"
     ".e{background:#fff4e5;border:1px solid #f0c890;padding:8px 10px;margin:8px 0;border-radius:10px}"
 )
 
@@ -3529,12 +3530,12 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 {% if crumbs and page == 1 %}<div class="bc">{% for name, href in crumbs %}{% if not loop.first %} / {% endif %}{% if href %}<a href="{{ url_for('read', url=href, q=q, rp=rp) }}">{{ name }}</a>{% else %}{{ name }}{% endif %}{% endfor %}</div>
 {% endif %}<h1>{{ title }}</h1>
 <p class="m">{{ site_name or host }}{% if pages > 1 %} &middot; strona {{ page }} z {{ pages }}{% endif %}</p>
-{% if page == 1 %}{% for v in videos %}{% set i = loop.index %}{% set start = url_for('read', url=url, q=q, rp=rp, wf=i) ~ '#film' ~ i %}{% set what = "nagranie" if v.audio else "film" %}{% if not v.hide %}<div class="v" id="film{{ i }}">{% if images and not v.audio %}<a href="{{ start }}"><img src="{{ url_for('image', u=v.url, v=1, p=v.poster, f=v.fallback, r=site) }}" alt=""></a><br>{% elif images and v.fallback %}<a href="{{ start }}"><img src="{{ url_for('image', u=v.fallback, r=site, t=1) }}" alt=""></a><br>{% endif %}
+{% if page == 1 %}{% for v in videos %}{% set i = loop.index %}{% set start = url_for('read', url=url, q=q, rp=rp, wf=i) ~ '#film' ~ i %}{% set what = "nagranie" if v.audio else "film" %}{% if not v.hide %}<div class="v" id="film{{ i }}">{% set live = film and film.index == i and film.mode == "done" and film.fmt in ("mp4", "mp3") %}{% set file = url_for('video_file', key=film.key, ext=film.fmt) if live else "" %}{% if live and film.fmt == "mp4" %}<video src="{{ file }}" controls playsinline preload="metadata"{% if images %} poster="{{ url_for('image', u=v.url, v=1, p=v.poster, f=v.fallback, r=site) }}"{% endif %}><a href="{{ file }}">Odtwórz film</a></video><br>{% elif images and not v.audio %}<a href="{{ start }}"><img src="{{ url_for('image', u=v.url, v=1, p=v.poster, f=v.fallback, r=site) }}" alt=""></a><br>{% elif images and v.fallback %}<a href="{{ start }}"><img src="{{ url_for('image', u=v.fallback, r=site, t=1) }}" alt=""></a><br>{% endif %}{% if live and film.fmt == "mp3" %}<audio src="{{ file }}" controls preload="none"><a href="{{ file }}">Odtwórz nagranie</a></audio><br>{% endif %}
 {% if film and film.index == i %}{% set f = film %}{% set again = url_for('read', url=url, q=q, rp=rp, wf=i, wfmt=f.fmt, wc=f.part, n=tick) ~ '#film' ~ i %}{% if f.mode == "work" %}<b>Przygotowuję {{ what }}{% if f.part > 1 or (f.part_total and f.part_total > 1) %}, część {{ f.part }}{% endif %}&hellip;</b><br>
 {% if f.status.state == "download" %}Pobieranie: {{ f.status.got|mb }}{% if f.status.progress %} ({{ f.status.progress }}%){% endif %}{% else %}Zmniejszanie dla telefonu: {{ f.status.progress }}%{% endif %}<br>
 <a href="{{ again }}">Odśwież</a> <span class="m">&ndash; samo co 8 s</span>
 {% elif f.mode == "busy" %}Serwer kończy inny film &ndash; {{ "to nagranie zacznie" if v.audio else "ten zacznie" }} się za chwilę.<br><a href="{{ again }}">Odśwież</a>
-{% elif f.mode == "done" %}<a href="{{ url_for('video_file', key=f.key, ext=f.fmt) }}"{% if v.n == 1 %} accesskey="5"{% endif %}>Odtwórz {{ what }} ({{ formats[f.fmt].name }}, {{ f.status.size|mb }})</a><br>
+{% elif f.mode == "done" %}<a href="{{ url_for('video_file', key=f.key, ext=f.fmt) }}"{% if v.n == 1 %} accesskey="5"{% endif %}>{% if live %}Otwórz w odtwarzaczu telefonu{% else %}Odtwórz {{ what }}{% endif %} ({{ formats[f.fmt].name }}, {{ f.status.size|mb }})</a><br>
 <span class="m">{% if f.part_total and f.part_total > 1 %}Część {{ f.part }} z {{ f.part_total }} &middot; {% endif %}{{ f.status.length|mmss }}</span><br>
 {% if f.has_next %}<a href="{{ url_for('read', url=url, q=q, rp=rp, wf=i, wfmt=f.fmt, wc=f.part + 1) }}#film{{ i }}">Następna część{% if f.next_ready %} (gotowa){% endif %} &raquo;</a><br>
 {% endif %}{% if f.part > 1 %}<a href="{{ url_for('read', url=url, q=q, rp=rp, wf=i, wfmt=f.fmt, wc=f.part - 1) }}#film{{ i }}">&laquo; Poprzednia część</a><br>
@@ -3566,7 +3567,7 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 <div class="w">
 <h1>{{ title }}</h1>
 <p class="m">{{ host }}{% if status and status.total %} &middot; {{ status.total|mmss }}{% endif %}{% if part_total and part_total > 1 %} &middot; część {{ part }} z {{ part_total }}{% elif part > 1 %} &middot; część {{ part }}{% endif %}</p>
-{% if poster_img and mode in ("choose", "done") and not audio %}<div class="ph"><img src="{{ poster_img }}" alt=""></div>
+{% if poster_img and (mode == "choose" or (mode == "done" and fmt != "mp4")) and not audio %}<div class="ph"><img src="{{ poster_img }}" alt=""></div>
 {% endif %}{% if mode == "choose" %}{% for f, info in formats.items() %}<a class="b" href="{{ link(f=f) }}">{{ info.name }}{% if ready[f] %} &ndash; gotowy{% endif %}</a>
 <p class="m">{{ info.about }}</p>
 {% endfor %}<p>Serwer pobiera film i zmniejsza go dla telefonu. Pierwsza część ({{ first_minutes }} min) jest gotowa najszybciej, zwykle po 1&ndash;2 minutach. Kolejne części serwer przygotowuje sam w tle, gdy oglądasz poprzednią. Gotowy plik otworzy odtwarzacz telefonu.</p>
@@ -3577,7 +3578,9 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 <p>{% if status.state == "download" %}Pobieranie: {{ status.got|mb }}{% if status.progress %} ({{ status.progress }}%){% endif %}{% else %}Zmniejszanie dla telefonu: {{ status.progress }}%{% endif %}</p>
 <a class="b" href="{{ here }}">Odśwież</a>
 <p class="m">Strona odświeża się sama co {{ refresh }} s. Możesz też wyjść i wrócić tu później.</p>
-{% elif mode == "done" %}<a class="b" href="{{ url_for('video_file', key=key, ext=fmt) }}" accesskey="5">Odtwórz {{ "nagranie" if fmt == "mp3" else "film" }} ({{ fmt_name }}, {{ status.size|mb }})</a>
+{% elif mode == "done" %}{% if fmt == "mp4" %}<div class="v"><video src="{{ url_for('video_file', key=key, ext=fmt) }}" controls playsinline preload="metadata"{% if poster_img %} poster="{{ poster_img }}"{% endif %}></video></div>
+{% elif fmt == "mp3" %}<div class="v"><audio src="{{ url_for('video_file', key=key, ext=fmt) }}" controls preload="none"></audio></div>
+{% endif %}<a class="b" href="{{ url_for('video_file', key=key, ext=fmt) }}" accesskey="5">Odtwórz {{ "nagranie" if fmt == "mp3" else "film" }} ({{ fmt_name }}, {{ status.size|mb }})</a>
 <p class="m">{% if status.length %}Czas: {{ status.length|mmss }}. {% endif %}Plik otworzy odtwarzacz telefonu.</p>
 <p><a href="{{ url_for('video_file', key=key, ext=fmt, d=1) }}">Zapisz w pamięci telefonu</a></p>
 {% if has_next %}<a class="b" href="{{ link(f=fmt, c=part + 1) }}" accesskey="3">Następna część ({{ part + 1 }}){% if next_ready %} &ndash; gotowa{% endif %} &raquo;</a>
