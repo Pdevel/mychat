@@ -34,6 +34,8 @@ from urllib.parse import parse_qs, quote, urljoin, urlparse
 import requests
 import urllib3.util.connection as urllib3_connection
 from bs4 import BeautifulSoup, SoupStrainer
+from bs4.element import CData, NavigableString, Tag
+from markupsafe import Markup, escape
 from flask import Flask, Response, abort, redirect, render_template, request, send_file, url_for
 from jinja2 import DictLoader
 from PIL import Image, ImageDraw, ImageOps
@@ -299,8 +301,70 @@ def squash(text):
     return " ".join((text or "").split())
 
 
+# Znaczniki, które w przeglądarce zaczynają nową linię/komórkę – tylko tam wstawiamy odstęp. Między zwykłymi
+# znacznikami w tekście (<a>, <b>, <span>…) odstępu nie dokładamy, więc nie ma „Polska , Rzeczpospolita”.
+TEXT_BREAKS = {"br", "p", "div", "li", "td", "th", "tr", "dt", "dd", "ul", "ol", "table", "blockquote", "pre",
+               "section", "article", "h1", "h2", "h3", "h4", "h5", "h6", "figcaption", "caption", "hr"}
+
+
 def node_text(node):
-    return squash(node.get_text(" ", strip=True)) if node is not None else ""
+    if node is None:
+        return ""
+    parts = []
+
+    def walk(current):
+        for child in current.children:
+            if type(child) in (NavigableString, CData):
+                parts.append(str(child))
+            elif isinstance(child, Tag):
+                breaks = child.name in TEXT_BREAKS
+                if breaks:
+                    parts.append(" ")
+                walk(child)
+                if breaks:
+                    parts.append(" ")  # odstęp także po elemencie blokowym („Tytuł” + „2026”)
+
+    if isinstance(node, Tag):
+        walk(node)
+    else:
+        parts.append(str(node))
+    return squash("".join(parts))
+
+
+# Akapit z linkami w tekście: link zapisany w tekście bloku jako \x01adres\x02tekst\x03 (rodzaj bloku "pl").
+LINK_MARK = re.compile(r"\x01([^\x02]*)\x02([^\x03]*)\x03")
+
+
+def visible(text):
+    """Tekst bloku bez zapisanych w nim adresów linków."""
+    return LINK_MARK.sub(lambda m: m.group(2), text) if "\x01" in text else text
+
+
+def node_segments(node, base_url):
+    """Tekst węzła z linkami w środku (zapis jak w LINK_MARK) i liczba linków."""
+    parts, count = [], 0
+
+    def walk(current):
+        nonlocal count
+        for child in current.children:
+            if type(child) in (NavigableString, CData):
+                parts.append(str(child).replace("\x01", "").replace("\x02", "").replace("\x03", ""))
+            elif isinstance(child, Tag):
+                if child.name in TEXT_BREAKS:
+                    parts.append(" ")
+                if child.name == "a" and child.get("href"):
+                    href = urljoin(base_url, child["href"].strip())
+                    text = node_text(child)
+                    if text and urlparse(href).scheme in ("http", "https") and href.split("#")[0] != base_url.split("#")[0]:
+                        parts.append(f"\x01{href}\x02{text}\x03")
+                        count += 1
+                        continue
+                walk(child)
+                if child.name in TEXT_BREAKS:
+                    parts.append(" ")
+
+    walk(node)
+    return " ".join("".join(parts).split()), count
 
 
 def shorten(text, limit):
@@ -641,7 +705,7 @@ def card_link(link, base_url):
 
 
 def collect_blocks(root, base_url, with_images=False, skip_images=frozenset(), image_kind="img", max_images=IMAGES_PER_ARTICLE,
-                   cards=False):
+                   cards=False, inline_links=False):
     """Zbiera z drzewa nagłówki i akapity w kolejności występowania, bez powtarzania zagnieżdżonych.
     Blok to (rodzaj, tekst, adres_linku_lub_None); ten sam adres linkujemy tylko raz.
     Z with_images=True dochodzą bloki (image_kind, opis, adres_obrazka) – najwyżej max_images
@@ -723,10 +787,14 @@ def collect_blocks(root, base_url, with_images=False, skip_images=frozenset(), i
             linked.add(href)
         if node.name in ("h1", "h2", "h3", "h4", "h5", "h6"):
             blocks.append(("h", text, href))
-        elif node.name == "li":
-            blocks.append(("p", "• " + text, href))
-        else:
-            blocks.append(("p", text, href))
+            continue
+        prefix = "• " if node.name == "li" else ""
+        if inline_links and href is None:  # akapit artykułu z linkami w tekście, jak na oryginalnej stronie
+            segments, count = node_segments(node, base_url)
+            if count:
+                blocks.append(("pl", prefix + segments, None))
+                continue
+        blocks.append(("p", prefix + text, href))
     return blocks
 
 
@@ -930,6 +998,45 @@ def add_json_listing(blocks, embedded):
     return blocks + [("h", "Więcej ze strony", None)] + section
 
 
+INFOBOX_CLASS = re.compile(r"(^|[\s_-])(infobox|portable-infobox|ibox\d*|infotable|biota)([\s_-]|$)", re.I)
+CLUTTER_CLASS = re.compile(r"(^|\s)(mw-editsection|navbox|vertical-navbox|mw-jump-link|catlinks|toc|reflist-hide)(\s|$)", re.I)
+FOOTNOTE = re.compile(r"\[\s*[\w.,–-]{1,8}\s*\]")
+
+
+def clean_document(soup):
+    """Usuwa z dokumentu to, co na telefonie tylko przeszkadza: znaczniki przypisów („[1]”, „[a]”), linki „edytuj”,
+    szablony nawigacyjne i spisy treści. Zwraca wiersze tabeli informacyjnej (infobox) jako [(etykieta, wartość)];
+    sama tabela znika z treści – pokazujemy ją zwięźle po pierwszym akapicie, jak w mobilnej wersji serwisów."""
+    for sup in soup.find_all("sup"):
+        classes = " ".join(sup.get("class") or [])
+        if "reference" in classes or (FOOTNOTE.fullmatch(sup.get_text("", strip=True)) and sup.find("a", href=re.compile(r"^#"))):
+            sup.decompose()
+    for tag in soup.find_all(True):
+        if tag.attrs is not None and CLUTTER_CLASS.search(" ".join(tag.get("class") or []) + " " + (tag.get("id") or "")):
+            tag.decompose()
+    rows = []
+    for box in soup.find_all(["table", "aside", "div"], class_=INFOBOX_CLASS):
+        if box.attrs is None:
+            continue  # już usunięte razem z nadrzędną tabelą
+        has_headers = box.find("th") is not None
+        for row in box.find_all("tr"):
+            cells = row.find_all(["th", "td"], recursive=False)
+            if len(cells) >= 2 and (cells[0].name == "th" or not has_headers):  # nie podpisy pod herbem i flagą
+                label, value = node_text(cells[0]).rstrip(":"), node_text(cells[1])
+                if label and value:
+                    rows.append((shorten(label, 40), shorten(value, 160)))
+            elif len(cells) == 1 and cells[0].find("img") is None:
+                text = node_text(cells[0])
+                if text and len(text) <= 160:
+                    rows.append(("", text))
+        for item in box.select(".pi-data"):  # infobox z serwisów Fandom
+            label, value = item.select_one(".pi-data-label"), item.select_one(".pi-data-value")
+            if label and value and node_text(value):
+                rows.append((shorten(node_text(label), 40), shorten(node_text(value), 160)))
+        box.decompose()
+    return rows[:40]
+
+
 def extract_article(html, url, videos=None, posters=None):
     """Zwraca (tytuł, bloki), gdzie blok to ("h" | "p", tekst, adres_linku_lub_None).
     Gdy podano listę `videos`, trafiają do niej adresy filmów ze strony."""
@@ -945,13 +1052,16 @@ def extract_article(html, url, videos=None, posters=None):
             posters[""] = lead[0]  # zdjęcie strony – zapasowa miniatura filmu
     # readability usuwa z obrazków width/height – ikonki rozpoznajemy po wymiarach z oryginalnej strony
     small_images = {image_source(img, url, check_size=False) for img in soup.find_all("img") if is_small_image(img)}
+    heading = node_text(soup.find("h1"))
+    infobox = clean_document(soup)
     blocks = []
     if Document is not None:
         try:
-            doc = Document(html, url=url)
+            doc = Document(str(soup), url=url)
             title = squash(doc.short_title()) or title
             blocks = collect_blocks(
-                BeautifulSoup(doc.summary(html_partial=True), "lxml"), url, with_images=True, skip_images=small_images
+                BeautifulSoup(doc.summary(html_partial=True), "lxml"), url, with_images=True, skip_images=small_images,
+                inline_links=True,
             )
         except Exception as err:
             log.info("readability nie poradził sobie z %s: %s", url, str(err)[:120])
@@ -960,7 +1070,7 @@ def extract_article(html, url, videos=None, posters=None):
     # bloki gęste od linków, czyli właśnie tytuły. Wtedy bierzemy całą treść strony (bez menu i stopki) z tytułami-linkami.
     # Artykuły i Wikipedia mają w readability tysiące znaków – zostają przy niej (bez list „czytaj też”).
     # Strony z listą dostają małe miniatury (THUMB_MAX_SIZE), żeby dziesiątki obrazków nie przeciążyły telefonu.
-    readability_chars = sum(len(b[1]) for b in blocks if b[0] != "img")
+    readability_chars = sum(len(visible(b[1])) for b in blocks if b[0] != "img")
     # Strona główna serwisu to lista (nawet gdy wkleja kilka pełnych newsów, które readability bierze za artykuł).
     front_page = re.fullmatch(r"/?|/(home|index|start|main|default)(\.\w+)?/?", urlparse(url).path or "/", re.I) is not None
     listing = readability_chars < 1500
@@ -974,8 +1084,14 @@ def extract_article(html, url, videos=None, posters=None):
         blocks = add_json_listing(blocks, embedded)
     if gallery:
         blocks = apply_gallery(blocks, gallery)
+    # Tytuł jak na stronie: nagłówek <h1> zamiast <title> z dopiskiem serwisu („Polska – Wikipedia, wolna encyklopedia”)
+    if heading and len(heading) <= 200 and fold(heading) in fold(node_text(soup.title) or title):
+        title = heading
     if blocks and blocks[0][0] == "h" and blocks[0][1] == title:
         blocks = blocks[1:]  # tytuł pokazujemy osobno
+    if infobox and not listing:  # tabela informacyjna po pierwszym akapicie, jak w mobilnej Wikipedii
+        position = next((i + 1 for i, b in enumerate(blocks) if b[0] in ("p", "pl")), 0)
+        blocks.insert(position, ("ib", "\n".join(f"{label}\x1f{value}" for label, value in infobox), None))
     # Zdjęcie główne serwisów informacyjnych stoi zwykle w nagłówku, poza treścią wybraną przez readability.
     # Strony podają je w znaczniku og:image – dokładamy je na początek, gdy w treści artykułu nie ma żadnego obrazka.
     if blocks and blocks[0][2] is None and not any(b[0] in ("img", "thumb") for b in blocks) and readability_chars >= 1500:
@@ -1019,10 +1135,12 @@ def paginate(blocks, budget):
     """Rozkłada bloki na strony po ~budget znaków; nagłówek nie zostaje sam na końcu strony."""
     pages, size = [[]], 0
     weights = {"img": IMAGE_WEIGHT, "thumb": THUMB_WEIGHT}
-    weight = lambda block: weights.get(block[0], len(block[1]))
+    weight = lambda block: weights.get(block[0], len(visible(block[1])))
     for kind, text, href in blocks:
         is_image = kind in weights
-        pieces = [text] if is_image else split_long(text, budget)
+        if kind == "pl" and len(visible(text)) > budget:
+            kind, text = "p", visible(text)  # bardzo długi akapit dzielimy – bez linków w tekście
+        pieces = [text] if is_image or kind in ("ib", "pl") else split_long(text, budget)
         for number, piece in enumerate(pieces):
             block = (kind, piece, href if number == 0 or is_image else None)
             if size and size + weight(block) > budget:
@@ -1068,7 +1186,7 @@ def get_article(url):
         raise FetchError("Nie udało się wydobyć tekstu z tej strony. Otwórz [Oryginał].", 422)
     truncated, total, kept = False, 0, []
     for block in blocks:
-        total += len(block[1]) if block[0] not in ("img", "thumb") else 0
+        total += len(visible(block[1])) if block[0] not in ("img", "thumb") else 0
         if total > ARTICLE_MAX_CHARS:
             truncated = True
             break
@@ -1114,6 +1232,26 @@ def shrink_image(raw, max_width=IMAGE_MAX_WIDTH, max_height=IMAGE_MAX_HEIGHT, qu
 
 def images_enabled():
     return request.cookies.get("obrazki") != "0"
+
+
+def links_enabled():
+    return request.cookies.get("linki") != "0"
+
+
+def inline_links(text, q, rp):
+    """Akapit z linkami w tekście jako HTML: linki prowadzą przez czytnik, reszta tekstu jest escapowana."""
+    out, last = [], 0
+    for match in LINK_MARK.finditer(text):
+        out.append(escape(text[last:match.start()]))
+        href = url_for("read", url=match.group(1), q=q or None, rp=rp)
+        out.append(Markup('<a href="%s">%s</a>') % (href, match.group(2)))
+        last = match.end()
+    out.append(escape(text[last:]))
+    return Markup("").join(out)
+
+
+def infobox_rows(text):
+    return [tuple(row.split("\x1f", 1)) if "\x1f" in row else ("", row) for row in text.split("\n")]
 
 
 # ---------- Wygląd strony źródłowej ----------
@@ -1321,6 +1459,7 @@ def theme_css(theme):
         f".m,.h,.f{{color:{t['muted']}}}.it,.r{{border-color:{t['line']}}}.f{{border-color:{t['line']}}}"
         f".b,.v{{background:{t['button']};border-color:{t['button_line']};color:{t['link']}}}"
         f".s{{color:{t['text']}}}.ic{{vertical-align:middle;margin:0 4px 0 0}}"
+        f".ib{{background:{t['button']};border-color:{t['line']}}}"
     )
 
 
@@ -2338,6 +2477,7 @@ STYLE = (
     ".it img{float:left;width:80px;margin:0 6px 0 0}"
     ".it a{font-weight:bold;text-decoration:none}.it a.n{display:block;margin-left:86px}"
     ".ph{margin:4px 0 10px}.ph img{max-width:100%;border:0}"
+    ".ib{border:1px solid #c8ccd1;background:#f8f9fa;padding:5px 7px;margin:4px 0 10px;font-size:13px;line-height:1.3}"
     ".v{margin:6px 0 10px;padding:4px;text-align:center;background:#eef3fd;border:1px solid #c6d5f5}"
     ".v img{max-width:100%;margin:0 0 4px;border:0}.v a{font-weight:bold}"
     ".r{border-bottom:1px solid #e3e3e3;padding:6px 0}"
@@ -2471,11 +2611,14 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 {% endfor %}{% endif %}{% for it in items %}{% if it.kind == "item" %}<div class="it">{% if it.img and images %}<img src="{{ url_for('image', u=it.img, r=site, t=1) }}" alt="">{% endif %}<a{% if it.img and images %} class="n"{% endif %} href="{{ url_for('read', url=it.href, q=q, rp=rp) }}">{{ it.text }}</a></div>
 {% elif it.kind == "img" %}{% if images %}<div class="ph"><a href="{{ url_for('image', u=it.href, r=site, hq=1) }}" target="_blank"><img src="{{ url_for('image', u=it.href, r=site) }}" alt="{{ it.text or 'obrazek' }}"></a></div>
 {% endif %}{% elif it.kind == "h" %}<h2>{{ it.text }}</h2>
+{% elif it.kind == "pl" %}<p>{% if links %}{{ inline_links(it.text, q, rp) }}{% else %}{{ visible(it.text) }}{% endif %}</p>
+{% elif it.kind == "ib" %}<div class="ib">{% for label, value in infobox_rows(it.text) %}{% if label %}<b>{{ label }}:</b> {% endif %}{{ value }}<br>
+{% endfor %}</div>
 {% else %}<p>{{ it.text }}</p>
 {% endif %}{% endfor %}{% if page < pages %}<a class="b" href="{{ url_for('read', url=url, q=q, rp=rp, page=page + 1) }}">Dalej &raquo; ({{ page }}/{{ pages }})</a>
 {% endif %}{% if page > 1 %}<a class="b" href="{{ url_for('read', url=url, q=q, rp=rp, page=page - 1) }}">&laquo; Wstecz</a>
 {% endif %}{% set fixed_url = url %}{% include "_find_form.html" %}</div>
-{% include "_nav.html" %}<div class="f"><a href="{{ original }}">[Oryginał]</a>{% if has_images %} &middot; <a href="{{ url_for('toggle_images', wl=0 if images else 1, next=request.full_path) }}">Obrazki: {{ "wyłącz" if images else "włącz" }}</a>{% endif %}</div>
+{% include "_nav.html" %}<div class="f"><a href="{{ original }}">[Oryginał]</a>{% if has_images %} &middot; <a href="{{ url_for('toggle_images', wl=0 if images else 1, next=request.full_path) }}">Obrazki: {{ "wyłącz" if images else "włącz" }}</a>{% endif %}{% if has_links %} &middot; <a href="{{ url_for('toggle_links', wl=0 if links else 1, next=request.full_path) }}">Linki w tekście: {{ "wyłącz" if links else "włącz" }}</a>{% endif %}</div>
 {% endblock %}
 """,
     "film.html": """{% extends "base.html" %}
@@ -2554,8 +2697,9 @@ def find_in_article(article, phrase):
     hits, total = [], 0
     for number, page in enumerate(article["pages"], 1):
         for kind, text, href in page:
-            if kind not in ("h", "p"):
+            if kind not in ("h", "p", "pl"):
                 continue
+            text = visible(text)
             hay = fold(text)
             pos = hay.find(needle)
             if pos < 0:
@@ -2604,6 +2748,7 @@ app.jinja_loader = DictLoader(TEMPLATES)
 app.jinja_env.globals["style"] = STYLE
 app.jinja_env.globals["theme_css"] = theme_css
 app.jinja_env.globals["dark_style"] = DARK_STYLE
+app.jinja_env.globals.update(inline_links=inline_links, visible=visible, infobox_rows=infobox_rows)
 app.jinja_env.filters["mmss"] = mmss
 app.jinja_env.filters["mb"] = megabytes
 
@@ -2738,7 +2883,8 @@ def read():
         "read.html", title=article["title"], url=url, original=article["url"], host=host_of(article["url"]),
         items=page_items(pages[page - 1]), page=page, pages=len(pages), images=images_enabled(),
         has_images=any(b[0] in ("img", "thumb") for p in pages for b in p), site=f"{parts.scheme}://{parts.netloc}",
-        videos=videos, film=film, formats=VIDEO_FORMATS, theme=article.get("theme"), tick=int(time.time()) % 100000, **common,
+        videos=videos, film=film, formats=VIDEO_FORMATS, theme=article.get("theme"), tick=int(time.time()) % 100000,
+        links=links_enabled(), has_links=any(b[0] == "pl" for p in pages for b in p), **common,
     )
 
 
@@ -2888,6 +3034,17 @@ def video_poster_response(url, referer):
     if not data:
         return Response("", status=404)
     return Response(data, mimetype="image/jpeg", headers={"Cache-Control": "public, max-age=86400"})
+
+
+@app.route("/linki")
+def toggle_links():
+    """Włącza/wyłącza linki w tekście akapitów (na klawiaturze każdy link to dodatkowy przystanek strzałki)."""
+    target = request.args.get("next") or "/"
+    if not target.startswith("/") or target.startswith("//"):
+        target = "/"
+    resp = redirect(target)
+    resp.set_cookie("linki", "0" if request.args.get("wl") == "0" else "1", max_age=365 * 24 * 3600, samesite="Lax")
+    return resp
 
 
 @app.route("/obrazki")

@@ -14,6 +14,16 @@ nawigacja samymi strzałkami.
 - `/img?u=…` – obrazki z artykułów zmniejszone dla telefonu (szczegóły niżej)
 - `/film?u=…` – filmy ze stron przekodowane dla telefonu (szczegóły niżej)
 
+## Układ artykułu jak na oryginale
+
+- tytuł z nagłówka strony (`<h1>`), bez dopisku serwisu („Polska”, a nie „Polska – Wikipedia, wolna encyklopedia”),
+- linki w tekście akapitów (przez czytnik); na dole przełącznik „Linki w tekście: wyłącz/włącz” – na klawiaturze każdy
+  link to dodatkowy przystanek strzałki,
+- tabela informacyjna (infobox, także Fandom) jako zwarta ramka „Etykieta: wartość” zaraz po pierwszym akapicie, jak w
+  mobilnej Wikipedii,
+- bez znaczników przypisów („[1]”, „[a]”), linków „edytuj”, szablonów nawigacyjnych i spisów treści,
+- odstępy jak w przeglądarce (bez „Polska , Rzeczpospolita”).
+
 ## Wygląd jak na oryginalnej stronie
 
 Każda strona w czytniku dostaje barwy swojego serwisu: kolor marki na pasku (z `<meta name="theme-color">` albo z CSS:
