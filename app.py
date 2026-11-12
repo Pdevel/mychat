@@ -4663,6 +4663,15 @@ def diag():
                          f"token {len(CF_API_TOKEN)} znaków")
             if ok:
                 cf_state({"down_until": 0, "reason": ""})
+        for where in (f"accounts/{CF_ACCOUNT_ID}", "user"):  # czy Cloudflare zna sam token (konta i użytkownika)
+            try:
+                check = requests.get(f"https://api.cloudflare.com/client/v4/{where}/tokens/verify", timeout=(5, 10),
+                                     headers={"Authorization": f"Bearer {CF_API_TOKEN}"})
+                status = (check.json().get("result") or {}).get("status") if check.status_code == 200 else None
+                lines.append(f"Cloudflare token ({where.split('/')[0]}): HTTP {check.status_code}, "
+                             f"{status or cf_error(check)}")
+            except (requests.exceptions.RequestException, ValueError) as err:
+                lines.append(f"Cloudflare token ({where.split('/')[0]}): błąd {type(err).__name__}")
     proxy_vars = sorted(k for k in os.environ if k.lower() in ("http_proxy", "https_proxy", "all_proxy", "no_proxy"))
     lines.append("zmienne proxy: " + (", ".join(proxy_vars) if proxy_vars else "brak"))
     for host, port in DIAG_TARGETS:
