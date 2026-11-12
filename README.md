@@ -13,6 +13,14 @@ nawigacja samymi strzałkami.
 - `/img?u=…` – obrazki z artykułów zmniejszone dla telefonu (szczegóły niżej)
 - `/film?u=…` – filmy ze stron przekodowane dla telefonu (szczegóły niżej)
 
+## Wygląd jak na oryginalnej stronie
+
+Każda strona w czytniku dostaje barwy swojego serwisu: kolor marki na pasku (z `<meta name="theme-color">` albo z CSS:
+zmienne `--primary`/`--brand`…, kolor linków, najczęstszy wyrazisty kolor), jasne albo ciemne tło (z reguł `html`/`body`
+pasujących do klas strony, także przez `var(--…)`, albo z oznaczeń trybu ciemnego) i ikonę serwisu w pasku. Kontrast
+jest pilnowany (tekst i linki czytelne na małym ekranie). Serwer czyta do 4 arkuszy CSS strony, równolegle i z pamięcią
+podręczną (doba). To nadal mały wbudowany blok `<style>` – bez plików CSS i JavaScriptu.
+
 ## Strony z listą (strony główne, sklepy, katalogi)
 
 Strona główna serwisu i strony z małą ilością tekstu są pokazywane jako lista: każdy tytuł to link, obok miniatura.

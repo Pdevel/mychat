@@ -12,6 +12,7 @@ Strony to czysty HTML: bez CSS, bez JavaScriptu, z jak najmniejszą liczbą link
   /film    – filmy ze stron przekodowane dla telefonu (MP4 H.264 320×240 albo 3GP H.263 176×144)
 """
 
+import collections
 import hashlib
 import io
 import ipaddress
@@ -32,7 +33,7 @@ from urllib.parse import parse_qs, quote, urljoin, urlparse
 
 import requests
 import urllib3.util.connection as urllib3_connection
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, SoupStrainer
 from flask import Flask, Response, abort, redirect, render_template, request, send_file, url_for
 from jinja2 import DictLoader
 from PIL import Image, ImageDraw, ImageOps
@@ -1072,26 +1073,32 @@ def get_article(url):
         kept.append(block)
     if truncated:
         kept.append(("p", "[Artykuł skrócony – całość w oryginale.]", None))
+    try:
+        theme = site_theme(text, final_url) if content_type != "text/plain" else None
+    except Exception:  # wygląd to dodatek – błąd nie może zablokować czytania
+        log.exception("motyw strony: %s", final_url)
+        theme = None
     article = {"title": title, "url": final_url, "pages": paginate(kept, ARTICLE_PAGE_CHARS), "videos": videos,
-               "posters": posters}
+               "posters": posters, "theme": theme}
     article_cache.set(url, article)
     return article
 
 
 # ---------- Obrazki dopasowane do telefonu ----------
-def shrink_image(raw, max_width=IMAGE_MAX_WIDTH, max_height=IMAGE_MAX_HEIGHT, quality=None):
+def shrink_image(raw, max_width=IMAGE_MAX_WIDTH, max_height=IMAGE_MAX_HEIGHT, quality=None, background=(255, 255, 255),
+                 min_size=IMAGE_MIN_SIZE):
     """Zmniejsza obrazek do ekranu telefonu i zapisuje jako lekki JPEG (bez przezroczystości i metadanych).
     Zwraca None dla ikonek/pikseli śledzących i plików, których nie da się odczytać."""
     try:
         with Image.open(io.BytesIO(raw)) as source:
-            if source.width < IMAGE_MIN_SIZE or source.height < IMAGE_MIN_SIZE:
+            if source.width < min_size or source.height < min_size:
                 return None
             source.draft("RGB", (max_width * 2, max_height * 2))  # JPEG: dekodowanie od razu w mniejszej skali
             image = ImageOps.exif_transpose(source)  # zdjęcia z telefonów bywają obrócone w metadanych
             if image.mode in ("RGBA", "LA") or (image.mode == "P" and "transparency" in image.info):
                 rgba = image.convert("RGBA")
-                image = Image.new("RGB", rgba.size, (255, 255, 255))
-                image.paste(rgba, mask=rgba.getchannel("A"))  # przezroczystość na białym tle
+                image = Image.new("RGB", rgba.size, background)
+                image.paste(rgba, mask=rgba.getchannel("A"))  # przezroczystość na tle (zwykle białym)
             else:
                 image = image.convert("RGB")
             image.thumbnail((max_width, max_height), Image.Resampling.LANCZOS)
@@ -1105,6 +1112,214 @@ def shrink_image(raw, max_width=IMAGE_MAX_WIDTH, max_height=IMAGE_MAX_HEIGHT, qu
 
 def images_enabled():
     return request.cookies.get("obrazki") != "0"
+
+
+# ---------- Wygląd strony źródłowej ----------
+# Czytnik przejmuje barwy oryginalnej strony: kolor marki (pasek, linki, przyciski), jasne albo ciemne tło i ikonę
+# serwisu. Barwy pochodzą z <meta name="theme-color">, z CSS strony (zmienne --primary/--brand…, kolor linków, tło
+# body, najczęstszy wyrazisty kolor) i z oznaczeń trybu ciemnego. Kontrast pilnujemy, żeby tekst był czytelny.
+CSS_COLOR = re.compile(r"#[0-9a-f]{6}\b|#[0-9a-f]{3}\b|rgba?\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*(?:,\s*[\d.]+\s*)?\)", re.I)
+CSS_BRAND_VAR = re.compile(r"--([\w-]*(?:primary|brand|accent|main|theme|link)[\w-]*)\s*:\s*([^;}]+)", re.I)
+CSS_BODY_RULE = re.compile(r"(?:^|(?<=[};]))\s*([^{};@]*\b(?:html|body)\b[^{};@]*)\{([^}]*)\}", re.I | re.M)
+CSS_VAR_DEF = re.compile(r"(--[\w-]+)\s*:\s*([^;}]+)")
+CSS_LINK = re.compile(r"(?:^|[}\s,])a(?::link)?\s*\{([^}]*)\}", re.I)
+DARK_HINT = re.compile(r"<(?:html|body)[^>]*(?:class|data-theme|data-bs-theme|data-color-mode)=[\"'][^\"']*\bdark", re.I)
+THEME_CSS_BYTES = 400_000
+THEME_STYLESHEETS = 4
+theme_cache = TTLCache(maxsize=200, ttl=6 * 3600)  # motyw serwisu (wg hosta) – także dla stron filmów
+stylesheet_cache = TTLCache(maxsize=60, ttl=24 * 3600)
+
+
+def parse_color(value):
+    """(r, g, b) z #abc, #aabbcc albo rgb()/rgba() (prawie przezroczyste pomijamy) – albo None."""
+    if not value:
+        return None
+    match = CSS_COLOR.search(value)
+    if not match:
+        return None
+    text = match.group().lower()
+    if text.startswith("#"):
+        digits = text[1:]
+        if len(digits) == 3:
+            digits = "".join(c * 2 for c in digits)
+        return tuple(int(digits[i:i + 2], 16) for i in (0, 2, 4))
+    parts = [p.strip() for p in text[text.index("(") + 1:-1].split(",")]
+    if len(parts) == 4 and float(parts[3] or 1) < 0.5:
+        return None
+    rgb = tuple(min(255, int(p)) for p in parts[:3])
+    return rgb
+
+
+def luminance(rgb):
+    def channel(c):
+        c /= 255
+        return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+    r, g, b = (channel(c) for c in rgb)
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def contrast(a, b):
+    la, lb = sorted((luminance(a), luminance(b)), reverse=True)
+    return (la + 0.05) / (lb + 0.05)
+
+
+def saturation(rgb):
+    return (max(rgb) - min(rgb)) / 255
+
+
+def mix(a, b, amount):
+    return tuple(round(x + (y - x) * amount) for x, y in zip(a, b))
+
+
+def hex_color(rgb):
+    return "#%02x%02x%02x" % rgb
+
+
+def readable(color, background, minimum=4.5):
+    """Przyciemnia albo rozjaśnia kolor, aż będzie czytelny na tle."""
+    target = (255, 255, 255) if luminance(background) < 0.4 else (0, 0, 0)
+    for step in range(11):
+        candidate = mix(color, target, step / 10)
+        if contrast(candidate, background) >= minimum:
+            return candidate
+    return target
+
+
+def css_value_color(value, variables):
+    """Kolor z wartości CSS, także przez zmienne var(--nazwa) (do 3 poziomów)."""
+    for _ in range(3):
+        match = re.search(r"var\(\s*(--[\w-]+)", value or "")
+        if not match:
+            break
+        value = variables.get(match.group(1), "")
+    return parse_color(value)
+
+
+def body_background(css, html):
+    """Tło strony: reguły dla html/body, których klasy pasują do znaczników tej strony (np. body.v7, html.dark body)."""
+    classes = {}
+    for tag in ("html", "body"):
+        match = re.search(rf"<{tag}\b[^>]*\bclass=[\"']([^\"']*)", html[:300_000], re.I)
+        classes[tag] = set(match.group(1).split()) if match else set()
+    variables = {}
+    for name, value in CSS_VAR_DEF.findall(css):
+        variables.setdefault(name, value)  # pierwsza definicja – zwykle :root
+    found = None
+    for selectors, decl in CSS_BODY_RULE.findall(css):
+        match = re.search(r"background(?:-color)?\s*:\s*([^;}]+)", decl)
+        if not match:
+            continue
+        for selector in selectors.split(","):
+            parts = re.findall(r"\b(html|body)((?:\.[\w-]+)*)(?=[\s>]|$)", selector.strip())
+            last = selector.strip().split()[-1] if selector.strip() else ""
+            if not parts or not re.match(r"^(html|body)\b", last):
+                continue  # reguła dotyczy elementu wewnątrz body, nie samego tła
+            if all(set(filter(None, cls.split("."))) <= classes[tag] for tag, cls in parts):
+                color = css_value_color(match.group(1), variables)
+                if color:
+                    found = color  # późniejsza reguła wygrywa, jak w przeglądarce
+    return found
+
+
+def fetch_stylesheet(url, site):
+    cached = stylesheet_cache.get(url)
+    if cached is not None:
+        return cached
+    css = ""
+    try:
+        _, resp = http_request(url, extra_headers={"Accept": "text/css,*/*;q=0.1", "Referer": site + "/"})
+        if resp.status_code < 400:
+            css = read_body(resp, limit=THEME_CSS_BYTES).decode("utf-8", "replace")
+        else:
+            resp.close()
+    except FetchError:
+        pass
+    stylesheet_cache.set(url, css)
+    return css
+
+
+def site_theme(html, base_url):
+    """Motyw strony: kolory (hex) dla paska, linków, tła, tekstu, przycisków i ikona serwisu – albo None."""
+    parts = urlparse(base_url)
+    site = f"{parts.scheme}://{parts.netloc}"
+    head = BeautifulSoup(html[:600_000], "lxml", parse_only=SoupStrainer(["meta", "link", "style"]))
+
+    def meta(name):
+        tag = head.find("meta", attrs={"name": name}) or head.find("meta", attrs={"property": name})
+        return (tag.get("content") or "") if tag is not None else ""
+
+    css = "\n".join(tag.get_text() for tag in head.find_all("style"))
+    sheets = [urljoin(base_url, link["href"]) for link in head.find_all("link", href=True)
+              if "stylesheet" in [r.lower() for r in (link.get("rel") or [])]][:THEME_STYLESHEETS]
+    if sheets:
+        results = [""] * len(sheets)
+
+        def load(index, url):
+            results[index] = fetch_stylesheet(url, site)
+
+        threads = [threading.Thread(target=load, args=(i, u), daemon=True) for i, u in enumerate(sheets)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=6)  # wygląd nie może opóźniać czytania
+        css += "\n" + "\n".join(results)
+
+    brand = parse_color(meta("theme-color")) or parse_color(meta("msapplication-TileColor"))
+    accents = [parse_color(v) for _, v in CSS_BRAND_VAR.findall(css)]
+    accents = [c for c in accents if c and saturation(c) >= 0.25]
+    link_rule = next((parse_color(m.group(1)) for m in (re.search(r"(?<![-\w])color\s*:\s*([^;}]+)", d) for d in CSS_LINK.findall(css))
+                      if m and parse_color(m.group(1))), None)
+    counts = collections.Counter(
+        c for c in (parse_color(m.group()) for m in CSS_COLOR.finditer(css)) if c and saturation(c) >= 0.35
+    )
+    common = counts.most_common(1)[0][0] if counts else None
+    accent = (accents[0] if accents else None) or (link_rule if link_rule and saturation(link_rule) >= 0.25 else None) or common
+    background = body_background(css, html)
+    dark = bool(DARK_HINT.search(html[:20_000])) or meta("color-scheme").strip().lower() == "dark"
+    if background is None:
+        background = (18, 18, 18) if dark else (255, 255, 255)
+    if not brand and not accent and background == (255, 255, 255):
+        return None  # nic charakterystycznego – zostaje wygląd domyślny
+    if brand and (luminance(brand) > 0.85 or contrast(brand, background) < 1.3) and accent:
+        brand = accent  # biały/zlewający się z tłem theme-color – pasek w kolorze akcentu
+    brand = brand or accent or (0x0b, 0x57, 0xd0)
+    accent = accent or (brand if saturation(brand) >= 0.25 else (0x0b, 0x57, 0xd0))
+    text = (232, 232, 232) if luminance(background) < 0.25 else (34, 34, 34)
+    link = readable(accent, background)
+    # biały napis, jeśli jest czytelny (próg jak dla pogrubionego tekstu) – tak wygląda większość pasków serwisów
+    bar_text = (255, 255, 255) if contrast((255, 255, 255), brand) >= 3 else (0, 0, 0)
+    icon = None
+    for rel in ("apple-touch-icon", "apple-touch-icon-precomposed", "icon", "shortcut icon"):
+        for link_tag in head.find_all("link", href=True):
+            rels = " ".join(link_tag.get("rel") or []).lower()
+            href = urljoin(base_url, link_tag["href"])
+            if rels == rel and not urlparse(href).path.lower().endswith(".svg") and urlparse(href).scheme in ("http", "https"):
+                icon = href
+                break
+        if icon:
+            break
+    theme = {
+        "bar": hex_color(brand), "bar_text": hex_color(bar_text), "link": hex_color(link), "bg": hex_color(background),
+        "text": hex_color(text), "muted": hex_color(mix(text, background, 0.4)), "line": hex_color(mix(background, text, 0.15)),
+        "button": hex_color(mix(background, link, 0.12)), "button_line": hex_color(mix(background, link, 0.4)),
+        "icon": icon or f"{site}/favicon.ico", "site": site,
+    }
+    theme_cache.set(parts.hostname or "", theme)
+    return theme
+
+
+def theme_css(theme):
+    """Mały blok CSS nadpisujący domyślne kolory barwami serwisu (same wartości hex – bezpieczne w <style>)."""
+    if not theme:
+        return ""
+    t = theme
+    return (
+        f"body{{background:{t['bg']};color:{t['text']}}}a{{color:{t['link']}}}"
+        f".bar{{background:{t['bar']};color:{t['bar_text']}}}.bar a{{color:{t['bar_text']}}}"
+        f".m,.h,.f{{color:{t['muted']}}}.it,.r{{border-color:{t['line']}}}.f{{border-color:{t['line']}}}"
+        f".b,.v{{background:{t['button']};border-color:{t['button_line']};color:{t['link']}}}"
+        f".s{{color:{t['text']}}}.ic{{vertical-align:middle;margin:0 4px 0 0}}"
+    )
 
 
 # ---------- Filmy dopasowane do telefonu ----------
@@ -2113,7 +2328,8 @@ TEMPLATES = {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width">
 <title>{% block title %}Szukaj{% endblock %}</title>
-<style>{{ style }}</style>
+<style>{{ style }}</style>{% if theme %}
+<style>{{ theme_css(theme) }}</style>{% endif %}
 {% block head %}{% endblock %}</head>
 <body>
 {% block body %}{% endblock %}
@@ -2125,7 +2341,7 @@ TEMPLATES = {
 <input type="submit" value="Szukaj">
 </form>
 """,
-    "_nav.html": """<div class="bar">{% if q %}<a href="{{ url_for('search', q=q, p=rp, w=1) }}">{% if request.args.get('l') %}Szukaj w sieci{% else %}&laquo; Wróć do wyników{% endif %}</a> | {% endif %}<a href="{{ url_for('home') }}">Nowe szukanie</a></div>
+    "_nav.html": """<div class="bar">{% if theme and images %}<img class="ic" src="{{ url_for('image', u=theme.icon, r=theme.site, ic=theme.bar[1:]) }}" width="16" height="16" alt="">{% endif %}{% if q %}<a href="{{ url_for('search', q=q, p=rp, w=1) }}">{% if request.args.get('l') %}Szukaj w sieci{% else %}&laquo; Wróć do wyników{% endif %}</a> | {% endif %}<a href="{{ url_for('home') }}">Nowe szukanie</a></div>
 """,
     "_find_form.html": """<form action="{{ url_for('read') }}" method="get">
 {% if fixed_url %}<input type="hidden" name="url" value="{{ fixed_url }}">{% else %}Link:<br><input class="u" type="text" name="url" value="" maxlength="2000"><br>
@@ -2193,7 +2409,7 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
     "film.html": """{% extends "base.html" %}
 {% block title %}{{ title }}{% endblock %}
 {% block head %}{% if refresh %}<meta http-equiv="refresh" content="{{ refresh }};url={{ here }}">{% endif %}{% endblock %}
-{% block body %}<div class="bar">{% if referer %}<a href="{{ url_for('read', url=referer, q=q, rp=rp) }}">&laquo; Wróć do strony</a> | {% elif q %}<a href="{{ url_for('search', q=q, p=rp) }}">&laquo; Wróć do wyników</a> | {% endif %}<a href="{{ url_for('home') }}">Nowe szukanie</a></div>
+{% block body %}<div class="bar">{% if theme and images %}<img class="ic" src="{{ url_for('image', u=theme.icon, r=theme.site, ic=theme.bar[1:]) }}" width="16" height="16" alt="">{% endif %}{% if referer %}<a href="{{ url_for('read', url=referer, q=q, rp=rp) }}">&laquo; Wróć do strony</a> | {% elif q %}<a href="{{ url_for('search', q=q, p=rp) }}">&laquo; Wróć do wyników</a> | {% endif %}<a href="{{ url_for('home') }}">Nowe szukanie</a></div>
 <div class="w">
 <h1>{{ title }}</h1>
 <p class="m">{{ host }}{% if status and status.total %} &middot; {{ status.total|mmss }}{% endif %}{% if part_total and part_total > 1 %} &middot; część {{ part }} z {{ part_total }}{% elif part > 1 %} &middot; część {{ part }}{% endif %}</p>
@@ -2314,6 +2530,7 @@ def page_items(blocks):
 app = Flask(__name__)
 app.jinja_loader = DictLoader(TEMPLATES)
 app.jinja_env.globals["style"] = STYLE
+app.jinja_env.globals["theme_css"] = theme_css
 app.jinja_env.filters["mmss"] = mmss
 app.jinja_env.filters["mb"] = megabytes
 
@@ -2379,7 +2596,7 @@ def read():
         return render_template(
             "find.html", title=article["title"], url=url, original=article["url"], host=host_of(article["url"]), s=phrase,
             fixed_url=url, hits=hits[(find_page - 1) * FIND_PER_PAGE:find_page * FIND_PER_PAGE], total=total,
-            sp=find_page, pages=count, **common,
+            sp=find_page, pages=count, theme=article.get("theme"), images=images_enabled(), **common,
         )
     page = min(page, len(pages))
     parts = urlparse(article["url"])
@@ -2387,7 +2604,7 @@ def read():
         "read.html", title=article["title"], url=url, original=article["url"], host=host_of(article["url"]),
         items=page_items(pages[page - 1]), page=page, pages=len(pages), images=images_enabled(),
         has_images=any(b[0] in ("img", "thumb") for p in pages for b in p), site=f"{parts.scheme}://{parts.netloc}",
-        videos=video_items(article), **common,
+        videos=video_items(article), theme=article.get("theme"), **common,
     )
 
 
@@ -2418,7 +2635,10 @@ def video():
 
     poster_img = url_for("image", u=src, v=1, p=poster or None, f=fallback or None,
                          r=f"{site_url.scheme}://{site_url.netloc}") if images_enabled() else None
+    theme = theme_cache.get(urlparse(referer).hostname or "") if referer else None
+    theme = theme or theme_cache.get(urlparse(src).hostname or "")
     page = dict(src=src, referer=referer, title=title, host=host_of(src), part=part, formats=VIDEO_FORMATS, poster_img=poster_img,
+                theme=theme, images=images_enabled(),
                 first_minutes=part_length(0) // 60, link=link, status=None, part_total=None, has_next=False,
                 next_ready=False, **common)
     os.makedirs(VIDEO_DIR, exist_ok=True)
@@ -2472,7 +2692,12 @@ def image():
         return Response("", status=400)
     if request.args.get("v") == "1":
         return video_poster_response(url, referer)
-    mode = "hq" if hq else thumb
+    icon_bg = request.args.get("ic") or ""
+    if re.fullmatch(r"[0-9a-fA-F]{6}", icon_bg):  # ikona serwisu w pasku: mała, na kolorze paska
+        mode = "ic" + icon_bg.lower()
+    else:
+        icon_bg = ""
+        mode = "hq" if hq else thumb
     data = image_cache.get((url, mode))
     if data is None:
         headers = {"Accept": "image/avif,image/webp,image/jpeg,image/png,image/*;q=0.8"}
@@ -2491,7 +2716,10 @@ def image():
             if resp.status_code >= 400 or not resp.headers.get("Content-Type", "").lower().startswith("image/"):
                 resp.close()
                 return Response("", status=404)
-            if hq:
+            if icon_bg:
+                color = tuple(int(icon_bg[i:i + 2], 16) for i in (0, 2, 4))
+                data = shrink_image(read_body(resp, limit=1_000_000), 32, 32, 80, background=color, min_size=8)
+            elif hq:
                 data = shrink_image(read_body(resp, limit=IMAGE_HQ_MAX_BYTES), IMAGE_HQ_WIDTH, IMAGE_HQ_HEIGHT, IMAGE_HQ_QUALITY)
             else:
                 size = (THUMB_MAX_SIZE, THUMB_MAX_SIZE) if thumb else (IMAGE_MAX_WIDTH, IMAGE_MAX_HEIGHT)
