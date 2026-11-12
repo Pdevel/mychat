@@ -2184,13 +2184,14 @@ SCRIPT_PLAYER = re.compile(
     re.I,
 )
 VIMEO_PLAYER = re.compile(r"^https://player\.vimeo\.com/video/\d+", re.I)
-EMBED_HOSTS = re.compile(  # popularne serwisy hostujące filmy przez strony embed/player
+EMBED_HOSTS = re.compile(  # popularne serwisy hostujące filmy przez strony embed/player (tylko nazwa serwera)
+    r"//(?:[a-z0-9-]+\.)*(?:"
     r"vidsrc\.(to|me|net|xyz|nl|pro|in|cc)|filemoon\.(sx|to|in|cc)|vidplay\.|doodstream\.|"
     r"streamtape\.|upstream\.|mixdrop\.|fembed\.|gofile\.io|cloudvideo\.|vidlox\.|"
     r"streamhub\.|vidhide\.|voe\.sx|vtbe\.|turbobit\.|rapidvideo\.|videovard\.|"
     r"streamvid\.|filelions\.|vidmoly\.|dropload\.|vidhd\.|streamwish\.|filelion\.|"
     r"embedsito\.|moonplayer\.|vidy\.st|supervideo\.|highvid\.|tubeload\.|"
-    r"multiembed\.|vidsrc2\.|embedrise\.|nontonfilm\.|smashy\.stream", re.I
+    r"multiembed\.|vidsrc2\.|embedrise\.|nontonfilm\.|smashy\.stream)", re.I
 )
 KNOWN_PLAYER_PAGE = re.compile(  # strony, z których film bierzemy przez publiczne API odtwarzacza
     r"^https?://(?:www\.)?(?:player\.vimeo\.com/video/|"
@@ -2453,21 +2454,18 @@ def find_videos(soup, base_url, deep=False, posters=None, raw=None):
         href = link.get("href", "")
         if has_file:
             add(href, direct, need_ext=True)
-        if not deep and (EMBED_HOSTS.search(href) or PLAYER_HINT.search(href)):
+        if not deep and EMBED_HOSTS.search(href):
             add(href, players)
     if not deep:  # przyciski/divy z adresem embed w atrybucie data-* (np. wmovies: <button data-src="…vidsrc…">)
         for tag in soup.find_all(True):
             for name, value in tag.attrs.items():
-                if isinstance(value, str) and name.startswith("data-") and (EMBED_HOSTS.search(value) or PLAYER_HINT.search(value)):
+                if isinstance(value, str) and name.startswith("data-") and EMBED_HOSTS.search(value):
                     add(value, players)
     frame_srcs = list(filter(None, (f.get("src") or f.get("data-src") or f.get("data-lazy-src")
                                     for f in soup.find_all("iframe"))))
-    extra_frames = []  # ramki bez slow kluczowych – fallback gdy nic innego nie zostanie
     for value in frame_srcs:
-        if deep or PLAYER_HINT.search(value):
+        if deep or PLAYER_HINT.search(value) or EMBED_HOSTS.search(value):
             add(value, players)
-        else:
-            extra_frames.append(value)
     if deep or not direct:
         scripts = "\n".join(s.string or "" for s in soup.find_all("script"))
         for escaped, plain in (("\\/", "/"), ("\\u002F", "/"), ("\\u002f", "/")):
@@ -2484,7 +2482,7 @@ def find_videos(soup, base_url, deep=False, posters=None, raw=None):
         # adresy serwisów wideo w zmiennych JS (np. var Servers = {"embedru":"https://vidy.st/…"})
         for match in re.finditer(r'https?://[A-Za-z0-9._~:/?#\[\]@!$&\'()*+,;%=\-]{8,}', scripts):
             url = match.group().rstrip('",\'\\')
-            if EMBED_HOSTS.search(url) or PLAYER_HINT.search(url):
+            if EMBED_HOSTS.search(url):
                 add(url, players)
         page = raw if raw is not None else str(soup)
         partner, entry = (KALTURA_PARTNER.search(page), KALTURA_ENTRY.search(page)) if "kaltura" in page.lower() else (None, None)
@@ -2492,9 +2490,6 @@ def find_videos(soup, base_url, deep=False, posters=None, raw=None):
             pid, eid = partner.group(1), entry.group(1)
             add(f"https://cdnapisec.kaltura.com/p/{pid}/sp/{pid}00/playManifest/entryId/{eid}"
                 f"/format/applehttp/protocol/https/a.m3u8", direct)
-    if not direct and not players and extra_frames:  # ostatni ratunek: iframe bez słów kluczowych (np. vidy.st/movie/…)
-        for value in extra_frames:
-            add(value, players)
     result = (direct + players)[:VIDEOS_PER_ARTICLE * (2 if deep else 1)]
     if posters is not None:
         posters.update({url: found_posters[url] for url in result if url in found_posters})
