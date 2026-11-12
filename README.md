@@ -20,8 +20,9 @@ Czysty HTML bez CSS i JavaScriptu, nawigacja samymi strzałkami.
 
 ## Gdy DuckDuckGo blokuje serwer
 
-DuckDuckGo potrafi blokować zapytania z serwerów w centrach danych (strona z captchą). Aplikacja pokazuje wtedy
-komunikat „Wyszukiwarka chwilowo nie przyjmuje zapytań z tego serwera”. Rozwiązanie zapasowe: załóż darmowe konto
+DuckDuckGo blokuje zapytania z serwerów w centrach danych – z Render.com połączenie z lite.duckduckgo.com
+w ogóle nie dochodzi do skutku (sprawdzone stroną `/diag`). Aplikacja pokazuje wtedy komunikat, że DuckDuckGo
+nie odpowiada, a po pierwszej nieudanej próbie przez 10 minut pyta od razu źródło zapasowe. Rozwiązanie zapasowe: załóż darmowe konto
 w Brave Search API (https://brave.com/search/api/), a klucz wpisz w Render jako zmienną środowiskową
 `BRAVE_API_KEY`. Wtedy przy blokadzie DuckDuckGo wyniki przyjdą z Brave.
 

@@ -53,6 +53,8 @@ DDG_HTML = "https://html.duckduckgo.com/html/"
 DDG_REGION = "pl-pl"
 BRAVE_API = "https://api.search.brave.com/res/v1/web/search"
 BRAVE_API_KEY = os.environ.get("BRAVE_API_KEY", "").strip()  # opcjonalny (darmowy plan); bez niego tylko DuckDuckGo
+DDG_BACKOFF = 600  # po nieudanej próbie DuckDuckGo przez tyle sekund pytamy od razu Brave (nie czekamy na timeout)
+ddg_down_until = 0.0
 
 
 # Tylko IPv4: na serwerach bez działającego IPv6 połączenie z adresem IPv6 wisi aż do limitu czasu, a duże serwisy
@@ -369,7 +371,8 @@ def says_no_results(html):
 
 
 def ddg_search(query, page):
-    """Zwraca (wyniki, czy_jest_następna_strona). Najpierw wersja Lite, w razie kłopotów wersja HTML."""
+    """Zwraca (wyniki, czy_jest_następna_strona). Najpierw wersja Lite, w razie kłopotów wersja HTML, potem Brave."""
+    global ddg_down_until
     key = (query.lower(), page)
     cached = search_cache.get(key)
     if cached is not None:
@@ -379,16 +382,25 @@ def ddg_search(query, page):
     if offset:
         form.update({"s": str(offset), "dc": str(offset + 1)})
     last_error = FetchError("Nie udało się pobrać wyników wyszukiwania. Spróbuj ponownie.", 502)
-    for endpoint, parser in ((DDG_LITE, parse_ddg_lite), (DDG_HTML, parse_ddg_html)):
+    unreachable = FetchError(
+        "Wyszukiwarka DuckDuckGo nie odpowiada z tego serwera. Właściciel strony może dodać zapasowy klucz "
+        "BRAVE_API_KEY (opis w README).", 503,
+    )
+    endpoints = ((DDG_LITE, parse_ddg_lite), (DDG_HTML, parse_ddg_html))
+    if BRAVE_API_KEY and time.monotonic() < ddg_down_until:
+        endpoints = ()  # DuckDuckGo niedawno zawiódł – od razu zapasowa wyszukiwarka
+    for endpoint, parser in endpoints:
         try:
             _, resp = http_request(endpoint, method="POST", data=form)
             status = resp.status_code
             html = decode_html(read_body(resp, limit=800_000), resp)
         except FetchError as err:
-            last_error = err
+            last_error = unreachable if err.status in (502, 504) else err
+            ddg_down_until = time.monotonic() + DDG_BACKOFF
             continue
         if status != 200 or looks_blocked(html):
             log.warning("DuckDuckGo odrzucił zapytanie (%s, status %s)", endpoint, status)
+            ddg_down_until = time.monotonic() + DDG_BACKOFF
             last_error = FetchError(
                 "Wyszukiwarka chwilowo nie przyjmuje zapytań z tego serwera. Spróbuj za kilka minut.", 503
             )
