@@ -3605,9 +3605,7 @@ TEMPLATES = {
 <style>{{ theme_css(theme) }}</style>{% endif %}{% if text_css %}
 <style>{{ text_css }}</style>{% endif %}
 {% block head %}{% endblock %}</head>
-<body{% block bodyattr %}{% endblock %}>{% if nokia_preview %}
-<style>html{background:#3c4043!important}body{max-width:240px!important;min-height:320px;outline:4px solid #111}.nkp{background:#111;color:#bbb;font-size:11px;padding:2px 4px}.nkp a{color:#8ab4f8}</style>
-<div class="nkp">Podgląd Nokii 240&times;320 &middot; <a href="{{ url_for('settings', k='nokia', v=0, next=request.full_path) }}">wyłącz</a></div>{% endif %}
+<body{% block bodyattr %}{% endblock %}>
 {% block body %}{% endblock %}
 </body>
 </html>
@@ -3642,7 +3640,7 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 </div>
 <div class="hb">{% if weather %}<a class="cd" href="{{ url_for('weather_page') }}"><b>{{ weather.temp }}&deg;</b> {{ weather.city }}, {{ weather.desc }}{% for day in weather.days %}<br><span class="m">{{ day.label }} od {{ day.min }} do {{ day.max }}&deg;C, {{ day.desc }}</span>{% endfor %}</a>{% else %}<a class="cd" href="{{ url_for('weather_page') }}">Pogoda</a>{% endif %}
 {% if rates %}<div class="cd"><span class="m">Kursy NBP</span><br>{% for code, value in rates.rates %}<span class="nw">{{ code }} {{ value }}</span>{% if not loop.last %} &middot; {% endif %}{% endfor %} <span class="m">zł</span></div>
-{% endif %}<p><a href="{{ url_for('map_page') }}" class="ch">Mapa</a> {% if screen_on %}<a href="{{ url_for('screen_page') }}" class="ch">Zdalny ekran</a> {% endif %}<a href="{{ url_for('settings', k='nokia', v=0 if nokia_preview else 1, next='/') }}" class="ch">Podgląd Nokii: {{ "wyłącz" if nokia_preview else "włącz" }}</a> <a href="{{ url_for('bookmarks') }}" accesskey="4" class="ch">Zakładki{% if bookmarks_count %} ({{ bookmarks_count }}){% endif %}</a> <a href="{{ url_for('settings', k='oszcz', v=0 if saving else 1, next='/') }}" class="ch">Oszczędzanie danych: {{ "wyłącz" if saving else "włącz" }}</a></p>
+{% endif %}<p><a href="{{ url_for('map_page') }}" class="ch">Mapa</a> {% if screen_on %}<a href="{{ url_for('screen_page') }}" class="ch">Zdalny ekran</a> {% endif %}{% if not in_frame %}<a href="{{ url_for('nokia_emulator') }}" class="ch">Podgląd Nokii</a> {% endif %}<a href="{{ url_for('bookmarks') }}" accesskey="4" class="ch">Zakładki{% if bookmarks_count %} ({{ bookmarks_count }}){% endif %}</a> <a href="{{ url_for('settings', k='oszcz', v=0 if saving else 1, next='/') }}" class="ch">Oszczędzanie danych: {{ "wyłącz" if saving else "włącz" }}</a></p>
 <p class="m">Dane z Szukajki w tym miesiącu: {{ data_mb|mb1 }} &middot; tekst:{% for size, label in (("s", "A-"), ("m", "A"), ("l", "A+"), ("xl", "A++")) %} {% if text_size == size %}<b>{{ label }}</b>{% else %}<a href="{{ url_for('settings', k='tekst', v=size, next='/') }}">{{ label }}</a>{% endif %}{% endfor %}</p></div>
 {% endblock %}
 """,
@@ -3849,9 +3847,123 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 <table class="sk" cellspacing="0"><tr><td><a href="{{ url_for('screen_page', a='back') }}" accesskey="1">1 &#9664;</a></td><td><a href="{{ url_for('screen_page', a='up') }}" accesskey="2">2 &#9650;</a></td><td><a href="{{ url_for('screen_page', a='forward') }}" accesskey="3">3 &#9654;</a></td></tr>
 <tr><td><a href="{{ url_for('screen_page', a='reload') }}" accesskey="5">5 &#8635;</a></td><td><a href="{{ url_for('screen_page', a='down') }}" accesskey="8">8 &#9660;</a></td><td><a href="{{ url_for('screen_page', a='key', key='Backspace') }}">&#9003;</a></td></tr></table>
 <form class="ef" action="{{ url_for('screen_page') }}" method="get"><input type="hidden" name="a" value="type"><input class="q" type="text" name="t" maxlength="500"> <input type="submit" value="Wpisz"> <input type="submit" name="enter" value="Wpisz + Enter"></form>
-<div class="w"><p class="m">{% if live %}<a href="{{ url_for('screen_page') }}"><b>&#9632; Zatrzymaj odświeżanie</b></a>{% else %}<a href="{{ url_for('screen_page', a='shot', live=1) }}"><b>&#9654; Odświeżaj na żywo</b></a>{% endif %} &middot; <a href="{{ url_for('settings', k='nokia', v=0 if nokia_preview else 1, next=url_for('screen_page')) }}">Podgląd Nokii: {{ "wyłącz" if nokia_preview else "włącz" }}</a> &middot; Ekran: {% if mode == 's' %}<b>mały</b> &middot; <a href="{{ url_for('settings', k='ekq', v='l', next=url_for('screen_page')) }}">duży</a>{% else %}<a href="{{ url_for('settings', k='ekq', v='s', next=url_for('screen_page')) }}">mały</a> &middot; <b>duży</b>{% endif %}</p>
+<div class="w"><p class="m">{% if live %}<a href="{{ url_for('screen_page') }}"><b>&#9632; Zatrzymaj odświeżanie</b></a>{% else %}<a href="{{ url_for('screen_page', a='shot', live=1) }}"><b>&#9654; Odświeżaj na żywo</b></a>{% endif %} &middot; {% if not in_frame %}<a href="{{ url_for('nokia_emulator', u=url_for('screen_page')) }}">Podgląd Nokii</a> &middot; {% endif %}Ekran: {% if mode == 's' %}<b>mały</b> &middot; <a href="{{ url_for('settings', k='ekq', v='l', next=url_for('screen_page')) }}">duży</a>{% else %}<a href="{{ url_for('settings', k='ekq', v='s', next=url_for('screen_page')) }}">mały</a> &middot; <b>duży</b>{% endif %}</p>
 <p class="m">{% if page_title %}<b>{{ page_title }}</b><br>{% endif %}{% if mode == 's' %}Strzałkami przechodzisz po linkach i przyciskach na obrazie, OK klika{% else %}Kliknij w obraz, aby kliknąć na stronie{% endif %}. Kliknięte pole tekstowe pokaże okienko do wpisywania. 1 wstecz, 3 dalej, 2/8 przewijanie, 5 odśwież. Bez dźwięku. {% if shot and not as_list %}<a href="{{ url_for('screen_page', a='shot', lista=1) }}">Lista linków ({{ shot["items"]|length }})</a> &middot; {% endif %}<a href="{{ url_for('screen_page', a='close') }}">Zamknij i wyczyść</a></p></div>
 {% endif %}{% if debug %}<!-- wpisywanie: {{ debug }} -->{% endif %}{% endblock %}
+""",
+    "nokia.html": """<!DOCTYPE html>
+<html lang="pl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Podgląd Nokii</title>
+<style>
+html,body{margin:0;background:#e8eaed;font-family:system-ui,Roboto,Arial,sans-serif}
+.ph{width:296px;margin:12px auto 10px;padding:16px 0 18px;background:linear-gradient(#4a4c50,#2b2d31);border-radius:34px;
+    box-shadow:0 6px 18px rgba(0,0,0,.35),inset 0 1px 0 #6b6d72;user-select:none;-webkit-user-select:none}
+.top{display:flex;justify-content:space-between;padding:0 30px 8px}.dot{width:9px;height:9px;border-radius:50%;background:#16171a}
+.scr{display:block;margin:0 auto;width:240px;height:320px;border:6px solid #000;border-radius:4px;background:#fff}
+.brand{color:#d7d9dc;text-align:center;font-weight:800;letter-spacing:2px;font-size:15px;margin:10px 0 8px}
+.keys{display:grid;grid-template-columns:repeat(3,1fr);gap:7px 9px;padding:0 16px}
+.k{height:40px;border:0;border-radius:10px;background:#3c3e43;color:#eee;font-size:20px;box-shadow:inset 0 1px 0 #55575c;cursor:pointer}
+.k small{font-size:10px;color:#aaa;margin-left:5px}.k:active{background:#5a5d63}
+.pad{grid-row:span 2;display:grid;grid-template:1fr 1fr 1fr/1fr 1fr 1fr;background:#2a2c30;border-radius:16px;padding:3px}
+.pad button{border:0;background:none;color:#ccc;font-size:12px;cursor:pointer}.pad .ok{background:#1b1c1f;border-radius:10px;color:#fff;font-size:11px}
+.soft{font-size:13px}.call{color:#34a853}.end{color:#ea4335}
+.info{max-width:300px;margin:0 auto 20px;font-size:12px;color:#5f6368;text-align:center;line-height:1.5}.info a{color:#0b57d0}
+</style></head><body>
+<div class="ph"><div class="top"><span class="dot"></span><span class="dot"></span></div>
+<iframe class="scr" id="ekran" src="{{ start }}" title="Ekran Nokii"></iframe>
+<div class="brand">NOKIA</div>
+<div class="keys">
+<button class="k soft" data-k="lsk">Wstecz</button>
+<div class="pad"><span></span><button data-k="up">&#9650;</button><span></span><button data-k="left">&#9664;</button><button class="ok" data-k="ok">OK</button><button data-k="right">&#9654;</button><span></span><button data-k="down">&#9660;</button><span></span></div>
+<button class="k soft" data-k="rsk">Start</button>
+<button class="k call" data-k="call">&#9990;</button><button class="k end" data-k="end">&#9990;</button>
+<button class="k" data-k="1">1<small>&#9993;</small></button><button class="k" data-k="2">2<small>abc</small></button><button class="k" data-k="3">3<small>def</small></button>
+<button class="k" data-k="4">4<small>ghi</small></button><button class="k" data-k="5">5<small>jkl</small></button><button class="k" data-k="6">6<small>mno</small></button>
+<button class="k" data-k="7">7<small>pqrs</small></button><button class="k" data-k="8">8<small>tuv</small></button><button class="k" data-k="9">9<small>wxyz</small></button>
+<button class="k" data-k="*">&#10033;</button><button class="k" data-k="0">0</button><button class="k" data-k="#">#</button>
+</div></div>
+<p class="info">Krzyżak: przechodzenie po linkach (jak kursor Opery Mini), OK: kliknięcie, cyfry: skróty Szukajki, lewy klawisz: wstecz, prawy: strona główna, czerwona słuchawka: zamknij podgląd. Na komputerze: strzałki, Enter, cyfry, Backspace.<br><a href="{{ url_for('settings', k='nokia', v=0, next='/') }}">Zamknij podgląd</a></p>
+<script>
+(function () {
+  var frame = document.getElementById('ekran');
+  function doc() { try { return frame.contentDocument; } catch (e) { return null; } }
+  function win() { return frame.contentWindow; }
+  function boxOf(d, e) {  // prostokąt elementu; <area> – z obrazka i współrzędnych
+    if (e.tagName === 'AREA') {
+      var img = d.querySelector('img[usemap="#' + e.parentNode.name + '"]');
+      if (!img) return null;
+      var r = img.getBoundingClientRect(), c = e.coords.split(',').map(Number);
+      return {left: r.left + c[0], top: r.top + c[1], width: c[2] - c[0], height: c[3] - c[1]};
+    }
+    var b = e.getBoundingClientRect();
+    return b.width || b.height ? b : null;
+  }
+  function items(d) {
+    return Array.prototype.filter.call(d.querySelectorAll('a[href],area[href],input:not([type=hidden]),button,select,textarea'),
+      function (e) { return boxOf(d, e); });
+  }
+  var current = null, loads = 0;
+  function mark(d) {
+    var m = d.getElementById('nk-kursor');
+    if (!m) {
+      m = d.createElement('div'); m.id = 'nk-kursor';
+      m.style.cssText = 'position:absolute;border:2px solid #fbbc04;border-radius:3px;pointer-events:none;z-index:99999;box-shadow:0 0 0 1px #000';
+      d.body.appendChild(m);
+    }
+    var b = current && boxOf(d, current);
+    if (!b) { m.style.display = 'none'; return; }
+    var w = win();
+    m.style.display = 'block';
+    m.style.left = (b.left + w.scrollX - 2) + 'px'; m.style.top = (b.top + w.scrollY - 2) + 'px';
+    m.style.width = b.width + 'px'; m.style.height = b.height + 'px';
+  }
+  function move(dir) {
+    var d = doc(); if (!d) return;
+    var list = items(d); if (!list.length) { win().scrollBy(0, dir * 120); return; }
+    var i = list.indexOf(current);
+    i = i < 0 ? (dir > 0 ? 0 : list.length - 1) : Math.max(0, Math.min(list.length - 1, i + dir));
+    current = list[i];
+    var b = boxOf(d, current), w = win();
+    if (b && (b.top < 0 || b.top + b.height > w.innerHeight)) w.scrollBy(0, b.top - w.innerHeight / 3);
+    if (current.tagName !== 'AREA') current.focus({preventScroll: true});
+    mark(d);
+  }
+  function press(k) {
+    var d = doc(), w = win(); if (!d) return;
+    if (k === 'up' || k === 'left') return move(-1);
+    if (k === 'down' || k === 'right') return move(1);
+    if (k === 'ok') {
+      if (!current) return move(1);
+      if (/^(INPUT|TEXTAREA|SELECT)$/.test(current.tagName) && !/^(submit|image|button)$/i.test(current.type)) current.focus();
+      else current.click();
+      return;
+    }
+    if (k === 'lsk') { if (loads > 1) { loads -= 2; w.history.back(); } return; }  // tylko w obrębie ekranu
+    if (k === 'rsk') { w.location.href = '/'; return; }
+    if (k === 'end') { location.href = {{ url_for('settings', k='nokia', v=0, next='/')|tojson }}; return; }
+    var hot = d.querySelector('[accesskey="' + k + '"]');
+    if (hot) hot.click();
+  }
+  document.querySelectorAll('[data-k]').forEach(function (b) {
+    b.addEventListener('click', function () { press(b.getAttribute('data-k')); });
+  });
+  var keymap = {ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right', Enter: 'ok', Backspace: 'lsk', Escape: 'end'};
+  function onKey(ev) {
+    var t = ev.target && ev.target.tagName;
+    if (t === 'INPUT' || t === 'TEXTAREA') return;  // pisanie w polu strony
+    var k = keymap[ev.key] || (/^[0-9*#]$/.test(ev.key) ? ev.key : null);
+    if (k) { ev.preventDefault(); press(k); }
+  }
+  document.addEventListener('keydown', onKey);
+  frame.addEventListener('load', function () {
+    current = null; loads += 1;
+    var d = doc(); if (!d) return;
+    d.addEventListener('keydown', onKey);
+    win().addEventListener('scroll', function () { mark(d); });
+  });
+})();
+</script>
+</body></html>
 """,
     "error.html": """{% extends "base.html" %}
 {% block title %}Błąd{% endblock %}
@@ -5078,6 +5190,18 @@ def screen_act(url, body, retry=True):
     return data
 
 
+@app.route("/nokia")
+def nokia_emulator():
+    """Podgląd Nokii 235 4G / 3210 4G na innym telefonie: ekran 240×320 w obudowie z klawiaturą (krzyżak skacze po
+    linkach jak kursor Opery Mini, cyfry to skróty Szukajki). Strony w ekranie – w wersji dla Nokii."""
+    start = request.args.get("u") or "/"
+    if not start.startswith("/") or start.startswith("//"):
+        start = "/"  # tylko strony Szukajki
+    resp = make_response(render_template("nokia.html", start=start))
+    resp.set_cookie("nokia", "1", max_age=3600, samesite="Lax")
+    return resp
+
+
 @app.route("/ekran.jpg")
 def screen_image():
     data = screen_shots.get(request.args.get("id") or "")
@@ -5372,12 +5496,13 @@ def settings():
 @app.context_processor
 def page_settings():
     return {"text_css": text_css(), "saving": saving_enabled(), "data_mb": data_used() / 1_000_000,
-            "text_size": request.cookies.get("tekst") or "m", "nokia_preview": nokia_preview()}
+            "text_size": request.cookies.get("tekst") or "m", "nokia_preview": nokia_preview(),
+            "in_frame": request.headers.get("Sec-Fetch-Dest") == "iframe"}
 
 
 def nokia_preview():
-    """Podgląd Nokii na innym telefonie: każda strona w kolumnie 240 px, zdalny ekran w wersji dla Nokii."""
-    return request.cookies.get("nokia") == "1"
+    """Podgląd Nokii (emulator /nokia): zdalny ekran w wersji dla Nokii – w ramce emulatora i dopóki podgląd włączony."""
+    return request.cookies.get("nokia") == "1" or request.headers.get("Sec-Fetch-Dest") == "iframe"
 
 
 @app.after_request
