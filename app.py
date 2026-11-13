@@ -1351,6 +1351,46 @@ def clean_document(soup, base_url):
     return rows[:50]
 
 
+HIDDEN_STYLE = re.compile(r"display\s*:\s*none|visibility\s*:\s*hidden", re.I)
+
+
+def drop_hidden(soup):
+    """Usuwa to, czego na stronie nie widać, dopóki się czegoś nie kliknie: zwinięte panele ([hidden], x-cloak,
+    aria-hidden, display:none). Element z dużą częścią tekstu strony zostaje – bywa, że to cała treść, którą dopiero
+    JavaScript odsłania."""
+    body = soup.body or soup
+    total = len(body.get_text(" ", strip=True)) or 1
+    for tag in soup.find_all(True):
+        if tag.attrs is None or tag.name in ("html", "body", "head"):
+            continue
+        hidden = (tag.has_attr("hidden") or tag.has_attr("x-cloak") or tag.get("aria-hidden") == "true"
+                  or HIDDEN_STYLE.search(tag.get("style") or ""))
+        if hidden and len(tag.get_text(" ", strip=True)) < total * 0.3:
+            tag.decompose()
+
+
+LEAF_BLOCKERS = ["div", "p", "li", "ul", "ol", "table", "section", "article", "h1", "h2", "h3", "h4", "h5", "h6", "img", "figure"]
+
+
+def promote_text_divs(soup):
+    """Strony zbudowane z samych <div> (bez <p>): najgłębsze <div> z tekstem traktujemy jak akapity."""
+    for div in soup.find_all("div"):
+        if div.find(LEAF_BLOCKERS) is None and node_text(div):
+            div.name = "p"
+
+
+def unwrap_content_buttons(soup):
+    """Przyciski z treścią (rozwijane wiersze z liczbą i opisem, karty-przyciski z linkiem) zamieniamy na zwykłe bloki –
+    inaczej czytnik wyrzuciłby je razem z przyciskami sterującymi („Menu”, „Szukaj”)."""
+    for button in soup.find_all("button"):
+        text = node_text(button)
+        link = button.find("a", href=True)
+        if len(text) >= 12 and ((link is not None and len(node_text(link)) >= 8) or re.search(r"\d", text) and len(text) >= 20):
+            button.name = "div"
+            for attr in ("type", "onclick"):
+                button.attrs.pop(attr, None)
+
+
 BR_MARK = "\x04"
 
 
@@ -1631,12 +1671,15 @@ def extract_article(html, url, videos=None, posters=None, info=None):
     heading = node_text(soup.find("h1"))
     if info is not None:
         info["crumbs"], info["site_name"] = breadcrumbs(soup, url), site_name(soup)
+    drop_hidden(soup)  # zwinięte panele (np. „[+] Źródła”) – przed kartą danych i treścią
+    unwrap_content_buttons(soup)
     meta, meta_links = meta_rows(soup, url)
     infobox = clean_document(soup, url)
+    cleaned = str(soup)
     blocks = []
     if Document is not None:
         try:
-            doc = Document(str(soup), url=url)
+            doc = Document(cleaned, url=url)
             title = squash(doc.short_title()) or title
             blocks = collect_blocks(
                 BeautifulSoup(doc.summary(html_partial=True), "lxml"), url, with_images=True, skip_images=small_images,
@@ -1666,6 +1709,13 @@ def extract_article(html, url, videos=None, posters=None, info=None):
         if sum(len(b[1]) for b in fallback if b[0] != "thumb") > readability_chars or (front_page and fallback_links >= 10):
             blocks = fallback
             listing = True
+    text_of = lambda bl: sum(len(visible(b[1])) for b in bl if b[0] in ("h", "p", "pl"))
+    if listing and text_of(blocks) < 1500:  # strona z samych <div>: najgłębsze bloki tekstu jako akapity
+        divs = BeautifulSoup(cleaned, "lxml")
+        promote_text_divs(divs)
+        alt = fallback_blocks(divs, url, skip_images=small_images)
+        if text_of(alt) > 1.5 * text_of(blocks) + 100:
+            blocks = alt
     if listing and embedded:  # tylko strony z listą – w artykułach dane JSON to zwykle „polecane”
         blocks = add_json_listing(blocks, embedded)
     if gallery:
@@ -1804,6 +1854,8 @@ CF_PATHS = ("browser-rendering", "browser-run")  # nazwa usługi zmieniła się 
 CF_GAP = 10.5  # s między zapytaniami (limit darmowego planu)
 CF_WAIT = 8.0  # najwyżej tyle czytnik czeka na wolne miejsce w kolejce
 RENDER_MIN_CHARS = 500  # mniej tekstu niż tyle (a strona wygląda na aplikację JS) = renderujemy
+# Napisy-zastępstwa, które JavaScript podmienia na dane (liczniki, wyniki, ceny): kilka takich = renderujemy zawsze.
+PLACEHOLDERS = re.compile(r">\s*(?:pobieranie danych|wczytywanie|ładowanie|retrieving data|loading)\s*(?:\.\.\.|…)\s*<", re.I)
 SPA_MARKERS = re.compile(r'__NEXT_DATA__|__NUXT__|id="(?:root|app|__next|__nuxt|main-app)"|data-reactroot|ng-version|'
                          r"<noscript>[^<]{0,200}(?:JavaScript|javascript)", re.I)
 render_cache = DiskCache("wyrenderowane", ttl=3600, max_files=200)
@@ -1836,7 +1888,7 @@ def needs_render(html, blocks):
     """Czy strona to szkielet aplikacji JavaScript: prawie bez tekstu, a ze znakami aplikacji (albo bez treści w ogóle)."""
     if not CF_ACCOUNT_ID or not CF_API_TOKEN:
         return False
-    if not blocks:
+    if not blocks or len(PLACEHOLDERS.findall(html)) >= 3:
         return True
     chars = sum(len(visible(b[1])) for b in blocks if b[0] in ("h", "p", "pl"))
     return chars < RENDER_MIN_CHARS and (bool(SPA_MARKERS.search(html)) or html.count("<script") >= 8)
