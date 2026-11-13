@@ -4014,8 +4014,8 @@ html,body{margin:0;background:#e8eaed;font-family:system-ui,Roboto,Arial,sans-se
       else current.click();
       return;
     }
-    if (k === 'lsk') { if (loads > 1) { loads -= 2; w.history.back(); } return; }  // tylko w obrębie ekranu
-    if (k === 'rsk') { w.location.href = '/'; return; }
+    if (k === 'lsk') { if (loads > 1) { loads -= 2; startLoad(); w.history.back(); } return; }  // tylko w obrębie ekranu
+    if (k === 'rsk') { startLoad(); w.location.href = '/'; return; }
     if (k === 'end') { location.href = {{ url_for('settings', k='nokia', v=0, next='/')|tojson }}; return; }
     var hot = d.querySelector('[accesskey="' + k + '"]');
     if (hot) hot.click();
@@ -4067,7 +4067,19 @@ html,body{margin:0;background:#e8eaed;font-family:system-ui,Roboto,Arial,sans-se
   startLoad();  // pierwsza strona w ramce
   frame.addEventListener('load', function () {
     stopLoad();
-    try { win().addEventListener('beforeunload', startLoad); } catch (e) {}
+    try {  // iPhone (Safari) nie zgłasza „beforeunload” – początek ładowania łapiemy po kliknięciu linku i wysłaniu formularza
+      var fw = win(), fd = doc();
+      fw.addEventListener('beforeunload', startLoad);
+      fw.addEventListener('pagehide', startLoad);
+      fd.addEventListener('click', function (ev) {
+        var a = ev.target && ev.target.closest ? ev.target.closest('a[href],area[href]') : null;
+        if (!a || ev.defaultPrevented || (a.target && a.target !== '_self')) return;
+        var href = a.getAttribute('href') || '';
+        if (!href || href.charAt(0) === '#' || /^javascript:/i.test(href)) return;
+        startLoad();
+      });
+      fd.addEventListener('submit', function (ev) { if (!ev.defaultPrevented) startLoad(); });
+    } catch (e) {}
     current = null; loads += 1;
     var d = doc(); if (!d) return;
     d.addEventListener('keydown', onKey);
