@@ -3830,8 +3830,9 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 """,
     "screen.html": """{% extends "base.html" %}
 {% block title %}{{ page_title or "Zdalny ekran" }}{% endblock %}
-{% block head %}{% if waiting %}<meta http-equiv="refresh" content="5;url={{ here }}">{% elif live and small_browser %}<meta http-equiv="refresh" content="0.5;url={{ url_for('screen_page', a='shot', live=1, n=tick) }}">{% endif %}<style>body{max-width:none}.ab{margin:0;padding:2px 2px 1px;background:#f1f3f4;white-space:nowrap}.ab .q{width:68%;padding:3px 8px;font-size:13px}.ab input[type=submit]{padding:4px 8px;font-size:12px}.ab a{padding:0 4px;font-weight:bold;font-size:16px}.sc2{text-align:center;line-height:0}.sc2 input{border:0;padding:0;margin:0;background:none;border-radius:0}.hk{position:absolute;left:-999px;top:0}.ef{margin:2px 4px}.ef .q{width:120px}.fx{background:#fff4e5;border:1px solid #f0c890;border-radius:8px;padding:4px}</style>{% endblock %}
-{% block body %}<form class="ab" id="g" action="{{ url_for('screen_page') }}" method="get"><input class="q" type="text" name="u" value="{{ page_url or target }}" maxlength="2000"> <input type="submit" value="Idź"> <a href="{{ url_for('screen_page', a='shot', opcje=1) }}">&#8943;</a></form>
+{% block head %}{% if waiting %}<meta http-equiv="refresh" content="5;url={{ here }}">{% elif live and small_browser %}<meta http-equiv="refresh" content="1;url={{ url_for('screen_page', a='shot', live=1, n=tick) }}">{% endif %}<style>body{max-width:none}.ab{margin:0;padding:2px 2px 1px;background:#f1f3f4;white-space:nowrap}.ab .q{width:68%;padding:3px 8px;font-size:13px}.ab input[type=submit]{padding:4px 8px;font-size:12px}.ab a{padding:0 4px;font-weight:bold;font-size:16px}.sc2{text-align:center;line-height:0}.sc2 input{border:0;padding:0;margin:0;background:none;border-radius:0}.hk{position:absolute;left:-999px;top:0}.ef{margin:2px 4px}.ef .q{width:120px}.fx{background:#fff4e5;border:1px solid #f0c890;border-radius:8px;padding:4px}.nx{text-align:center;font-size:12px;line-height:1.7}.nx a{padding:0 12px}.ab.lv a{font-size:13px;padding:0 8px}</style>{% endblock %}
+{% block body %}{% if live and mode == 's' and shot %}<div class="nx ab lv" id="g"><a href="{{ url_for('screen_page') }}">&#9632; stop</a><a href="{{ url_for('screen_page', a='up', live=1) }}">&#9650; wyżej</a><a href="{{ url_for('screen_page', a='down', live=1) }}">&#9660; dalej</a></div>
+{% else %}<form class="ab" id="g" action="{{ url_for('screen_page') }}" method="get"><input class="q" type="text" name="u" value="{{ page_url or target }}" maxlength="2000"> <input type="submit" value="Idź"> <a href="{{ url_for('screen_page', a='shot', opcje=1) }}">&#8943;</a></form>{% endif %}
 {% if waiting %}<div class="w"><div class="ib"><b>{% if error %}Zdalna przeglądarka nie działa{% else %}Uruchamiam zdalną przeglądarkę&hellip;{% endif %}</b><br>
 {% if error %}{{ error }}{% else %}{{ state.phase or "start" }}{% endif %}</div>
 <a class="b" href="{{ here }}">Odśwież</a></div>
@@ -3839,7 +3840,7 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 {% if google_q %}<div class="ef"><a href="{{ url_for('search', q=google_q) }}"><b>Szukaj &bdquo;{{ google_q }}&rdquo; w Szukajce</b></a></div>
 {% endif %}{% if field %}<form class="ef fx" action="{{ url_for('screen_page') }}" method="get"><b>{{ field }}:</b><br><input type="hidden" name="a" value="type"><input class="q" type="text" name="t" maxlength="500"> <input type="submit" value="Wpisz"> <input type="submit" name="enter" value="Wpisz + Enter"></form>
 {% endif %}{% if options %}<div class="w">{% if page_title %}<p class="m"><b>{{ page_title }}</b></p>{% endif %}<a class="b" href="{{ url_for('screen_page', a='shot') }}">&laquo; Wróć do strony</a>
-<a class="b" href="{{ url_for('screen_page', a='shot', live=1) }}">Odświeżaj na żywo (co 0,5 s)</a>
+<a class="b" href="{{ url_for('screen_page', a='shot', live=1) }}">Odświeżaj na żywo (co 1 s)</a>
 {% if shot %}<a class="b" href="{{ url_for('screen_page', a='shot', lista=1) }}">Lista linków ({{ shot["items"]|length }})</a>
 {% endif %}<a class="b" href="{{ url_for('screen_page', a='key', key='Backspace') }}">Usuń znak w polu (&#9003;)</a>
 {% if page_url %}<a class="b" href="{{ url_for('read', url=page_url, czytnik=1) }}">Otwórz w czytniku</a>
@@ -3849,9 +3850,9 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 <a class="b" href="{{ url_for('screen_page', a='close') }}">Zamknij i wyczyść</a></div>
 {% elif shot and as_list %}<div class="w">{% for it in shot["items"] %}<div class="r"><a href="{{ url_for('screen_page', a='click', vx=it.cx, vy=it.cy) }}">{{ loop.index }}. {% if it.f %}[pole] {% endif %}{{ it.t or "(bez opisu)" }}</a></div>
 {% else %}<p class="m">Na ekranie nie ma linków ani przycisków.</p>{% endfor %}<a class="b" href="{{ url_for('screen_page', a='shot') }}">Pokaż obraz</a></div>
-{% elif shot and mode == 's' and shot["items"] %}<div class="sc2" data-y="{{ shot.y|int }}"><img src="{{ url_for('screen_image', id=shot.id) }}" width="{{ shot.w }}" height="{{ shot.h }}" usemap="#ek" alt="Ekran"><map name="ek">{% for it in shot["items"] %}<area shape="rect" coords="{{ it.x1 }},{{ it.y1 }},{{ it.x2 }},{{ it.y2 }}" href="{{ url_for('screen_page', a='click', vx=it.cx, vy=it.cy) }}" alt="{{ it.t or 'link' }}">{% endfor %}</map></div>
-{% elif shot %}<form class="sc2" action="{{ url_for('screen_page') }}" method="get"><input type="image" name="k" src="{{ url_for('screen_image', id=shot.id) }}" width="{{ shot.w }}" height="{{ shot.h }}" alt="Ekran"></form>{% endif %}
-{% if live %}<div class="ef"><a href="{{ url_for('screen_page') }}">&#9632; Zatrzymaj odświeżanie</a></div>{% endif %}{% if live and not small_browser %}<script>
+{% elif shot and mode == 's' and shot["items"] %}{% if shot.y > 0 and not live %}<div class="nx"><a href="{{ url_for('screen_page', a='up') }}">&#9650; wyżej</a></div>{% endif %}<div class="sc2" data-y="{{ shot.y|int }}"><img src="{{ url_for('screen_image', id=shot.id) }}" width="{{ shot.w }}" height="{{ shot.h }}" usemap="#ek" alt="Ekran"><map name="ek">{% for it in shot["items"] %}<area shape="rect" coords="{{ it.x1 }},{{ it.y1 }},{{ it.x2 }},{{ it.y2 }}" href="{{ url_for('screen_page', a='click', vx=it.cx, vy=it.cy) }}" alt="{{ it.t or 'link' }}">{% endfor %}</map></div>{% if not live %}<div class="nx"><a href="{{ url_for('screen_page', a='down') }}">&#9660; dalej</a></div>{% endif %}
+{% elif shot %}<form class="sc2" data-y="{{ shot.y|int }}" action="{{ url_for('screen_page') }}" method="get"><input type="image" name="k" src="{{ url_for('screen_image', id=shot.id) }}" width="{{ shot.w }}" height="{{ shot.h }}" alt="Ekran"></form>{% if mode == 's' and not live %}<div class="nx"><a href="{{ url_for('screen_page', a='down') }}">&#9660; dalej</a></div>{% endif %}{% endif %}
+{% if live and not (mode == 's' and shot) %}<div class="ef"><a href="{{ url_for('screen_page') }}">&#9632; Zatrzymaj odświeżanie</a></div>{% endif %}{% if live and not small_browser %}<script>
 (function () {  // na żywo bez przeładowania strony: podmieniamy tylko obraz – zostaje przewinięcie i wpisany tekst
   var url = {{ url_for('screen_page', a='shot', live=1)|tojson }};
   function later(ms) { setTimeout(tick, ms); }
@@ -3877,7 +3878,7 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
   later(500);
 })();
 </script>{% endif %}
-{% endif %}<a class="hk" tabindex="-1" href="{{ url_for('screen_page', a='back') }}" accesskey="1">wstecz</a><a class="hk" tabindex="-1" href="{{ url_for('screen_page', a='up') }}" accesskey="2">góra</a><a class="hk" tabindex="-1" href="{{ url_for('screen_page', a='forward') }}" accesskey="3">dalej</a><a class="hk" tabindex="-1" href="{{ url_for('screen_page', a='reload') }}" accesskey="5">odśwież</a><a class="hk" tabindex="-1" href="{{ url_for('screen_page', a='down') }}" accesskey="8">dół</a><a class="hk" tabindex="-1" href="{{ url_for('home') }}" accesskey="0">start</a>
+{% endif %}<a class="hk" tabindex="-1" href="{{ url_for('screen_page', a='back') }}" accesskey="1">wstecz</a><a class="hk" tabindex="-1" href="{{ url_for('screen_page', a='up', live=1 if live else None) }}" accesskey="2">góra</a><a class="hk" tabindex="-1" href="{{ url_for('screen_page', a='forward') }}" accesskey="3">dalej</a><a class="hk" tabindex="-1" href="{{ url_for('screen_page', a='reload') }}" accesskey="5">odśwież</a><a class="hk" tabindex="-1" href="{{ url_for('screen_page', a='down', live=1 if live else None) }}" accesskey="8">dół</a><a class="hk" tabindex="-1" href="{{ url_for('home') }}" accesskey="0">start</a>
 {% if debug %}<!-- wpisywanie: {{ debug }} -->{% endif %}{% endblock %}
 """,
     "nokia.html": """<!DOCTYPE html>
@@ -3936,7 +3937,7 @@ html,body{margin:0;background:#e8eaed;font-family:system-ui,Roboto,Arial,sans-se
         return b && e.getAttribute('tabindex') !== '-1' && b.left + b.width > 0 && b.left < width;
       });
   }
-  var current = null, loads = 0, resume = 0, loading = false, lastIdx = -1;
+  var current = null, loads = 0, lastIdx = -1;
   function mark(d) {
     var m = d.getElementById('nk-kursor');
     if (!m) {
@@ -3958,14 +3959,8 @@ html,body{margin:0;background:#e8eaed;font-family:system-ui,Roboto,Arial,sans-se
     if (b && !fits(b, w)) w.scrollBy(0, b.top < 0 ? b.top - 6 : Math.min(b.top - 6, b.top + b.height - w.innerHeight + 6));
     mark(d);  // bez focus(): żółta ramka wystarczy, a fokus na iPhonie potrafi wywołać klawiaturę
   }
-  function remote(d, dir) {  // zdalny ekran: koniec obrazu – przewijamy stronę po drugiej stronie
-    var hot = d.querySelector('a.hk[accesskey="' + (dir > 0 ? 8 : 2) + '"]'), sc = d.querySelector('.sc2[data-y]');
-    if (!hot || !sc || (dir < 0 && !(+sc.getAttribute('data-y') > 0))) return false;  // na górze strony nie ma czego przewijać
-    resume = dir; loading = true; setTimeout(function () { loading = false; }, 15000);  // gdyby strona się nie wczytała
-    hot.click(); return true;
-  }
   function move(dir) {  // jak w Operze Mini: krótki krok przewijania, kursor tylko na widocznych elementach
-    var d = doc(); if (!d || loading) return;  // zdalna strona się wczytuje – przytrzymana strzałka czeka
+    var d = doc(); if (!d) return;
     var w = win(), step = Math.round(w.innerHeight * 0.4), list = items(d), i = list.indexOf(current);
     var cb = current && boxOf(d, current);
     if (i < 0 || !cb || cb.top + cb.height <= 0 || cb.top >= w.innerHeight) {  // brak kursora albo został poza ekranem
@@ -3973,14 +3968,9 @@ html,body{margin:0;background:#e8eaed;font-family:system-ui,Roboto,Arial,sans-se
       if (shown.length) return pick(d, dir > 0 ? shown[0] : shown[shown.length - 1]);
     } else {
       var next = list[i + dir], nb = next && boxOf(d, next);
-      if (nb && dir < 0 && current.tagName === 'AREA' && next.tagName !== 'AREA') {  // z obrazu w górę do paska
-        if (remote(d, -1)) return;
-      }
       if (nb && (dir > 0 ? nb.top + nb.height - w.innerHeight : -nb.top) <= step) return pick(d, next);
     }
-    var before = w.scrollY;
-    w.scrollBy(0, dir * step);
-    if (w.scrollY === before && !(list[i + dir])) { if (remote(d, dir)) return; }
+    w.scrollBy(0, dir * step);  // na końcu strony stoi, jak w Operze Mini (dalszy fragment: link „▼ dalej”)
     cb = current && boxOf(d, current);
     if (cb && (cb.top + cb.height <= 0 || cb.top >= w.innerHeight)) current = null;  // kursor uciekł z ekranu
     mark(d);
@@ -4000,10 +3990,9 @@ html,body{margin:0;background:#e8eaed;font-family:system-ui,Roboto,Arial,sans-se
     requestAnimationFrame(frameStep);
   }
   function glide(dir, px) {  // bez zatrzymywania się na linkach
-    var d = doc(); if (!d || loading) return;
-    var w = win(), before = w.scrollY;
+    var d = doc(); if (!d) return;
+    var w = win();
     w.scrollBy(0, dir * px);
-    if (w.scrollY === before) { if (remote(d, dir)) return; }
     var cb = current && boxOf(d, current);
     if (cb && (cb.top + cb.height <= 0 || cb.top >= w.innerHeight)) { current = null; mark(d); }
   }
@@ -4059,7 +4048,7 @@ html,body{margin:0;background:#e8eaed;font-family:system-ui,Roboto,Arial,sans-se
   }
   document.addEventListener('keydown', onKey);
   frame.addEventListener('load', function () {
-    current = null; loads += 1; loading = false;
+    current = null; loads += 1;
     var d = doc(); if (!d) return;
     d.addEventListener('keydown', onKey);
     win().addEventListener('scroll', function () { mark(d); });
@@ -4067,11 +4056,6 @@ html,body{margin:0;background:#e8eaed;font-family:system-ui,Roboto,Arial,sans-se
       if (current && !d.contains(current)) current = items(d)[lastIdx] || null;
       mark(d);
     });
-    if (resume) {  // po przewinięciu zdalnej strony kursor wraca na obraz, nie na pasek adresu
-      var areas = items(d).filter(function (e) { return e.tagName === 'AREA'; });
-      if (areas.length) pick(d, resume > 0 ? areas[0] : areas[areas.length - 1]);
-      resume = 0;
-    }
   });
 })();
 </script>
@@ -5077,6 +5061,7 @@ INSTABOX_API = "https://api.instabox.sh"
 SCREEN_MACHINE = "szukajka-ekran"
 SCREEN_PORT = 8765
 SCREEN_W = 232  # szerokość zrzutu na telefonie (ekran 240 px)
+LIVE_CLIP = 405  # na żywo na Nokii: zrzut górnych 405 px widoku 320 px = 294 px na ekranie (z paskiem adresu cały ekran 240×320)
 # Strony-aplikacje, które bez JavaScriptu nic nie pokazują: czytnik od razu przekazuje je zdalnemu ekranowi.
 APP_URL = re.compile(r"^https?://(?:(?:www|maps)\.google\.[a-z.]+/maps|maps\.google\.|maps\.app\.goo\.gl/|goo\.gl/maps|"
                      r"(?:docs|mail|drive|calendar|translate)\.google\.|(?:www\.|m\.)?facebook\.com/|(?:www\.)?instagram\.com/|"
@@ -5349,7 +5334,10 @@ def screen_page():
     else:
         mode = SCREEN_MODES[screen_mode()]
         scale = mode["view"]["w"] / mode["display"]
-        body = {"sid": sid, "action": action, "geo": screen_geo(), "view": mode["view"]}
+        live_one = bool(request.args.get("live")) and screen_mode() == "s"
+        # na żywo na Nokii: obraz = dokładnie jeden ekran; Opera Mini przeładowuje stronę i wraca na górę, więc nie ma czego
+        # przewijać lokalnie – przewija się zdalna strona (2/8, ▲/▼), a widok zdalnej przeglądarki (i formularze) zostaje ten sam
+        body = {"sid": sid, "action": action, "geo": screen_geo(), "view": dict(mode["view"], clip=LIVE_CLIP) if live_one else mode["view"]}
         if action == "open":
             body["url"] = target
         elif action == "click" and request.args.get("vx") is not None:  # obszar z mapy (strzałki Nokii): już w px widoku
@@ -5357,7 +5345,7 @@ def screen_page():
         elif action == "click":
             body.update(x=clamp_int(request.args.get("k.x"), 0, 0, 2000) * scale, y=clamp_int(request.args.get("k.y"), 0, 0, 4000) * scale)
         elif action in ("up", "down"):
-            step = mode.get("step") or mode["view"]["h"] // 2  # zostaje kawałek poprzedniego widoku, nic nie ginie
+            step = LIVE_CLIP // 2 if live_one else mode.get("step") or mode["view"]["h"] // 2  # zostaje kawałek poprzedniego widoku
             body.update(action="scroll", dy=-step if action == "up" else step)
         elif action == "type":
             body.update(text=(request.args.get("t") or "")[:500], enter=bool(request.args.get("enter")))
@@ -5613,7 +5601,7 @@ def page_settings():
     return {"text_css": text_css(), "saving": saving_enabled(), "data_mb": data_used() / 1_000_000,
             "text_size": request.cookies.get("tekst") or "m", "nokia_preview": nokia_preview(),
             "in_frame": request.headers.get("Sec-Fetch-Dest") == "iframe",
-            "small_browser": bool(SMALL_BROWSER.search(request.headers.get("User-Agent", "")))}
+            "small_browser": nokia_preview() or bool(SMALL_BROWSER.search(request.headers.get("User-Agent", "")))}  # podgląd = Opera Mini
 
 
 def nokia_preview():

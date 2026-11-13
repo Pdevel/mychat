@@ -36,8 +36,10 @@ def view_of(body):
             return max(low, min(high, int(view.get(key, default))))
         except (TypeError, ValueError):
             return default
-    return {"w": num("w", 240, 480, WIDTH), "h": num("h", 320, 4000, HEIGHT), "scale": num("scale", 1, 2, 1), "q": num("q", 40, 85, 60),
-            "fmt": "webp" if view.get("fmt") == "webp" else "jpeg"}
+    out = {"w": num("w", 240, 480, WIDTH), "h": num("h", 320, 4000, HEIGHT), "scale": num("scale", 1, 2, 1), "q": num("q", 40, 85, 60),
+           "fmt": "webp" if view.get("fmt") == "webp" else "jpeg"}
+    out["clip"] = min(out["h"], num("clip", 100, 4000, out["h"]))  # zrzut tylko górnej części widoku (np. jeden ekran Nokii)
+    return out
 MAX_SESSIONS = 3
 IDLE_SECONDS = 20 * 60
 KEYS = {"Enter", "Backspace", "Tab", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown",
@@ -234,11 +236,12 @@ def capture(page, view):
         cdp = page.context.new_cdp_session(page) if getattr(page, "_ekran_cdp", None) is None else page._ekran_cdp
         page._ekran_cdp = cdp
         x, y = run(page, "() => [scrollX, scrollY]", default=[0, 0])  # obszar zrzutu liczy się od początku dokumentu
-        clip = {"x": x, "y": y, "width": view["w"], "height": view["h"], "scale": view["scale"]}  # scale: ostrość (Retina)
+        clip = {"x": x, "y": y, "width": view["w"], "height": view.get("clip") or view["h"], "scale": view["scale"]}  # scale: ostrość (Retina)
         return cdp.send("Page.captureScreenshot", {"format": view["fmt"], "quality": view["q"], "clip": clip})["data"]
     except PlaywrightError:
         page._ekran_cdp = None
-        shot = page.screenshot(type="jpeg", quality=view["q"], timeout=6000, animations="disabled", caret="hide")
+        shot = page.screenshot(type="jpeg", quality=view["q"], timeout=6000, animations="disabled", caret="hide",
+                               clip={"x": 0, "y": 0, "width": view["w"], "height": view.get("clip") or view["h"]})
         return base64.b64encode(shot).decode()
 
 
@@ -261,7 +264,7 @@ def clickables(page, width, height):
             cx, cy = it["cx"] + box["x"], it["cy"] + box["y"]
             if x2 - x1 >= 6 and y2 - y1 >= 6 and 0 <= cx < width and 0 <= cy < height:
                 items.append(dict(it, x=round(x1), y=round(y1), r=round(x2), b=round(y2), cx=round(cx), cy=round(cy)))
-    return items[:400]
+    return [dict(it, b=min(it["b"], height)) for it in items if it["y"] < height and it["cy"] < height][:400]
 
 
 def press_enter(page):
@@ -315,7 +318,7 @@ def act(body):
         else:
             page.wait_for_timeout(350)  # nakładka, menu, pole: animacja i kursor
     elif action == "scroll":
-        page.mouse.move(width / 2, height / 2)
+        page.mouse.move(width / 2, (view.get("clip") or height) / 2)  # środek tego, co widać na telefonie
         page.mouse.wheel(0, max(-3000, min(3000, int(body.get("dy", 0)))))
         page.wait_for_timeout(250)
     elif action == "type":
@@ -381,7 +384,7 @@ def act(body):
     shot = capture(page, view)
     shot_done = time.monotonic()
     result = {"title": title_of(page), "url": page.url, "width": width, "height": height, "shot": shot, "fmt": view["fmt"],
-              "items": clickables(page, width, height), "y": run(page, "() => Math.round(scrollY)", default=0)}
+              "items": clickables(page, width, view.get("clip") or height), "y": run(page, "() => Math.round(scrollY)", default=0)}
     if action == "click":
         result["field"] = run(page, FIELD, default="") or ""  # kliknięto pole tekstowe – telefon od razu pokaże wpisywanie
         if not result["field"] and sessions[sid].get("search_click"):  # nakładka wyszukiwania jeszcze się otwiera
