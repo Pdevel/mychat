@@ -161,7 +161,9 @@ def act(body):
         debug = {"target": target, "frames": len(page.frames), "active": page.evaluate(ACTIVE)}
         if body.get("enter"):
             query = page.evaluate(VALUE).strip()
-            if not press_enter(page) and query and re.match(r"https://www\.google\.[a-z.]+/maps", page.url):
+            press_enter(page)
+            maps = re.match(r"https://www\.google\.[a-z.]+/maps", page.url)
+            if query and maps and not re.search(r"/maps/(?:search|place|dir)/", page.url):
                 # Mapy Google przyjmują tylko „prawdziwy” Enter – ten sam wynik daje adres wyszukiwania
                 page.goto("https://www.google.com/maps/search/" + quote(query), wait_until="domcontentloaded", timeout=12000)
             settle(page, 2000)  # wyniki wyszukiwania (np. Mapy Google) ładują się chwilę
