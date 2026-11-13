@@ -3931,9 +3931,7 @@ html,body{margin:0;background:#e8eaed;font-family:system-ui,Roboto,Arial,sans-se
     var w = win(), b = boxOf(d, e);
     current = e;
     if (b && !fits(b, w)) w.scrollBy(0, b.top < 0 ? b.top - 6 : Math.min(b.top - 6, b.top + b.height - w.innerHeight + 6));
-    if (/^(INPUT|TEXTAREA|SELECT)$/.test(e.tagName)) { if (d.activeElement && d.activeElement.blur) d.activeElement.blur(); }  // pole dopiero po OK – bez wyskakującej klawiatury
-    else if (e.tagName !== 'AREA') e.focus({preventScroll: true});
-    mark(d);
+    mark(d);  // bez focus(): żółta ramka wystarczy, a fokus na iPhonie potrafi wywołać klawiaturę
   }
   function remote(d, dir) {  // zdalny ekran: koniec obrazu – przewijamy stronę po drugiej stronie
     var hot = d.querySelector('a.hk[accesskey="' + (dir > 0 ? 8 : 2) + '"]'), sc = d.querySelector('.sc2[data-y]');
@@ -3984,8 +3982,13 @@ html,body{margin:0;background:#e8eaed;font-family:system-ui,Roboto,Arial,sans-se
     var cb = current && boxOf(d, current);
     if (cb && (cb.top + cb.height <= 0 || cb.top >= w.innerHeight)) { current = null; mark(d); }
   }
+  function typing(d) {  // pole tekstowe w ekranie ma fokus (otwarta klawiatura telefonu)
+    var a = d.activeElement;
+    return a && (a.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName) && !/^(submit|image|button|checkbox|radio)$/i.test(a.type || ''));
+  }
   function press(k) {
     var d = doc(), w = win(); if (!d) return;
+    if (!(k === 'ok' && current && current === d.activeElement) && typing(d)) d.activeElement.blur();  // inny klawisz chowa klawiaturę
     if (k === 'up' || k === 'left') return move(-1);
     if (k === 'down' || k === 'right') return move(1);
     if (k === 'ok') {
