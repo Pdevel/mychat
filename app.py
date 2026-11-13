@@ -3616,7 +3616,7 @@ TEMPLATES = {
 """,
     "_nav.html": """<div class="bar"{% if not bottom %} id="g"{% endif %}>{% if theme and images %}<img class="ic" src="{{ url_for('image', u=theme.icon, r=theme.site, ic=theme.bar[1:]) }}" width="16" height="16" alt="">{% endif %}{% if q %}<a href="{{ url_for('search', q=q, p=rp, w=1) }}"{% if not bottom %} accesskey="7"{% endif %}>{% if request.args.get('l') %}Szukaj w sieci{% else %}&laquo; Wyniki{% endif %}</a> {% endif %}<a href="{{ url_for('home') }}"{% if not bottom %} accesskey="0"{% endif %}>Nowe szukanie</a></div>
 """,
-    "_settings.html": """<div class="f" id="d"><a href="{{ original }}" accesskey="9">[Oryginał]</a>{% if bookmark_url %} &middot; {% if bookmarked %}<a href="{{ url_for('bookmark_remove', u=bookmark_url, next=request.full_path) }}" accesskey="4">Usuń z zakładek</a>{% else %}<a href="{{ url_for('bookmark_add', u=bookmark_url, t=title, next=request.full_path) }}" accesskey="4">Dodaj do zakładek</a>{% endif %}{% endif %}<br>
+    "_settings.html": """<div class="f" id="d"><a href="{{ original }}" accesskey="9">[Oryginał]</a>{% if screen_on %} &middot; <a href="{{ url_for('screen_page', u=original) }}">[Zdalny ekran]</a>{% endif %}{% if bookmark_url %} &middot; {% if bookmarked %}<a href="{{ url_for('bookmark_remove', u=bookmark_url, next=request.full_path) }}" accesskey="4">Usuń z zakładek</a>{% else %}<a href="{{ url_for('bookmark_add', u=bookmark_url, t=title, next=request.full_path) }}" accesskey="4">Dodaj do zakładek</a>{% endif %}{% endif %}<br>
 {% if has_images and not saving %}<a href="{{ url_for('settings', k='obrazki', v=0 if images else 1, next=request.full_path) }}">Obrazki: {{ "wyłącz" if images else "włącz" }}</a> &middot; {% endif %}{% if has_links %}<a href="{{ url_for('settings', k='linki', v=0 if links else 1, next=request.full_path) }}">Linki w tekście: {{ "wyłącz" if links else "włącz" }}</a>{% endif %}{% if has_images and not saving or has_links %}<br>
 {% endif %}Tekst:{% for size, label in (("s", "A-"), ("m", "A"), ("l", "A+"), ("xl", "A++")) %} {% if text_size == size %}<b>{{ label }}</b>{% else %}<a href="{{ url_for('settings', k='tekst', v=size, next=request.full_path) }}">{{ label }}</a>{% endif %}{% endfor %} &middot; <a href="{{ url_for('settings', k='oszcz', v=0 if saving else 1, next=request.full_path) }}">Oszczędzanie danych: {{ "wyłącz" if saving else "włącz" }}</a><br>
 <span class="m">Dane w tym miesiącu: {{ data_mb|mb1 }} &middot; skróty: 1 wstecz, 3 dalej, <a href="#g" accesskey="2">2 góra</a>, <a href="#d" accesskey="8">8 dół</a>, 5 film, 4 zakładka, 7 wyniki, 0 nowe szukanie, 9 oryginał</span></div>
@@ -3639,7 +3639,7 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 </div>
 <div class="hb">{% if weather %}<a class="cd" href="{{ url_for('weather_page') }}"><b>{{ weather.temp }}&deg;</b> {{ weather.city }}, {{ weather.desc }}{% for day in weather.days %}<br><span class="m">{{ day.label }} od {{ day.min }} do {{ day.max }}&deg;C, {{ day.desc }}</span>{% endfor %}</a>{% else %}<a class="cd" href="{{ url_for('weather_page') }}">Pogoda</a>{% endif %}
 {% if rates %}<div class="cd"><span class="m">Kursy NBP</span><br>{% for code, value in rates.rates %}<span class="nw">{{ code }} {{ value }}</span>{% if not loop.last %} &middot; {% endif %}{% endfor %} <span class="m">zł</span></div>
-{% endif %}<p><a href="{{ url_for('map_page') }}" class="ch">Mapa</a> <a href="{{ url_for('bookmarks') }}" accesskey="4" class="ch">Zakładki{% if bookmarks_count %} ({{ bookmarks_count }}){% endif %}</a> <a href="{{ url_for('settings', k='oszcz', v=0 if saving else 1, next='/') }}" class="ch">Oszczędzanie danych: {{ "wyłącz" if saving else "włącz" }}</a></p>
+{% endif %}<p><a href="{{ url_for('map_page') }}" class="ch">Mapa</a> {% if screen_on %}<a href="{{ url_for('screen_page') }}" class="ch">Zdalny ekran</a> {% endif %}<a href="{{ url_for('bookmarks') }}" accesskey="4" class="ch">Zakładki{% if bookmarks_count %} ({{ bookmarks_count }}){% endif %}</a> <a href="{{ url_for('settings', k='oszcz', v=0 if saving else 1, next='/') }}" class="ch">Oszczędzanie danych: {{ "wyłącz" if saving else "włącz" }}</a></p>
 <p class="m">Dane z Szukajki w tym miesiącu: {{ data_mb|mb1 }} &middot; tekst:{% for size, label in (("s", "A-"), ("m", "A"), ("l", "A+"), ("xl", "A++")) %} {% if text_size == size %}<b>{{ label }}</b>{% else %}<a href="{{ url_for('settings', k='tekst', v=size, next='/') }}">{{ label }}</a>{% endif %}{% endfor %}</p></div>
 {% endblock %}
 """,
@@ -3823,8 +3823,26 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 <table class="mc" cellspacing="0"><tr><td>{% if z > zmin %}<a href="{{ links.zout }}" accesskey="1">1 &minus;</a>{% endif %}</td><td><a href="{{ links.up }}" accesskey="2">2 &#9650;</a></td><td>{% if z < zmax %}<a href="{{ links.zin }}" accesskey="3">3 +</a>{% endif %}</td></tr>
 <tr><td><a href="{{ links.left }}" accesskey="4">4 &#9664;</a></td><td><a href="{{ links.down }}" accesskey="8">8 &#9660;</a></td><td><a href="{{ links.right }}" accesskey="6">6 &#9654;</a></td></tr></table>
 <div class="w">{% for p in places %}<div class="r">{% if places|length > 1 %}<b>{{ loop.index }}.</b> {% endif %}<a class="t" href="{{ goto[loop.index0] }}">{{ p.name }}</a></div>
-{% endfor %}<p class="m">Kliknij w mapę, aby ją tam wyśrodkować. Przybliżenie {{ z }} z {{ zmax }}. Mapa &copy; współtwórcy OpenStreetMap.</p></div>
+{% endfor %}{% if screen_on %}<a class="b" href="{{ url_for('screen_page', u='https://www.google.com/maps/search/' ~ (q or ('%.5f,%.5f'|format(lat, lon)))|urlencode) }}">Mapy Google (zdalny ekran)</a>
+{% endif %}<p class="m">Kliknij w mapę, aby ją tam wyśrodkować. Przybliżenie {{ z }} z {{ zmax }}. Mapa &copy; współtwórcy OpenStreetMap.</p></div>
 {% endblock %}
+""",
+    "screen.html": """{% extends "base.html" %}
+{% block title %}{{ page_title or "Zdalny ekran" }}{% endblock %}
+{% block head %}{% if waiting %}<meta http-equiv="refresh" content="5;url={{ here }}">{% endif %}<style>.sc2{text-align:center;padding:2px 0}.sc2 input{border:0;padding:0;margin:0;background:none;border-radius:0}.sk{width:100%;max-width:{{ sw }}px;margin:2px auto;border-collapse:collapse}.sk td{text-align:center;padding:2px}.sk a{display:block;padding:5px 0;border:1px solid #d3e0fb;background:#eef3fd;border-radius:12px;font-weight:bold}.ef{margin:4px 8px}.ef .q{width:120px}</style>{% endblock %}
+{% block body %}<div class="bar" id="g"><a href="{{ url_for('home') }}" accesskey="0">Nowe szukanie</a>{% if page_url %} <a href="{{ url_for('read', url=page_url) }}">Czytnik</a>{% endif %}</div>
+<form class="ef" action="{{ url_for('screen_page') }}" method="get"><input class="q" type="text" name="u" value="{{ page_url or target }}" maxlength="2000"> <input type="submit" value="Idź"></form>
+{% if waiting %}<div class="w"><div class="ib"><b>{% if error %}Zdalna przeglądarka nie działa{% else %}Uruchamiam zdalną przeglądarkę&hellip;{% endif %}</b><br>
+{% if error %}{{ error }}{% else %}{{ state.phase or "start" }}{% endif %}</div>
+<p class="m">{% if error %}Spróbuję ponownie przy następnym wejściu.{% else %}Strona odświeża się sama co 5 s. Pierwsze uruchomienie trwa 1&ndash;2 min, potem kilka sekund.{% endif %}</p>
+<a class="b" href="{{ here }}">Odśwież</a></div>
+{% else %}{% if error %}<div class="w"><div class="e">{{ error }}</div></div>{% endif %}
+{% if shot %}<form class="sc2" action="{{ url_for('screen_page') }}" method="get"><input type="image" name="k" src="{{ url_for('screen_image', id=shot.id) }}" width="{{ sw }}" height="{{ shot.h }}" alt="Ekran – kliknij"></form>{% endif %}
+<table class="sk" cellspacing="0"><tr><td><a href="{{ url_for('screen_page', a='back') }}" accesskey="1">1 &#9664;</a></td><td><a href="{{ url_for('screen_page', a='up') }}" accesskey="2">2 &#9650;</a></td><td><a href="{{ url_for('screen_page', a='forward') }}" accesskey="3">3 &#9654;</a></td></tr>
+<tr><td><a href="{{ url_for('screen_page', a='reload') }}" accesskey="5">5 &#8635;</a></td><td><a href="{{ url_for('screen_page', a='down') }}" accesskey="8">8 &#9660;</a></td><td><a href="{{ url_for('screen_page', a='key', key='Backspace') }}">&#9003;</a></td></tr></table>
+<form class="ef" action="{{ url_for('screen_page') }}" method="get"><input type="hidden" name="a" value="type"><input class="q" type="text" name="t" maxlength="500"> <input type="submit" value="Wpisz"> <input type="submit" name="enter" value="Wpisz + Enter"></form>
+<div class="w"><p class="m">{% if page_title %}<b>{{ page_title }}</b><br>{% endif %}Kliknij w obraz, aby kliknąć na stronie. Tekst: najpierw kliknij pole na obrazie, potem wpisz go wyżej. 1 wstecz, 3 dalej, 2/8 przewijanie, 5 odśwież. Bez dźwięku. <a href="{{ url_for('screen_page', a='close') }}">Zamknij i wyczyść</a></p></div>
+{% endif %}{% endblock %}
 """,
     "error.html": """{% extends "base.html" %}
 {% block title %}Błąd{% endblock %}
@@ -3834,7 +3852,8 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 <p class="m">Opera Mini otworzy pełną wersję strony przez własne serwery, które strony często wpuszczają.</p>
 <p><a href="{{ retry }}">Spróbuj ponownie w Szukajce</a></p>
 {% elif original %}<a class="b" href="{{ retry }}">Spróbuj ponownie</a>
-<p><a href="{{ original }}">[Oryginał]</a></p>
+{% if screen_on %}<a class="b" href="{{ url_for('screen_page', u=original) }}">Otwórz w zdalnej przeglądarce</a>
+{% endif %}<p><a href="{{ original }}">[Oryginał]</a></p>
 {% endif %}</div>
 {% endblock %}
 """,
@@ -3922,6 +3941,7 @@ app.jinja_loader = DictLoader(TEMPLATES)
 app.jinja_env.globals["style"] = STYLE
 app.jinja_env.globals["theme_css"] = theme_css
 app.jinja_env.globals["dark_style"] = DARK_STYLE
+app.jinja_env.globals["screen_on"] = bool(os.environ.get("INSTABOX_API_KEY", "").strip())
 app.jinja_env.globals.update(inline_links=inline_links, visible=visible, infobox_rows=infobox_rows)
 app.jinja_env.filters["mmss"] = mmss
 app.jinja_env.filters["mb"] = megabytes
@@ -4810,6 +4830,249 @@ def map_page():
                            goto=goto, error=error, size=MAP_SIZE, zmin=MAP_ZOOM[0], zmax=MAP_ZOOM[1])
 
 
+# ---------- Zdalny ekran (prawdziwa przeglądarka na maszynie InstaBox) ----------
+# Strony, które bez JavaScriptu nie działają (Mapy Google, aplikacje), otwieramy w Chromium na maszynie InstaBox;
+# telefon dostaje zrzut ekranu, w który klika (input type=image), i przyciski. Klatka po klatce – bez dźwięku.
+# Szukajka sama zakłada maszynę, budzi ją, wgrywa ekran (ekran_server.py) i publikuje jego port.
+INSTABOX_API_KEY = os.environ.get("INSTABOX_API_KEY", "").strip().strip("\"' ")
+INSTABOX_API = "https://api.instabox.sh"
+SCREEN_MACHINE = "szukajka-ekran"
+SCREEN_PORT = 8765
+SCREEN_W = 232  # szerokość zrzutu na telefonie (ekran 240 px)
+SCREEN_STATE = os.path.join(CACHE_DIR, "ekran.json")
+SCREEN_TOKEN = hashlib.sha256(("ekran:" + INSTABOX_API_KEY).encode()).hexdigest()[:40] if INSTABOX_API_KEY else ""
+SCREEN_SERVER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ekran_server.py")
+SCREEN_PLAYWRIGHT = "playwright==1.49.0"
+screen_shots = DiskCache("ekran", ttl=900, max_files=300)
+_screen_lock = threading.Lock()
+
+
+def screen_state(update=None):
+    try:
+        with open(SCREEN_STATE, encoding="utf-8") as handle:
+            state = json.load(handle)
+    except (OSError, ValueError):
+        state = {}
+    if update is not None:
+        state.update(update, updated=time.time())
+        try:
+            os.makedirs(CACHE_DIR, exist_ok=True)
+            tmp = f"{SCREEN_STATE}.{uuid.uuid4().hex}"
+            with open(tmp, "w", encoding="utf-8") as handle:
+                json.dump(state, handle)
+            os.replace(tmp, SCREEN_STATE)
+        except OSError:
+            pass
+    return state
+
+
+class InstaboxError(Exception):
+    def __init__(self, message, retry_after=None):
+        super().__init__(message)
+        self.message, self.retry_after = message, retry_after
+
+
+def ibx(method, path, json_body=None, timeout=(6, 30), **headers):
+    try:
+        resp = requests.request(method, INSTABOX_API + path, json=json_body, timeout=timeout,
+                                headers={"X-API-Key": INSTABOX_API_KEY, **headers})
+    except requests.exceptions.RequestException as err:
+        raise InstaboxError(f"InstaBox nie odpowiada ({type(err).__name__}).")
+    try:
+        data = resp.json()
+    except ValueError:
+        data = {}
+    if resp.status_code >= 400:
+        error = data.get("error") if isinstance(data.get("error"), dict) else {}
+        code, message = error.get("code") or resp.status_code, error.get("message") or resp.text[:160]
+        retry = error.get("retryAfterSeconds") or resp.headers.get("Retry-After")
+        raise InstaboxError(f"InstaBox: {code} – {message}", int(retry) if str(retry or "").isdigit() else None)
+    return data
+
+
+def screen_machine():
+    """Maszyna ekranu (po nazwie) albo None."""
+    for machine in ibx("GET", "/v1/machines").get("machines") or []:
+        if machine.get("name") == SCREEN_MACHINE and machine.get("state") not in ("deleting", "deleted"):
+            return machine
+    return None
+
+
+def wait_operation(operation, phase, limit=240):
+    deadline = time.time() + limit
+    while operation.get("state") not in ("succeeded", "failed") and time.time() < deadline:
+        screen_state({"phase": f"{phase} ({operation.get('phase') or operation.get('state')})"})
+        time.sleep(4)
+        operation = ibx("GET", f"/v1/operations/{operation['id']}")
+    if operation.get("state") != "succeeded":
+        raise InstaboxError(f"InstaBox: {phase} nie udało się ({operation.get('error') or operation.get('state')}).")
+
+
+def screen_health(url, timeout=5):
+    try:
+        resp = requests.get(url.rstrip("/") + "/health", timeout=timeout)
+        return resp.status_code == 200 and resp.json().get("ok")
+    except (requests.exceptions.RequestException, ValueError):
+        return False
+
+
+def prepare_screen():
+    """W tle: maszyna -> uruchomiona -> ekran wgrany i działa -> publiczny adres. Stan w SCREEN_STATE."""
+    if not _screen_lock.acquire(blocking=False):
+        return
+    try:
+        screen_state({"status": "starting", "phase": "szukam maszyny", "error": ""})
+        machine = screen_machine()
+        if machine is None:
+            screen_state({"phase": "zakładam maszynę (pierwszy raz trwa dłużej)"})
+            operation = ibx("POST", "/v1/machines", {"name": SCREEN_MACHINE, "templateId": "agent-browser"},
+                            **{"Idempotency-Key": f"szukajka-ekran-{int(time.time() // 600)}"})
+            wait_operation(operation, "zakładanie maszyny")
+            machine = screen_machine()
+        state = machine.get("state")
+        if state in ("suspended", "suspending"):
+            screen_state({"phase": "budzę maszynę"})
+            wait_operation(ibx("POST", f"/v1/machines/{machine['id']}/wake", {}), "budzenie")
+        elif state in ("stopped", "stopping", "error"):
+            screen_state({"phase": "uruchamiam maszynę"})
+            wait_operation(ibx("POST", f"/v1/machines/{machine['id']}/start", {}), "uruchamianie")
+        for _ in range(30):  # creating / starting / resuming
+            machine = ibx("GET", f"/v1/machines/{machine['id']}")
+            if machine.get("state") == "running":
+                break
+            screen_state({"phase": f"maszyna: {machine.get('state')}"})
+            time.sleep(4)
+        mid = machine["id"]
+        ports = ibx("GET", f"/v1/machines/{mid}/ports")
+        url = next((p.get("url") for p in (ports.get("ports") or ports.get("items") or []) if p.get("port") == SCREEN_PORT), "")
+        if not (url and screen_health(url)):
+            screen_state({"phase": "wgrywam przeglądarkę (pierwszy raz ok. 1–2 min)"})
+            with open(SCREEN_SERVER, encoding="utf-8") as handle:
+                server = handle.read()
+            cmd = ("set -e; mkdir -p ~/ekran; cd ~/ekran; cat > server.py; "
+                   "[ -x venv/bin/python ] || python3 -m venv venv; "
+                   f"venv/bin/python -c 'import playwright' 2>/dev/null || venv/bin/pip install -q '{SCREEN_PLAYWRIGHT}'; "
+                   "if ! command -v chromium >/dev/null && ! command -v chromium-browser >/dev/null "
+                   "&& ! command -v google-chrome >/dev/null; then venv/bin/playwright install chromium; fi; "
+                   "pkill -f 'venv/bin/python server.py' || true; sleep 1; "
+                   f"EKRAN_PORT={SCREEN_PORT} setsid nohup venv/bin/python server.py > server.log 2>&1 < /dev/null & "
+                   f"for i in $(seq 1 30); do curl -sf localhost:{SCREEN_PORT}/health && exit 0; sleep 1; done; "
+                   "tail -20 server.log; exit 1")
+            result = ibx("POST", f"/v1/machines/{mid}/exec", {"cmd": cmd, "stdin": server, "timeoutSeconds": 600,
+                                                               "envs": {"EKRAN_TOKEN": SCREEN_TOKEN}, "noHistory": True},
+                         timeout=(6, 620))
+            if result.get("exitCode") != 0:
+                raise InstaboxError("Przeglądarka na maszynie nie wstała: " + (result.get("stdout", "") + result.get("stderr", ""))[-300:])
+            published = ibx("POST", f"/v1/machines/{mid}/ports", {"port": SCREEN_PORT, "access": "public", "name": "ekran"})
+            url = published.get("url") or url
+            for _ in range(10):
+                if url and screen_health(url):
+                    break
+                time.sleep(3)
+            else:
+                raise InstaboxError("Przeglądarka działa, ale jej adres nie odpowiada.")
+        screen_state({"status": "ready", "phase": "", "url": url, "machine": mid, "error": ""})
+    except InstaboxError as err:
+        log.warning("zdalny ekran: %s", err.message)
+        until = time.time() + err.retry_after if err.retry_after else 0
+        screen_state({"status": "error", "error": err.message, "retry_until": until})
+    except Exception as err:
+        log.exception("zdalny ekran")
+        screen_state({"status": "error", "error": f"Błąd: {type(err).__name__}"})
+    finally:
+        _screen_lock.release()
+
+
+def screen_ready():
+    """(adres ekranu albo None, stan). Gdy ekran nie działa – przygotowanie w tle."""
+    state = screen_state()
+    if state.get("status") == "ready" and state.get("url") and screen_health(state["url"], timeout=8):
+        return state["url"], state
+    busy = state.get("status") == "starting" and time.time() - state.get("updated", 0) < 300
+    if not busy and time.time() >= state.get("retry_until", 0):
+        screen_state({"status": "starting", "phase": "start", "error": ""})
+        threading.Thread(target=prepare_screen, daemon=True).start()
+        state = screen_state()
+    return None, state
+
+
+def screen_act(url, body):
+    try:
+        resp = requests.post(url.rstrip("/") + "/act", json=body, headers={"X-Ekran-Token": SCREEN_TOKEN}, timeout=(8, 45))
+        data = resp.json()
+    except (requests.exceptions.RequestException, ValueError) as err:
+        raise InstaboxError(f"Zdalna przeglądarka nie odpowiedziała ({type(err).__name__}). Spróbuj ponownie.")
+    if resp.status_code != 200:
+        raise InstaboxError(data.get("error") or f"Zdalna przeglądarka: błąd {resp.status_code}.")
+    return data
+
+
+@app.route("/ekran.jpg")
+def screen_image():
+    data = screen_shots.get(request.args.get("id") or "")
+    if data is None:
+        abort(404)
+    return Response(data, mimetype="image/jpeg", headers={"Cache-Control": "private, max-age=900"})
+
+
+@app.route("/ekran")
+def screen_page():
+    """Zdalny ekran: u=adres do otwarcia, a=akcja (click/up/down/back/forward/reload/type/key/close), k.x/k.y=kliknięcie."""
+    if not INSTABOX_API_KEY:
+        return render_template("error.html", message="Zdalny ekran nie jest skonfigurowany (brak klucza INSTABOX_API_KEY).",
+                               original=None, q="", rp=1), 503
+    sid = request.cookies.get("ekr") or ""
+    if not re.fullmatch(r"[0-9a-f]{16}", sid):
+        sid = uuid.uuid4().hex[:16]
+    target = (request.args.get("u") or "").strip()
+    if target and not re.match(r"^https?://", target, re.I):
+        target = "https://" + target
+    action = request.args.get("a") or ("open" if target else "shot")
+    if request.args.get("k.x") is not None:
+        action = "click"
+    server, state = screen_ready()
+    resp = None
+    if server is None:
+        resp = make_response(render_template("screen.html", waiting=True, state=state, target=target, shot=None, page_title="",
+                                             page_url="", error=state.get("error"), here=request.full_path, sw=SCREEN_W))
+    else:
+        scale = 360 / SCREEN_W
+        body = {"sid": sid, "action": action}
+        if action == "open":
+            body["url"] = target
+        elif action == "click":
+            body.update(x=clamp_int(request.args.get("k.x"), 0, 0, 2000) * scale, y=clamp_int(request.args.get("k.y"), 0, 0, 4000) * scale)
+        elif action in ("up", "down"):
+            body.update(action="scroll", dy=-420 if action == "up" else 420)
+        elif action == "type":
+            body.update(text=(request.args.get("t") or "")[:500], enter=bool(request.args.get("enter")))
+        elif action == "key":
+            body["key"] = request.args.get("key") or ""
+        error, shot, data = None, None, {}
+        try:
+            data = screen_act(server, body)
+        except InstaboxError as err:
+            error = err.message
+        if data.get("shot"):
+            raw = base64.b64decode(data["shot"])
+            try:
+                with Image.open(io.BytesIO(raw)) as image:
+                    image = image.convert("RGB")
+                    image = image.resize((SCREEN_W, round(image.height * SCREEN_W / image.width)), Image.Resampling.LANCZOS)
+                    out = io.BytesIO()
+                    image.save(out, "JPEG", quality=62, optimize=True)
+                    shot_id = uuid.uuid4().hex
+                    screen_shots.set(shot_id, out.getvalue())
+                    shot = {"id": shot_id, "h": image.height}
+            except OSError:
+                error = error or "Nie udało się odczytać zrzutu ekranu."
+        resp = make_response(render_template("screen.html", waiting=False, state=state, target=target, shot=shot,
+                                             page_title=data.get("title", ""), page_url=data.get("url", "") or target,
+                                             error=error, here=request.full_path, sw=SCREEN_W, closed=data.get("closed")))
+    resp.set_cookie("ekr", sid, max_age=30 * 24 * 3600, samesite="Lax", httponly=True)
+    return resp
+
+
 # ---------- Zakładki (w ciasteczku telefonu – przetrwają restarty serwera) ----------
 BOOKMARKS_COOKIE = "zakl"
 BOOKMARKS_MAX = 40
@@ -5066,6 +5329,21 @@ def diag():
         "brak kluczy CF_ACCOUNT_ID / CF_API_TOKEN" if not (CF_ACCOUNT_ID and CF_API_TOKEN) else
         f"wstrzymane do {time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime(state['down_until']))} – {state.get('reason')}"
         if time.time() < state.get("down_until", 0) else "skonfigurowane"))
+    if INSTABOX_API_KEY:
+        sst = screen_state()
+        lines.append(f"Zdalny ekran (InstaBox): {sst.get('status') or 'nie uruchamiany'}"
+                     + (f", {sst.get('phase')}" if sst.get("phase") else "") + (f", błąd: {sst.get('error')}" if sst.get("error") else "")
+                     + (f", adres {sst.get('url')}" if sst.get("url") else ""))
+        if request.args.get("ibx"):  # /diag?ibx=1 – czy klucz działa i jaka jest maszyna
+            try:
+                machine = screen_machine()
+                lines.append("InstaBox: klucz działa; maszyna " + (f"{machine.get('id')} – {machine.get('state')}"
+                                                                     + (f", przerwa do {machine.get('cooldownUntil')}" if machine.get("cooldownUntil") else "")
+                                                                     if machine else "jeszcze nie założona"))
+            except InstaboxError as err:
+                lines.append(f"InstaBox: {err.message}")
+    else:
+        lines.append("Zdalny ekran (InstaBox): brak klucza INSTABOX_API_KEY")
     for key, name in (("last_render", "ostatnie renderowanie"), ("last_choice", "ostatni wybór")):
         if state.get(key):
             lines.append(f"Cloudflare {name}: {state[key]}")
