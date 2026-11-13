@@ -3832,7 +3832,6 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 {% block title %}{{ page_title or "Zdalny ekran" }}{% endblock %}
 {% block head %}{% if waiting %}<meta http-equiv="refresh" content="5;url={{ here }}">{% elif live %}<meta http-equiv="refresh" content="3;url={{ url_for('screen_page', a='shot', live=1, n=tick) }}">{% endif %}<style>body{max-width:none}.ab{margin:0;padding:2px 2px 1px;background:#f1f3f4;white-space:nowrap}.ab .q{width:68%;padding:3px 8px;font-size:13px}.ab input[type=submit]{padding:4px 8px;font-size:12px}.ab a{padding:0 4px;font-weight:bold;font-size:16px}.sc2{text-align:center;line-height:0}.sc2 input{border:0;padding:0;margin:0;background:none;border-radius:0}.hk{position:absolute;left:-999px;top:0}.ef{margin:2px 4px}.ef .q{width:120px}.fx{background:#fff4e5;border:1px solid #f0c890;border-radius:8px;padding:4px}</style>{% endblock %}
 {% block body %}<form class="ab" id="g" action="{{ url_for('screen_page') }}" method="get"><input class="q" type="text" name="u" value="{{ page_url or target }}" maxlength="2000"> <input type="submit" value="Idź"> <a href="{{ url_for('screen_page', a='shot', opcje=1) }}">&#8943;</a></form>
-<a class="hk" href="{{ url_for('screen_page', a='back') }}" accesskey="1">wstecz</a><a class="hk" href="{{ url_for('screen_page', a='up') }}" accesskey="2">góra</a><a class="hk" href="{{ url_for('screen_page', a='forward') }}" accesskey="3">dalej</a><a class="hk" href="{{ url_for('screen_page', a='reload') }}" accesskey="5">odśwież</a><a class="hk" href="{{ url_for('screen_page', a='down') }}" accesskey="8">dół</a><a class="hk" href="{{ url_for('home') }}" accesskey="0">start</a>
 {% if waiting %}<div class="w"><div class="ib"><b>{% if error %}Zdalna przeglądarka nie działa{% else %}Uruchamiam zdalną przeglądarkę&hellip;{% endif %}</b><br>
 {% if error %}{{ error }}{% else %}{{ state.phase or "start" }}{% endif %}</div>
 <a class="b" href="{{ here }}">Odśwież</a></div>
@@ -3853,7 +3852,8 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 {% elif shot and mode == 's' and shot["items"] %}<div class="sc2"><img src="{{ url_for('screen_image', id=shot.id) }}" width="{{ shot.w }}" height="{{ shot.h }}" usemap="#ek" alt="Ekran"><map name="ek">{% for it in shot["items"] %}<area shape="rect" coords="{{ it.x1 }},{{ it.y1 }},{{ it.x2 }},{{ it.y2 }}" href="{{ url_for('screen_page', a='click', vx=it.cx, vy=it.cy) }}" alt="{{ it.t or 'link' }}">{% endfor %}</map></div>
 {% elif shot %}<form class="sc2" action="{{ url_for('screen_page') }}" method="get"><input type="image" name="k" src="{{ url_for('screen_image', id=shot.id) }}" width="{{ shot.w }}" height="{{ shot.h }}" alt="Ekran"></form>{% endif %}
 {% if live %}<div class="ef"><a href="{{ url_for('screen_page') }}">&#9632; Zatrzymaj odświeżanie</a></div>{% endif %}
-{% endif %}{% if debug %}<!-- wpisywanie: {{ debug }} -->{% endif %}{% endblock %}
+{% endif %}<a class="hk" tabindex="-1" href="{{ url_for('screen_page', a='back') }}" accesskey="1">wstecz</a><a class="hk" tabindex="-1" href="{{ url_for('screen_page', a='up') }}" accesskey="2">góra</a><a class="hk" tabindex="-1" href="{{ url_for('screen_page', a='forward') }}" accesskey="3">dalej</a><a class="hk" tabindex="-1" href="{{ url_for('screen_page', a='reload') }}" accesskey="5">odśwież</a><a class="hk" tabindex="-1" href="{{ url_for('screen_page', a='down') }}" accesskey="8">dół</a><a class="hk" tabindex="-1" href="{{ url_for('home') }}" accesskey="0">start</a>
+{% if debug %}<!-- wpisywanie: {{ debug }} -->{% endif %}{% endblock %}
 """,
     "nokia.html": """<!DOCTYPE html>
 <html lang="pl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -3903,8 +3903,12 @@ html,body{margin:0;background:#e8eaed;font-family:system-ui,Roboto,Arial,sans-se
     return b.width || b.height ? b : null;
   }
   function items(d) {
+    var width = d.documentElement.clientWidth;
     return Array.prototype.filter.call(d.querySelectorAll('a[href],area[href],input:not([type=hidden]),button,select,textarea'),
-      function (e) { return boxOf(d, e); });
+      function (e) {
+        var b = boxOf(d, e);  // pomijamy ukryte skróty klawiszowe (poza ekranem, tabindex=-1)
+        return b && e.getAttribute('tabindex') !== '-1' && b.left + b.width > 0 && b.left < width;
+      });
   }
   var current = null, loads = 0;
   function mark(d) {
