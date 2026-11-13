@@ -2090,6 +2090,7 @@ def saving_enabled():
 
 # Ustawienia zapamiętane w telefonie (ciasteczka na rok): klucz -> dozwolone wartości.
 SETTINGS = {"obrazki": {"0", "1"}, "linki": {"0", "1"}, "tekst": {"s", "m", "l", "xl"}, "oszcz": {"0", "1"}, "ekq": {"s", "l"},
+            "nokia": {"0", "1"},
             "miasto": None}
 TEXT_SIZES = {"s": 12, "m": 14, "l": 17, "xl": 20}  # px; 14 to wielkość domyślna
 DATA_COOKIE = "dane"
@@ -3604,7 +3605,9 @@ TEMPLATES = {
 <style>{{ theme_css(theme) }}</style>{% endif %}{% if text_css %}
 <style>{{ text_css }}</style>{% endif %}
 {% block head %}{% endblock %}</head>
-<body{% block bodyattr %}{% endblock %}>
+<body{% block bodyattr %}{% endblock %}>{% if nokia_preview %}
+<style>html{background:#3c4043!important}body{max-width:240px!important;min-height:320px;outline:4px solid #111}.nkp{background:#111;color:#bbb;font-size:11px;padding:2px 4px}.nkp a{color:#8ab4f8}</style>
+<div class="nkp">Podgląd Nokii 240&times;320 &middot; <a href="{{ url_for('settings', k='nokia', v=0, next=request.full_path) }}">wyłącz</a></div>{% endif %}
 {% block body %}{% endblock %}
 </body>
 </html>
@@ -3639,7 +3642,7 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 </div>
 <div class="hb">{% if weather %}<a class="cd" href="{{ url_for('weather_page') }}"><b>{{ weather.temp }}&deg;</b> {{ weather.city }}, {{ weather.desc }}{% for day in weather.days %}<br><span class="m">{{ day.label }} od {{ day.min }} do {{ day.max }}&deg;C, {{ day.desc }}</span>{% endfor %}</a>{% else %}<a class="cd" href="{{ url_for('weather_page') }}">Pogoda</a>{% endif %}
 {% if rates %}<div class="cd"><span class="m">Kursy NBP</span><br>{% for code, value in rates.rates %}<span class="nw">{{ code }} {{ value }}</span>{% if not loop.last %} &middot; {% endif %}{% endfor %} <span class="m">zł</span></div>
-{% endif %}<p><a href="{{ url_for('map_page') }}" class="ch">Mapa</a> {% if screen_on %}<a href="{{ url_for('screen_page') }}" class="ch">Zdalny ekran</a> {% endif %}<a href="{{ url_for('bookmarks') }}" accesskey="4" class="ch">Zakładki{% if bookmarks_count %} ({{ bookmarks_count }}){% endif %}</a> <a href="{{ url_for('settings', k='oszcz', v=0 if saving else 1, next='/') }}" class="ch">Oszczędzanie danych: {{ "wyłącz" if saving else "włącz" }}</a></p>
+{% endif %}<p><a href="{{ url_for('map_page') }}" class="ch">Mapa</a> {% if screen_on %}<a href="{{ url_for('screen_page') }}" class="ch">Zdalny ekran</a> {% endif %}<a href="{{ url_for('settings', k='nokia', v=0 if nokia_preview else 1, next='/') }}" class="ch">Podgląd Nokii: {{ "wyłącz" if nokia_preview else "włącz" }}</a> <a href="{{ url_for('bookmarks') }}" accesskey="4" class="ch">Zakładki{% if bookmarks_count %} ({{ bookmarks_count }}){% endif %}</a> <a href="{{ url_for('settings', k='oszcz', v=0 if saving else 1, next='/') }}" class="ch">Oszczędzanie danych: {{ "wyłącz" if saving else "włącz" }}</a></p>
 <p class="m">Dane z Szukajki w tym miesiącu: {{ data_mb|mb1 }} &middot; tekst:{% for size, label in (("s", "A-"), ("m", "A"), ("l", "A+"), ("xl", "A++")) %} {% if text_size == size %}<b>{{ label }}</b>{% else %}<a href="{{ url_for('settings', k='tekst', v=size, next='/') }}">{{ label }}</a>{% endif %}{% endfor %}</p></div>
 {% endblock %}
 """,
@@ -3846,7 +3849,7 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 <table class="sk" cellspacing="0"><tr><td><a href="{{ url_for('screen_page', a='back') }}" accesskey="1">1 &#9664;</a></td><td><a href="{{ url_for('screen_page', a='up') }}" accesskey="2">2 &#9650;</a></td><td><a href="{{ url_for('screen_page', a='forward') }}" accesskey="3">3 &#9654;</a></td></tr>
 <tr><td><a href="{{ url_for('screen_page', a='reload') }}" accesskey="5">5 &#8635;</a></td><td><a href="{{ url_for('screen_page', a='down') }}" accesskey="8">8 &#9660;</a></td><td><a href="{{ url_for('screen_page', a='key', key='Backspace') }}">&#9003;</a></td></tr></table>
 <form class="ef" action="{{ url_for('screen_page') }}" method="get"><input type="hidden" name="a" value="type"><input class="q" type="text" name="t" maxlength="500"> <input type="submit" value="Wpisz"> <input type="submit" name="enter" value="Wpisz + Enter"></form>
-<div class="w"><p class="m">{% if live %}<a href="{{ url_for('screen_page') }}"><b>&#9632; Zatrzymaj odświeżanie</b></a>{% else %}<a href="{{ url_for('screen_page', a='shot', live=1) }}"><b>&#9654; Odświeżaj na żywo</b></a>{% endif %} &middot; Ekran: {% if mode == 's' %}<b>mały</b> &middot; <a href="{{ url_for('settings', k='ekq', v='l', next=url_for('screen_page')) }}">duży</a>{% else %}<a href="{{ url_for('settings', k='ekq', v='s', next=url_for('screen_page')) }}">mały</a> &middot; <b>duży</b>{% endif %}</p>
+<div class="w"><p class="m">{% if live %}<a href="{{ url_for('screen_page') }}"><b>&#9632; Zatrzymaj odświeżanie</b></a>{% else %}<a href="{{ url_for('screen_page', a='shot', live=1) }}"><b>&#9654; Odświeżaj na żywo</b></a>{% endif %} &middot; <a href="{{ url_for('settings', k='nokia', v=0 if nokia_preview else 1, next=url_for('screen_page')) }}">Podgląd Nokii: {{ "wyłącz" if nokia_preview else "włącz" }}</a> &middot; Ekran: {% if mode == 's' %}<b>mały</b> &middot; <a href="{{ url_for('settings', k='ekq', v='l', next=url_for('screen_page')) }}">duży</a>{% else %}<a href="{{ url_for('settings', k='ekq', v='s', next=url_for('screen_page')) }}">mały</a> &middot; <b>duży</b>{% endif %}</p>
 <p class="m">{% if page_title %}<b>{{ page_title }}</b><br>{% endif %}{% if mode == 's' %}Strzałkami przechodzisz po linkach i przyciskach na obrazie, OK klika{% else %}Kliknij w obraz, aby kliknąć na stronie{% endif %}. Kliknięte pole tekstowe pokaże okienko do wpisywania. 1 wstecz, 3 dalej, 2/8 przewijanie, 5 odśwież. Bez dźwięku. {% if shot and not as_list %}<a href="{{ url_for('screen_page', a='shot', lista=1) }}">Lista linków ({{ shot["items"]|length }})</a> &middot; {% endif %}<a href="{{ url_for('screen_page', a='close') }}">Zamknij i wyczyść</a></p></div>
 {% endif %}{% if debug %}<!-- wpisywanie: {{ debug }} -->{% endif %}{% endblock %}
 """,
@@ -4870,6 +4873,8 @@ SMALL_BROWSER = re.compile(r"Opera Mini|Nokia|KAIOS|J2ME|MIDP|Series ?(?:30|40)|
 
 
 def screen_mode():
+    if nokia_preview():
+        return "s"
     chosen = request.cookies.get("ekq")
     if chosen in SCREEN_MODES:
         return chosen
@@ -5367,7 +5372,12 @@ def settings():
 @app.context_processor
 def page_settings():
     return {"text_css": text_css(), "saving": saving_enabled(), "data_mb": data_used() / 1_000_000,
-            "text_size": request.cookies.get("tekst") or "m"}
+            "text_size": request.cookies.get("tekst") or "m", "nokia_preview": nokia_preview()}
+
+
+def nokia_preview():
+    """Podgląd Nokii na innym telefonie: każda strona w kolumnie 240 px, zdalny ekran w wersji dla Nokii."""
+    return request.cookies.get("nokia") == "1"
 
 
 @app.after_request
