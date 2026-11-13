@@ -97,7 +97,11 @@ CLICKABLES = """() => {
     if (r.width < 8 || r.height < 8 || r.bottom <= 0 || r.right <= 0 || r.top >= innerHeight || r.left >= innerWidth) continue;
     const st = getComputedStyle(e);
     if (st.visibility === 'hidden' || +st.opacity === 0 || st.pointerEvents === 'none') continue;
-    const cx = Math.min(Math.max(r.left + r.width / 2, 1), innerWidth - 2), cy = Math.min(Math.max(r.top + r.height / 2, 1), innerHeight - 2);
+    // link zawinięty na kilka linii: środek całego prostokąta wypada obok tekstu – klikamy w pierwszą widoczną linię
+    const lines = [...e.getClientRects()].filter(q => q.width >= 4 && q.height >= 4 && q.bottom > 0 && q.top < innerHeight
+                                                      && q.right > 0 && q.left < innerWidth);
+    const q = lines[0] || r;
+    const cx = Math.min(Math.max(q.left + q.width / 2, 1), innerWidth - 2), cy = Math.min(Math.max(q.top + q.height / 2, 1), innerHeight - 2);
     const top = document.elementFromPoint(cx, cy);
     if (!top || !(top === e || e.contains(top) || top.contains(e))) continue;  // zasłonięte (np. okienkiem)
     if (out.some(o => o.el.contains(e) || e.contains(o.el))) continue;  // link w przycisku itp. – raz
@@ -116,6 +120,16 @@ FIELD = """() => {
   const ok = e && (e.isContentEditable || (/^(INPUT|TEXTAREA)$/.test(e.tagName)
                    && !/^(hidden|button|submit|checkbox|radio|image|file|range|color)$/i.test(e.type || '')));
   return ok ? (e.getAttribute('aria-label') || e.placeholder || e.name || e.title || 'pole').slice(0, 60) : '';
+}"""
+# Czy kliknięty element to wyszukiwarka (lupa, „Szukaj”): wtedy chwilę czekamy, aż otworzy się jej pole.
+SEARCHY = """([x, y]) => {
+  let e = document.elementFromPoint(x, y);
+  for (let i = 0; e && i < 4; i++, e = e.parentElement) {
+    const text = [e.getAttribute('aria-label'), e.title, e.className && String(e.className), e.getAttribute('href'),
+                  e.id, (e.innerText || '').slice(0, 30)].join(' ');
+    if (/szuk|search|wyszuk|lupa|find/i.test(text)) return true;
+  }
+  return false;
 }"""
 SIGNATURE = ("() => location.href + '|' + document.getElementsByTagName('*').length + '|' + "
              "(document.body ? document.body.innerText.length : 0) + '|' + "
@@ -236,6 +250,7 @@ def act(body):
         y = max(0, min(height - 1, float(body.get("y", 0))))
         before, url_before = run(page, SIGNATURE, default='nawigacja'), page.url
         sessions[sid]["last"] = [x, y]
+        sessions[sid]["search_click"] = bool(run(page, SEARCHY, [x, y], default=False))
         page.mouse.click(x, y)
         page.wait_for_timeout(350)
         if run(page, SIGNATURE, default='nawigacja') == before:  # nic się nie zmieniło: część stron mobilnych nie reaguje na mysz
@@ -313,6 +328,10 @@ def act(body):
               "items": run(page, CLICKABLES, default=[]) or []}
     if action == "click":
         result["field"] = run(page, FIELD, default="") or ""  # kliknięto pole tekstowe – telefon od razu pokaże wpisywanie
+        if not result["field"] and sessions[sid].get("search_click"):  # nakładka wyszukiwania jeszcze się otwiera
+            page.wait_for_timeout(600)
+            result["field"] = run(page, FIELD, default="") or ""
+            result["shot"] = base64.b64encode(page.screenshot(type="jpeg", quality=view["q"], timeout=8000)).decode()
     if action == "type":
         result["debug"] = debug
     return result
