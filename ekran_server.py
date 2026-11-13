@@ -51,27 +51,39 @@ version = browser.version.split(".")[0]
 USER_AGENT = (f"Mozilla/5.0 (Linux; Android 14; K) AppleWebKit/537.36 (KHTML, like Gecko) "
               f"Chrome/{version}.0.0.0 Mobile Safari/537.36")  # widok mobilny, jak telefon z Chrome
 sessions = {}
+# Pomocnicze funkcje JS: strony budują okienka (zgody na ciasteczka, logowanie, menu) w Shadow DOM, którego zwykłe
+# document.querySelectorAll i elementFromPoint nie widzą – schodzimy do otwartych shadowRoot.
+DEEP = (
+    "const deepAt = (x, y) => { let e = document.elementFromPoint(x, y); while (e && e.shadowRoot) { "
+    "const i = e.shadowRoot.elementFromPoint(x, y); if (!i || i === e) break; e = i; } return e; };"
+    "const deepActive = () => { let e = document.activeElement; while (e && e.shadowRoot && e.shadowRoot.activeElement) "
+    "e = e.shadowRoot.activeElement; return e; };"
+    "const deepAll = sel => { const out = []; const walk = root => { out.push(...root.querySelectorAll(sel)); "
+    "for (const h of root.querySelectorAll('*')) if (h.shadowRoot) walk(h.shadowRoot); }; walk(document); return out; };"
+    "const within = (a, b) => { for (let n = b; n; n = n.parentNode || n.host) if (n === a) return true; return false; };"
+    "const up = e => e.parentElement || (e.getRootNode && e.getRootNode().host) || null;"
+)
 # Przed wpisaniem: kursor w polu tekstowym – aktywnym, klikniętym (albo jego wnętrzu/otoczeniu) lub pierwszym widocznym.
-FOCUS = """([x, y]) => {
+FOCUS = ("""([x, y]) => {""" + DEEP + """
   const editable = e => !!e && (e.isContentEditable || (/^(INPUT|TEXTAREA)$/.test(e.tagName)
                                 && !/^(hidden|button|submit|checkbox|radio|image|file|range|color)$/i.test(e.type || '')));
-  if (editable(document.activeElement)) return 'active';
+  if (editable(deepActive())) return 'active';
   const sel = 'input,textarea,[contenteditable=""],[contenteditable="true"]';
   const shown = e => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0 && r.bottom > 0 && r.top < innerHeight; };
-  let e = x === null ? null : document.elementFromPoint(x, y);
+  let e = x === null ? null : deepAt(x, y);
   if (e && !editable(e)) e = e.closest(sel) || e.querySelector(sel) || (e.parentElement && e.parentElement.querySelector(sel));
-  if (!editable(e) || !shown(e)) e = [...document.querySelectorAll(sel)].find(v => editable(v) && shown(v));
+  if (!editable(e) || !shown(e)) e = deepAll(sel).find(v => editable(v) && shown(v));
   if (!e) return 'none';
   e.focus();
-  return editable(document.activeElement) ? 'focused' : 'none';
-}"""
+  return editable(deepActive()) ? 'focused' : 'none';
+}""")
 # „Czy kliknięcie coś zmieniło”: adres, liczba elementów, widoczny tekst (pokazane/schowane menu), fokus, przewinięcie.
-ACTIVE = ("() => { const e = document.activeElement; if (!e) return ''; "
+ACTIVE = ("() => { " + DEEP + "const e = deepActive(); if (!e) return ''; "
           "return e.tagName + '#' + e.id + '.' + String(e.className).slice(0, 40) + ' v=' + String(e.value || e.innerText || '').slice(0, 40)"
           " + ' ' + JSON.stringify(e.getBoundingClientRect()); }")
-VALUE = "() => { const e = document.activeElement; return e ? String(e.value !== undefined ? e.value : e.innerText) : ''; }"
-SET_VALUE = """(text) => {
-  const e = document.activeElement;
+VALUE = "() => { " + DEEP + "const e = deepActive(); return e ? String(e.value !== undefined ? e.value : e.innerText) : ''; }"
+SET_VALUE = ("""(text) => {""" + DEEP + """
+  const e = deepActive();
   if (!e) return;
   if (e.isContentEditable) { e.innerText += text; }
   else {
@@ -80,20 +92,20 @@ SET_VALUE = """(text) => {
   }
   e.dispatchEvent(new InputEvent('input', {bubbles: true, data: text, inputType: 'insertText'}));
   e.dispatchEvent(new Event('change', {bubbles: true}));
-}"""
-SUBMIT = """() => {
-  const e = document.activeElement;
+}""")
+SUBMIT = ("""() => {""" + DEEP + """
+  const e = deepActive();
   if (!e) return;
   if (e.form) { e.form.requestSubmit ? e.form.requestSubmit() : e.form.submit(); return; }
   for (const type of ['keydown', 'keypress', 'keyup'])
     e.dispatchEvent(new KeyboardEvent(type, {key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true}));
-}"""
+}""")
 # Klikalne elementy widoczne na ekranie (linki, przyciski, pola): telefon z klawiaturą skacze po nich strzałkami.
-CLICKABLES = """() => {
+CLICKABLES = ("""() => {""" + DEEP + """
   const sel = 'a[href],button,input:not([type=hidden]),textarea,select,summary,label[for],[role=button],[role=link],'
             + '[role=tab],[role=menuitem],[role=option],[role=checkbox],[onclick],[tabindex]:not([tabindex="-1"]),[contenteditable="true"]';
   const out = [];
-  for (const e of document.querySelectorAll(sel)) {
+  for (const e of deepAll(sel)) {
     const r = e.getBoundingClientRect();
     if (r.width < 8 || r.height < 8 || r.bottom <= 0 || r.right <= 0 || r.top >= innerHeight || r.left >= innerWidth) continue;
     const st = getComputedStyle(e);
@@ -103,13 +115,13 @@ CLICKABLES = """() => {
                                                       && q.right > 0 && q.left < innerWidth);
     const q = lines[0] || r;
     const cx = Math.min(Math.max(q.left + q.width / 2, 1), innerWidth - 2), cy = Math.min(Math.max(q.top + q.height / 2, 1), innerHeight - 2);
-    const top = document.elementFromPoint(cx, cy);
-    if (!top || !(top === e || e.contains(top) || top.contains(e))) continue;  // zasłonięte (np. okienkiem)
-    if (out.some(o => o.el.contains(e) || e.contains(o.el))) continue;  // link w przycisku itp. – raz
+    const top = deepAt(cx, cy);
+    if (!top || !(within(e, top) || within(top, e))) continue;  // zasłonięte (np. okienkiem)
+    if (out.some(o => within(o.el, e) || within(e, o.el))) continue;  // link w przycisku itp. – raz
     const field = /^(INPUT|TEXTAREA|SELECT)$/.test(e.tagName) && !/^(button|submit|reset|checkbox|radio|image|file|range|color)$/i.test(e.type || '')
                   || e.isContentEditable;
     const labelled = e.getAttribute('aria-labelledby');
-    const byId = labelled ? labelled.split(' ').map(id => (document.getElementById(id) || {}).innerText || '').join(' ') : '';
+    const byId = labelled ? labelled.split(' ').map(id => (e.getRootNode().getElementById(id) || {}).innerText || '').join(' ') : '';
     const text = (e.innerText || e.value || e.getAttribute('aria-label') || byId || e.getAttribute('title') || e.getAttribute('placeholder')
                   || (e.querySelector('img[alt]') || {}).alt || '').trim().replace(/\\s+/g, ' ').slice(0, 60);
     out.push({el: e, x: Math.max(0, r.left), y: Math.max(0, r.top), r: Math.min(r.right, innerWidth), b: Math.min(r.bottom, innerHeight),
@@ -117,26 +129,27 @@ CLICKABLES = """() => {
     if (out.length >= 400) break;
   }
   return out.map(o => ({x: Math.round(o.x), y: Math.round(o.y), r: Math.round(o.r), b: Math.round(o.b), cx: o.cx, cy: o.cy, t: o.t, f: o.f}));
-}"""
-FIELD = """() => {
-  const e = document.activeElement;
+}""")
+FIELD = ("""() => {""" + DEEP + """
+  const e = deepActive();
   const ok = e && (e.isContentEditable || (/^(INPUT|TEXTAREA)$/.test(e.tagName)
                    && !/^(hidden|button|submit|checkbox|radio|image|file|range|color)$/i.test(e.type || '')));
   return ok ? (e.getAttribute('aria-label') || e.placeholder || e.name || e.title || 'pole').slice(0, 60) : '';
-}"""
+}""")
 # Czy kliknięty element to wyszukiwarka (lupa, „Szukaj”): wtedy chwilę czekamy, aż otworzy się jej pole.
-SEARCHY = """([x, y]) => {
-  let e = document.elementFromPoint(x, y);
-  for (let i = 0; e && i < 4; i++, e = e.parentElement) {
+SEARCHY = ("""([x, y]) => {""" + DEEP + """
+  let e = deepAt(x, y);
+  for (let i = 0; e && i < 4; i++, e = up(e)) {
     const text = [e.getAttribute('aria-label'), e.title, e.className && String(e.className), e.getAttribute('href'),
                   e.id, (e.innerText || '').slice(0, 30)].join(' ');
     if (/szuk|search|wyszuk|lupa|find/i.test(text)) return true;
   }
   return false;
-}"""
-SIGNATURE = ("() => location.href + '|' + document.getElementsByTagName('*').length + '|' + "
-             "(document.body ? document.body.innerText.length : 0) + '|' + "
-             "(document.activeElement ? document.activeElement.tagName : '') + '|' + scrollY")
+}""")
+SIGNATURE = ("() => { " + DEEP + "const all = deepAll('*'); const a = deepActive(); "
+             "return location.href + '|' + all.length + '|' + (document.body ? document.body.innerText.length : 0) + '|' + "
+             "all.reduce((n, h) => n + (h.shadowRoot ? h.shadowRoot.textContent.length : 0), 0) + '|' + "
+             "(a ? a.tagName : '') + '|' + scrollY; }")
 
 
 def new_context(sid, view):
@@ -295,7 +308,7 @@ def act(body):
         page.mouse.click(x, y)
         page.wait_for_timeout(350)
         if run(page, SIGNATURE, default='nawigacja') == before:  # nic się nie zmieniło: część stron mobilnych nie reaguje na mysz
-            run(page, "([x, y]) => { const e = document.elementFromPoint(x, y); if (e) e.click(); }", [x, y])
+            run(page, "([x, y]) => { " + DEEP + "const e = deepAt(x, y); if (e) e.click(); }", [x, y])
             page.wait_for_timeout(300)
         if page.url != url_before or run(page, "() => document.readyState", default="loading") != "complete":
             settle(page, 700)  # kliknięcie otworzyło inną stronę – zrzut dopiero, gdy się wczyta
