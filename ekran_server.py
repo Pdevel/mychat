@@ -368,7 +368,7 @@ def act(body):
     shot = capture(page, view)
     shot_done = time.monotonic()
     result = {"title": title_of(page), "url": page.url, "width": width, "height": height, "shot": shot, "fmt": view["fmt"],
-              "items": clickables(page, width, height)}
+              "items": clickables(page, width, height), "y": run(page, "() => Math.round(scrollY)", default=0)}
     if action == "click":
         result["field"] = run(page, FIELD, default="") or ""  # kliknięto pole tekstowe – telefon od razu pokaże wpisywanie
         if not result["field"] and sessions[sid].get("search_click"):  # nakładka wyszukiwania jeszcze się otwiera

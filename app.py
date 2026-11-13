@@ -3849,7 +3849,7 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 <a class="b" href="{{ url_for('screen_page', a='close') }}">Zamknij i wyczyść</a></div>
 {% elif shot and as_list %}<div class="w">{% for it in shot["items"] %}<div class="r"><a href="{{ url_for('screen_page', a='click', vx=it.cx, vy=it.cy) }}">{{ loop.index }}. {% if it.f %}[pole] {% endif %}{{ it.t or "(bez opisu)" }}</a></div>
 {% else %}<p class="m">Na ekranie nie ma linków ani przycisków.</p>{% endfor %}<a class="b" href="{{ url_for('screen_page', a='shot') }}">Pokaż obraz</a></div>
-{% elif shot and mode == 's' and shot["items"] %}<div class="sc2"><img src="{{ url_for('screen_image', id=shot.id) }}" width="{{ shot.w }}" height="{{ shot.h }}" usemap="#ek" alt="Ekran"><map name="ek">{% for it in shot["items"] %}<area shape="rect" coords="{{ it.x1 }},{{ it.y1 }},{{ it.x2 }},{{ it.y2 }}" href="{{ url_for('screen_page', a='click', vx=it.cx, vy=it.cy) }}" alt="{{ it.t or 'link' }}">{% endfor %}</map></div>
+{% elif shot and mode == 's' and shot["items"] %}<div class="sc2" data-y="{{ shot.y|int }}"><img src="{{ url_for('screen_image', id=shot.id) }}" width="{{ shot.w }}" height="{{ shot.h }}" usemap="#ek" alt="Ekran"><map name="ek">{% for it in shot["items"] %}<area shape="rect" coords="{{ it.x1 }},{{ it.y1 }},{{ it.x2 }},{{ it.y2 }}" href="{{ url_for('screen_page', a='click', vx=it.cx, vy=it.cy) }}" alt="{{ it.t or 'link' }}">{% endfor %}</map></div>
 {% elif shot %}<form class="sc2" action="{{ url_for('screen_page') }}" method="get"><input type="image" name="k" src="{{ url_for('screen_image', id=shot.id) }}" width="{{ shot.w }}" height="{{ shot.h }}" alt="Ekran"></form>{% endif %}
 {% if live %}<div class="ef"><a href="{{ url_for('screen_page') }}">&#9632; Zatrzymaj odświeżanie</a></div>{% endif %}
 {% endif %}<a class="hk" tabindex="-1" href="{{ url_for('screen_page', a='back') }}" accesskey="1">wstecz</a><a class="hk" tabindex="-1" href="{{ url_for('screen_page', a='up') }}" accesskey="2">góra</a><a class="hk" tabindex="-1" href="{{ url_for('screen_page', a='forward') }}" accesskey="3">dalej</a><a class="hk" tabindex="-1" href="{{ url_for('screen_page', a='reload') }}" accesskey="5">odśwież</a><a class="hk" tabindex="-1" href="{{ url_for('screen_page', a='down') }}" accesskey="8">dół</a><a class="hk" tabindex="-1" href="{{ url_for('home') }}" accesskey="0">start</a>
@@ -3910,7 +3910,7 @@ html,body{margin:0;background:#e8eaed;font-family:system-ui,Roboto,Arial,sans-se
         return b && e.getAttribute('tabindex') !== '-1' && b.left + b.width > 0 && b.left < width;
       });
   }
-  var current = null, loads = 0;
+  var current = null, loads = 0, resume = 0;
   function mark(d) {
     var m = d.getElementById('nk-kursor');
     if (!m) {
@@ -3925,15 +3925,39 @@ html,body{margin:0;background:#e8eaed;font-family:system-ui,Roboto,Arial,sans-se
     m.style.left = (b.left + w.scrollX - 2) + 'px'; m.style.top = (b.top + w.scrollY - 2) + 'px';
     m.style.width = b.width + 'px'; m.style.height = b.height + 'px';
   }
-  function move(dir) {
+  function fits(b, w) { return b.top >= 0 && b.top + b.height <= w.innerHeight; }
+  function pick(d, e) {  // kursor na element; dosuwamy stronę tylko o tyle, ile trzeba
+    var w = win(), b = boxOf(d, e);
+    current = e;
+    if (b && !fits(b, w)) w.scrollBy(0, b.top < 0 ? b.top - 6 : Math.min(b.top - 6, b.top + b.height - w.innerHeight + 6));
+    if (/^(INPUT|TEXTAREA|SELECT)$/.test(e.tagName)) { if (d.activeElement && d.activeElement.blur) d.activeElement.blur(); }  // pole dopiero po OK – bez wyskakującej klawiatury
+    else if (e.tagName !== 'AREA') e.focus({preventScroll: true});
+    mark(d);
+  }
+  function remote(d, dir) {  // zdalny ekran: koniec obrazu – przewijamy stronę po drugiej stronie
+    var hot = d.querySelector('a.hk[accesskey="' + (dir > 0 ? 8 : 2) + '"]'), sc = d.querySelector('.sc2[data-y]');
+    if (!hot || !sc || (dir < 0 && !(+sc.getAttribute('data-y') > 0))) return false;  // na górze strony nie ma czego przewijać
+    resume = dir; hot.click(); return true;
+  }
+  function move(dir) {  // jak w Operze Mini: krótki krok przewijania, kursor tylko na widocznych elementach
     var d = doc(); if (!d) return;
-    var list = items(d); if (!list.length) { win().scrollBy(0, dir * 120); return; }
-    var i = list.indexOf(current);
-    i = i < 0 ? (dir > 0 ? 0 : list.length - 1) : Math.max(0, Math.min(list.length - 1, i + dir));
-    current = list[i];
-    var b = boxOf(d, current), w = win();
-    if (b && (b.top < 0 || b.top + b.height > w.innerHeight)) w.scrollBy(0, b.top - w.innerHeight / 3);
-    if (current.tagName !== 'AREA') current.focus({preventScroll: true});
+    var w = win(), step = Math.round(w.innerHeight * 0.4), list = items(d), i = list.indexOf(current);
+    var cb = current && boxOf(d, current);
+    if (i < 0 || !cb || cb.top + cb.height <= 0 || cb.top >= w.innerHeight) {  // brak kursora albo został poza ekranem
+      var shown = list.filter(function (e) { var b = boxOf(d, e); return b && fits(b, w); });
+      if (shown.length) return pick(d, dir > 0 ? shown[0] : shown[shown.length - 1]);
+    } else {
+      var next = list[i + dir], nb = next && boxOf(d, next);
+      if (nb && dir < 0 && current.tagName === 'AREA' && next.tagName !== 'AREA') {  // z obrazu w górę do paska
+        if (remote(d, -1)) return;
+      }
+      if (nb && (dir > 0 ? nb.top + nb.height - w.innerHeight : -nb.top) <= step) return pick(d, next);
+    }
+    var before = w.scrollY;
+    w.scrollBy(0, dir * step);
+    if (w.scrollY === before && !(list[i + dir])) { if (remote(d, dir)) return; }
+    cb = current && boxOf(d, current);
+    if (cb && (cb.top + cb.height <= 0 || cb.top >= w.innerHeight)) current = null;  // kursor uciekł z ekranu
     mark(d);
   }
   function press(k) {
@@ -3968,6 +3992,11 @@ html,body{margin:0;background:#e8eaed;font-family:system-ui,Roboto,Arial,sans-se
     var d = doc(); if (!d) return;
     d.addEventListener('keydown', onKey);
     win().addEventListener('scroll', function () { mark(d); });
+    if (resume) {  // po przewinięciu zdalnej strony kursor wraca na obraz, nie na pasek adresu
+      var areas = items(d).filter(function (e) { return e.tagName === 'AREA'; });
+      if (areas.length) pick(d, resume > 0 ? areas[0] : areas[areas.length - 1]);
+      resume = 0;
+    }
   });
 })();
 </script>
@@ -5252,7 +5281,8 @@ def screen_page():
         elif action == "click":
             body.update(x=clamp_int(request.args.get("k.x"), 0, 0, 2000) * scale, y=clamp_int(request.args.get("k.y"), 0, 0, 4000) * scale)
         elif action in ("up", "down"):
-            body.update(action="scroll", dy=-420 if action == "up" else 420)
+            step = mode["view"]["h"] // 2  # pół ekranu: zostaje kawałek poprzedniego widoku, nic nie ginie
+            body.update(action="scroll", dy=-step if action == "up" else step)
         elif action == "type":
             body.update(text=(request.args.get("t") or "")[:500], enter=bool(request.args.get("enter")))
         elif action == "key":
@@ -5277,7 +5307,7 @@ def screen_page():
                         raw = out.getvalue()
                     shot_id = uuid.uuid4().hex
                     screen_shots.set(shot_id, raw)
-                    shot = {"id": shot_id, "h": height, "w": display}
+                    shot = {"id": shot_id, "h": height, "w": display, "y": data.get("y") or 0}
                     f = display / mode["view"]["w"]
                     shot["items"] = [dict(it, x1=round(it["x"] * f), y1=round(it["y"] * f), x2=round(it["r"] * f), y2=round(it["b"] * f))
                                      for it in data.get("items") or [] if isinstance(it, dict) and all(
