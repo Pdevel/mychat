@@ -3830,8 +3830,8 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 """,
     "screen.html": """{% extends "base.html" %}
 {% block title %}{{ page_title or "Zdalny ekran" }}{% endblock %}
-{% block head %}{% if waiting %}<meta http-equiv="refresh" content="5;url={{ here }}">{% elif live and small_browser %}<meta http-equiv="refresh" content="1;url={{ url_for('screen_page', a='shot', live=1, n=tick) }}">{% endif %}<style>body{max-width:none}.ab{margin:0;padding:2px 2px 1px;background:#f1f3f4;white-space:nowrap}.ab .q{width:68%;padding:3px 8px;font-size:13px}.ab input[type=submit]{padding:4px 8px;font-size:12px}.ab a{padding:0 4px;font-weight:bold;font-size:16px}.sc2{text-align:center;line-height:0}.sc2 input{border:0;padding:0;margin:0;background:none;border-radius:0}.hk{position:absolute;left:-999px;top:0}.ef{margin:2px 4px}.ef .q{width:120px}.fx{background:#fff4e5;border:1px solid #f0c890;border-radius:8px;padding:4px}.nx{text-align:center;font-size:12px;line-height:1.7}.nx a{padding:0 12px}.ab.lv a{font-size:13px;padding:0 8px}</style>{% endblock %}
-{% block body %}{% if live and mode == 's' and shot %}<div class="nx ab lv" id="g"><a href="{{ url_for('screen_page') }}">&#9632; stop</a><a href="{{ url_for('screen_page', a='up', live=1) }}">&#9650; wyżej</a><a href="{{ url_for('screen_page', a='down', live=1) }}">&#9660; dalej</a></div>
+{% block head %}{% if waiting %}<meta http-equiv="refresh" content="5;url={{ here }}">{% elif live and small_browser %}<meta http-equiv="refresh" content="1;url={{ url_for('screen_page', a='shot', live=1, n=tick) }}">{% endif %}<style>body{max-width:none}.ab{margin:0;padding:2px 2px 1px;background:#f1f3f4;white-space:nowrap}.ab .q{width:68%;padding:3px 8px;font-size:13px}.ab input[type=submit]{padding:4px 8px;font-size:12px}.ab a{padding:0 4px;font-weight:bold;font-size:16px}.sc2{text-align:center;line-height:0}.sc2 input{border:0;padding:0;margin:0;background:none;border-radius:0}.hk{position:absolute;left:-999px;top:0}.ef{margin:2px 4px}.ef .q{width:120px}.fx{background:#fff4e5;border:1px solid #f0c890;border-radius:8px;padding:4px}.nx{text-align:center;font-size:12px;line-height:1.7}.nx a{padding:0 12px}.ab.lv a{font-size:13px;padding:0 6px}</style>{% endblock %}
+{% block body %}{% if live and mode == 's' and shot %}<div class="nx ab lv" id="g"><a href="{{ url_for('screen_page', a='down', live=1) }}">8 &#9660; dalej</a><a href="{{ url_for('screen_page', a='up', live=1) }}">2 &#9650; wyżej</a><a href="{{ url_for('screen_page') }}">&#9632; stop</a></div>
 {% else %}<form class="ab" id="g" action="{{ url_for('screen_page') }}" method="get"><input class="q" type="text" name="u" value="{{ page_url or target }}" maxlength="2000"> <input type="submit" value="Idź"> <a href="{{ url_for('screen_page', a='shot', opcje=1) }}">&#8943;</a></form>{% endif %}
 {% if waiting %}<div class="w"><div class="ib"><b>{% if error %}Zdalna przeglądarka nie działa{% else %}Uruchamiam zdalną przeglądarkę&hellip;{% endif %}</b><br>
 {% if error %}{{ error }}{% else %}{{ state.phase or "start" }}{% endif %}</div>
@@ -5345,7 +5345,7 @@ def screen_page():
         elif action == "click":
             body.update(x=clamp_int(request.args.get("k.x"), 0, 0, 2000) * scale, y=clamp_int(request.args.get("k.y"), 0, 0, 4000) * scale)
         elif action in ("up", "down"):
-            step = LIVE_CLIP // 2 if live_one else mode.get("step") or mode["view"]["h"] // 2  # zostaje kawałek poprzedniego widoku
+            step = LIVE_CLIP * 3 // 4 if live_one else mode.get("step") or mode["view"]["h"] // 2  # zostaje kawałek poprzedniego widoku
             body.update(action="scroll", dy=-step if action == "up" else step)
         elif action == "type":
             body.update(text=(request.args.get("t") or "")[:500], enter=bool(request.args.get("enter")))
