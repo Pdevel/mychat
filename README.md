@@ -77,6 +77,14 @@ Serwer pobiera obrazek, zmniejsza go do 220 px szerokości (ekran ma 240 px), za
 Strojenie zmiennymi środowiskowymi: `IMAGE_MAX_WIDTH` (220), `IMAGE_MAX_HEIGHT` (400), `IMAGE_QUALITY` (45),
 `THUMB_MAX_SIZE` (80).
 
+## Mapa (OpenStreetMap)
+
+`/mapa` (chip „Mapa” na stronie głównej, zapytania „mapa Kraków”, „… na mapie”, link pod wynikami): serwer skleja
+kafelki OpenStreetMap w jeden obrazek 232×232 (ok. 15 KB) z pinezkami znalezionych miejsc. Kliknięcie w mapę ją tam
+wyśrodkowuje (Opera Mini wysyła współrzędne kliknięcia); przyciski i skróty: 1 oddal, 3 przybliż, 2/8/4/6 przesuwanie,
+0 nowe szukanie. Szukanie miejsc: Nominatim (najwyżej 1 zapytanie na sekundę, wyniki w pamięci 30 dni), kafelki
+w pamięci tydzień. Zasady OSM zalecają kontakt w nazwie programu – można go podać w zmiennej `OSM_CONTACT`.
+
 ## Strony działające tylko z JavaScriptem (Cloudflare Browser Rendering)
 
 Część stron przysyła sam szkielet aplikacji, a treść dopisuje JavaScriptem. Gdy zwykłe pobranie da prawie pusty

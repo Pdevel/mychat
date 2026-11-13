@@ -19,6 +19,7 @@ import io
 import ipaddress
 import json
 import logging
+import math
 import os
 import pickle
 import re
@@ -3638,7 +3639,7 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 </div>
 <div class="hb">{% if weather %}<a class="cd" href="{{ url_for('weather_page') }}"><b>{{ weather.temp }}&deg;</b> {{ weather.city }}, {{ weather.desc }}{% for day in weather.days %}<br><span class="m">{{ day.label }} od {{ day.min }} do {{ day.max }}&deg;C, {{ day.desc }}</span>{% endfor %}</a>{% else %}<a class="cd" href="{{ url_for('weather_page') }}">Pogoda</a>{% endif %}
 {% if rates %}<div class="cd"><span class="m">Kursy NBP</span><br>{% for code, value in rates.rates %}<span class="nw">{{ code }} {{ value }}</span>{% if not loop.last %} &middot; {% endif %}{% endfor %} <span class="m">zł</span></div>
-{% endif %}<p><a href="{{ url_for('bookmarks') }}" accesskey="4" class="ch">Zakładki{% if bookmarks_count %} ({{ bookmarks_count }}){% endif %}</a> <a href="{{ url_for('settings', k='oszcz', v=0 if saving else 1, next='/') }}" class="ch">Oszczędzanie danych: {{ "wyłącz" if saving else "włącz" }}</a></p>
+{% endif %}<p><a href="{{ url_for('map_page') }}" class="ch">Mapa</a> <a href="{{ url_for('bookmarks') }}" accesskey="4" class="ch">Zakładki{% if bookmarks_count %} ({{ bookmarks_count }}){% endif %}</a> <a href="{{ url_for('settings', k='oszcz', v=0 if saving else 1, next='/') }}" class="ch">Oszczędzanie danych: {{ "wyłącz" if saving else "włącz" }}</a></p>
 <p class="m">Dane z Szukajki w tym miesiącu: {{ data_mb|mb1 }} &middot; tekst:{% for size, label in (("s", "A-"), ("m", "A"), ("l", "A+"), ("xl", "A++")) %} {% if text_size == size %}<b>{{ label }}</b>{% else %}<a href="{{ url_for('settings', k='tekst', v=size, next='/') }}">{{ label }}</a>{% endif %}{% endfor %}</p></div>
 {% endblock %}
 """,
@@ -3716,7 +3717,7 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 {% endif %}{% if not results and not error %}<p>Brak wyników.</p>
 {% endif %}{% if has_more %}<a class="b" href="{{ url_for('search', q=q, p=page + 1, all=1 if show_all else None) }}" accesskey="3">Następna strona &raquo;</a>
 {% endif %}{% if page > 1 %}<a class="b" href="{{ url_for('search', q=q, p=page - 1, all=1 if show_all else None) }}" accesskey="1">&laquo; Poprzednia strona</a>
-{% endif %}<p class="m"><a href="{{ url_for('home') }}" accesskey="0">Nowe szukanie</a> &middot; skróty: 3 dalej, 1 wstecz, 0 nowe szukanie</p></div>
+{% endif %}<p class="m"><a href="{{ url_for('home') }}" accesskey="0">Nowe szukanie</a> &middot; <a href="{{ url_for('map_page', q=q) }}">&bdquo;{{ q }}&rdquo; na mapie</a> &middot; skróty: 3 dalej, 1 wstecz, 0 nowe szukanie</p></div>
 {% endblock %}
 """,
     "read.html": """{% extends "base.html" %}
@@ -3810,6 +3811,19 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 <table class="bt" cellspacing="0"><tr><td width="{{ 50 - (r.hp / 2)|round|int }}%" class="bg"></td><td width="{{ (r.hp / 2)|round|int }}%" class="bh"></td><td width="{{ (r.ap / 2)|round|int }}%" class="ba"></td><td width="{{ 50 - (r.ap / 2)|round|int }}%" class="bg"></td></tr></table>
 {% endfor %}{% endfor %}<a class="b" href="{{ url_for('live_board', m=match_id, s=sport or None, l=score.league or None, u=article or None, q=q or None, rp=rp, n=tick) }}" accesskey="5">Odśwież teraz</a>
 <p class="m">{% if score.state != "fin" %}Wynik odświeża się sam co 30 s. {% endif %}Dane: Flashscore. <a href="{{ url_for('read', url=score.href, q=q, rp=rp) }}">Szczegóły i statystyki</a></p></div>
+{% endblock %}
+""",
+    "map.html": """{% extends "base.html" %}
+{% block title %}{{ q or "Mapa" }} – mapa{% endblock %}
+{% block head %}<style>.mp{padding:4px 4px 0;text-align:center}.mp input{border:0;padding:0;margin:0;background:none;border-radius:0}.mc{width:100%;max-width:{{ size }}px;margin:4px auto;border-collapse:collapse}.mc td{width:33%;text-align:center;padding:2px}.mc a{display:block;padding:6px 0;border:1px solid #d3e0fb;background:#eef3fd;border-radius:14px;font-weight:bold}.mf{margin:6px 8px}</style>{% endblock %}
+{% block body %}<div class="bar" id="g"><a href="{{ url_for('home') }}" accesskey="0">Nowe szukanie</a></div>
+<form class="mf" action="{{ url_for('map_page') }}" method="get"><input class="q" type="text" name="q" value="{{ q }}" maxlength="120"> <input type="submit" value="Szukaj na mapie"></form>
+{% if error %}<div class="w"><div class="e">{{ error }}</div></div>{% endif %}
+<form class="mp" action="{{ url_for('map_page') }}" method="get"><input type="hidden" name="lat" value="{{ '%.6f'|format(lat) }}"><input type="hidden" name="lon" value="{{ '%.6f'|format(lon) }}"><input type="hidden" name="z" value="{{ z }}">{% if q %}<input type="hidden" name="q" value="{{ q }}">{% endif %}<input type="image" name="k" src="{{ image }}" width="{{ size }}" height="{{ size }}" alt="Mapa – kliknij, aby wyśrodkować"></form>
+<table class="mc" cellspacing="0"><tr><td>{% if z > zmin %}<a href="{{ links.zout }}" accesskey="1">1 &minus;</a>{% endif %}</td><td><a href="{{ links.up }}" accesskey="2">2 &#9650;</a></td><td>{% if z < zmax %}<a href="{{ links.zin }}" accesskey="3">3 +</a>{% endif %}</td></tr>
+<tr><td><a href="{{ links.left }}" accesskey="4">4 &#9664;</a></td><td><a href="{{ links.down }}" accesskey="8">8 &#9660;</a></td><td><a href="{{ links.right }}" accesskey="6">6 &#9654;</a></td></tr></table>
+<div class="w">{% for p in places %}<div class="r">{% if places|length > 1 %}<b>{{ loop.index }}.</b> {% endif %}<a class="t" href="{{ goto[loop.index0] }}">{{ p.name }}</a></div>
+{% endfor %}<p class="m">Kliknij w mapę, aby ją tam wyśrodkować. Przybliżenie {{ z }} z {{ zmax }}. Mapa &copy; współtwórcy OpenStreetMap.</p></div>
 {% endblock %}
 """,
     "error.html": """{% extends "base.html" %}
@@ -4080,6 +4094,9 @@ def search():
     query = squash(request.args.get("q", ""))[:200]
     if not query:
         return redirect(url_for("home"))
+    wanted = MAP_QUERY.match(query)
+    if wanted and not request.args.get("w"):  # „mapa Kraków”, „Rynek 1 Kraków na mapie” – od razu mapa
+        return redirect(url_for("map_page", q=(wanted.group(1) or wanted.group(2)).strip()))
     if LINK_QUERY.match(query) and not request.args.get("w"):
         return redirect(url_for("read", url=query, q=query, rp=1, l=1))  # dokładny link – od razu otwieramy stronę
     page = clamp_int(request.args.get("p"), 1, 1, MAX_RESULT_PAGES)
@@ -4598,6 +4615,199 @@ def video_poster_response(url, referer):
     if not data:
         return Response("", status=404)
     return Response(data, mimetype="image/jpeg", headers={"Cache-Control": "public, max-age=86400"})
+
+
+# ---------- Mapa (OpenStreetMap) ----------
+# Lekka mapa dla Nokii: serwer skleja kafelki OSM w jeden mały JPEG, a telefon dostaje obrazek, w który można kliknąć
+# (Opera Mini wysyła współrzędne kliknięcia), i przyciski przybliżania/przesuwania. Szukanie miejsc: Nominatim.
+# Zasady OSM: własna nazwa programu w User-Agent, pamięć podręczna, Nominatim najwyżej 1 zapytanie na sekundę.
+OSM_CONTACT = os.environ.get("OSM_CONTACT", "").strip()  # np. adres strony albo e-mail – zalecany przez zasady OSM
+OSM_UA = "Szukajka-lekka-przegladarka/1.0" + (f" ({OSM_CONTACT})" if OSM_CONTACT else "")
+OSM_TILES = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+NOMINATIM = "https://nominatim.openstreetmap.org/search"
+MAP_SIZE = 232  # px – mieści się na ekranie 240 px z marginesem (obrazek nie może się skalować: liczą się współrzędne kliknięcia)
+MAP_ZOOM = (2, 18)
+tile_cache = DiskCache("kafelki", ttl=7 * 24 * 3600, max_files=3000)
+map_cache = DiskCache("mapy", ttl=24 * 3600, max_files=500)
+_nominatim_lock = threading.Lock()
+_nominatim_last = [0.0]
+MAP_QUERY = re.compile(r"^\s*(?:mapa|map[ay]? google|dojazd(?: do)?)\s+(.+)$|^(.+?)\s+(?:mapa|na mapie)\s*$", re.I)
+
+
+def world_px(lat, lon, z):
+    """Współrzędne punktu w pikselach całej mapy na poziomie z (rzut Mercatora jak w kafelkach OSM)."""
+    n = 256 * 2 ** z
+    lat = max(-85.0511, min(85.0511, lat))
+    rad = math.radians(lat)
+    return (lon + 180) / 360 * n, (1 - math.log(math.tan(rad) + 1 / math.cos(rad)) / math.pi) / 2 * n
+
+
+def world_latlon(x, y, z):
+    n = 256 * 2 ** z
+    lon = x / n * 360 - 180
+    lat = math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * y / n))))
+    return max(-85.0511, min(85.0511, lat)), (lon + 180) % 360 - 180
+
+
+def fetch_tile(z, x, y):
+    key = (z, x, y)
+    data = tile_cache.get(key)
+    if data is None:
+        try:
+            resp = requests.get(OSM_TILES.format(z=z, x=x, y=y), headers={"User-Agent": OSM_UA}, timeout=(5, 10))
+        except requests.exceptions.RequestException as err:
+            log.info("kafelek %s: %s", key, err)
+            return None
+        if resp.status_code != 200 or not resp.headers.get("Content-Type", "").startswith("image/"):
+            log.info("kafelek %s: HTTP %s", key, resp.status_code)
+            return None
+        data = resp.content
+        tile_cache.set(key, data)
+    try:
+        return Image.open(io.BytesIO(data)).convert("RGB")
+    except OSError:
+        return None
+
+
+def render_map(lat, lon, z, markers=(), size=MAP_SIZE):
+    """JPEG mapy size×size wyśrodkowanej na (lat, lon) z pinezkami."""
+    cx, cy = world_px(lat, lon, z)
+    left, top = cx - size / 2, cy - size / 2
+    image = Image.new("RGB", (size, size), (229, 227, 223))
+    tiles = [(tx, ty) for tx in range(math.floor(left / 256), math.floor((left + size - 1) / 256) + 1)
+             for ty in range(math.floor(top / 256), math.floor((top + size - 1) / 256) + 1) if 0 <= ty < 2 ** z]
+    results = {}
+    threads = [threading.Thread(target=lambda t=t: results.__setitem__(t, fetch_tile(z, t[0] % 2 ** z, t[1])), daemon=True)
+               for t in tiles]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(15)
+    for (tx, ty), tile in results.items():
+        if tile is not None:
+            image.paste(tile, (round(tx * 256 - left), round(ty * 256 - top)))
+    draw = ImageDraw.Draw(image)
+    for number, (mlat, mlon) in enumerate(markers, 1):
+        mx, my = world_px(mlat, mlon, z)
+        x, y = mx - left, my - top
+        if -10 <= x <= size + 10 and -10 <= y <= size + 10:
+            draw.ellipse((x - 7, y - 7, x + 7, y + 7), fill=(217, 48, 37), outline=(255, 255, 255), width=2)
+            if len(markers) > 1:
+                draw.text((x - 3, y - 6), str(number), fill=(255, 255, 255))
+    label = "© OpenStreetMap"
+    width = draw.textlength(label)
+    draw.rectangle((size - width - 6, size - 13, size, size), fill=(255, 255, 255))
+    draw.text((size - width - 3, size - 12), label, fill=(60, 60, 60))
+    out = io.BytesIO()
+    image.save(out, "JPEG", quality=72, optimize=True)
+    return out.getvalue()
+
+
+def geocode(query):
+    """Miejsca z Nominatim: [{name, lat, lon, zoom}] (najwyżej 5). Pamięć 30 dni; najwyżej 1 zapytanie na sekundę."""
+    key = ("nominatim", query.lower())
+    cached = places_cache.get(key)
+    if cached is not None:
+        return cached
+    with _nominatim_lock:
+        pause = _nominatim_last[0] + 1.1 - time.time()
+        if pause > 0:
+            time.sleep(pause)
+        _nominatim_last[0] = time.time()
+        try:
+            resp = requests.get(NOMINATIM, params={"q": query, "format": "jsonv2", "limit": 5, "accept-language": "pl"},
+                                headers={"User-Agent": OSM_UA}, timeout=(5, 12))
+            data = resp.json() if resp.status_code == 200 else None
+        except (requests.exceptions.RequestException, ValueError) as err:
+            log.warning("nominatim: %s", err)
+            data = None
+    if not isinstance(data, list):
+        raise FetchError("Wyszukiwarka miejsc (OpenStreetMap) nie odpowiada. Spróbuj za chwilę.", 502)
+    places = []
+    for item in data:
+        try:
+            lat, lon = float(item["lat"]), float(item["lon"])
+            south, north, west, east = (float(v) for v in item.get("boundingbox") or (lat, lat, lon, lon))
+        except (KeyError, TypeError, ValueError):
+            continue
+        zoom = MAP_ZOOM[1] - 1  # najmniejsza ramka (dom, punkt) – blisko
+        for z in range(MAP_ZOOM[1] - 1, MAP_ZOOM[0] - 1, -1):  # największe przybliżenie, przy którym ramka się mieści
+            x1, y1 = world_px(north, west, z)
+            x2, y2 = world_px(south, east, z)
+            zoom = z
+            if abs(x2 - x1) <= MAP_SIZE * 0.9 and abs(y2 - y1) <= MAP_SIZE * 0.9:
+                break
+        places.append({"name": squash(item.get("display_name") or query)[:200], "lat": lat, "lon": lon, "zoom": zoom})
+    places_cache.set(key, places)
+    return places
+
+
+def map_float(name, low, high):
+    try:
+        value = float(request.args.get(name, ""))
+    except ValueError:
+        return None
+    return value if low <= value <= high and math.isfinite(value) else None
+
+
+@app.route("/mapa.jpg")
+def map_image():
+    lat, lon = map_float("lat", -86, 86), map_float("lon", -180, 180)
+    z = clamp_int(request.args.get("z"), 13, *MAP_ZOOM)
+    if lat is None or lon is None:
+        abort(400)
+    markers = []
+    for part in (request.args.get("m") or "").split("|")[:5]:
+        try:
+            mlat, mlon = (float(v) for v in part.split(","))
+            markers.append((round(mlat, 6), round(mlon, 6)))
+        except ValueError:
+            continue
+    key = (round(lat, 5), round(lon, 5), z, tuple(markers))
+    data = map_cache.get(key)
+    if data is None:
+        data = render_map(lat, lon, z, markers)
+        map_cache.set(key, data)
+    return Response(data, mimetype="image/jpeg", headers={"Cache-Control": "public, max-age=86400"})
+
+
+@app.route("/mapa")
+def map_page():
+    query = squash(request.args.get("q", ""))[:120]
+    lat, lon = map_float("lat", -86, 86), map_float("lon", -180, 180)
+    z = clamp_int(request.args.get("z"), 13, *MAP_ZOOM)
+    places, error = [], None
+    if query:
+        try:
+            places = geocode(query)
+        except FetchError as err:
+            error = err.message
+        if not places and not error:
+            error = f"Nie znalazłem „{query}” na mapie. Spróbuj inaczej (np. miasto, ulica i numer)."
+    if (lat is None or lon is None) and places:
+        lat, lon, z = places[0]["lat"], places[0]["lon"], places[0]["zoom"]
+    if lat is None or lon is None:  # bez celu: Polska
+        lat, lon, z = (52.07, 19.48, 5) if not request.args.get("z") else (52.07, 19.48, z)
+    if request.args.get("k.x") and request.args.get("k.y"):  # kliknięcie w mapę: tam środek
+        cx, cy = world_px(lat, lon, z)
+        kx = clamp_int(request.args.get("k.x"), MAP_SIZE // 2, 0, MAP_SIZE)
+        ky = clamp_int(request.args.get("k.y"), MAP_SIZE // 2, 0, MAP_SIZE)
+        lat, lon = world_latlon(cx - MAP_SIZE / 2 + kx, cy - MAP_SIZE / 2 + ky, z)
+    markers = "|".join(f"{p['lat']:.6f},{p['lon']:.6f}" for p in places)
+    cx, cy = world_px(lat, lon, z)
+    step = MAP_SIZE / 2
+
+    def moved(dx=0, dy=0, dz=0):
+        nlat, nlon = world_latlon(cx + dx * step, cy + dy * step, z)
+        return url_for("map_page", q=query or None, lat=f"{nlat:.6f}", lon=f"{nlon:.6f}",
+                       z=max(MAP_ZOOM[0], min(MAP_ZOOM[1], z + dz)))
+
+    image = url_for("map_image", lat=f"{lat:.6f}", lon=f"{lon:.6f}", z=z, m=markers or None)
+    links = {name: moved(*args) for name, args in {"up": (0, -1), "down": (0, 1), "left": (-1, 0), "right": (1, 0),
+                                                   "zin": (0, 0, 1), "zout": (0, 0, -1)}.items()}
+    goto = [url_for("map_page", q=query, lat=f"{p['lat']:.6f}", lon=f"{p['lon']:.6f}", z=p["zoom"]) for p in places]
+    return render_template("map.html", q=query, map_q=query, lat=lat, lon=lon, z=z, image=image, links=links, places=places,
+                           goto=goto, error=error, size=MAP_SIZE, zmin=MAP_ZOOM[0], zmax=MAP_ZOOM[1])
 
 
 # ---------- Zakładki (w ciasteczku telefonu – przetrwają restarty serwera) ----------

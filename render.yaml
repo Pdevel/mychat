@@ -11,3 +11,5 @@ services:
         sync: false
       - key: CF_API_TOKEN
         sync: false
+      - key: OSM_CONTACT  # kontakt w nazwie programu dla OpenStreetMap (zalecane przez zasady OSM, opcjonalne)
+        sync: false
