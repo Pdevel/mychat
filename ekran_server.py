@@ -165,8 +165,12 @@ def act(body):
             maps = re.match(r"https://www\.google\.[a-z.]+/maps", page.url)
             if query and maps and not re.search(r"/maps/(?:search|place|dir)/", page.url):
                 # Mapy Google przyjmują tylko „prawdziwy” Enter – ten sam wynik daje adres wyszukiwania
-                page.goto("https://www.google.com/maps/search/" + quote(query), wait_until="domcontentloaded", timeout=12000)
-            settle(page, 2000)  # wyniki wyszukiwania (np. Mapy Google) ładują się chwilę
+                try:
+                    page.goto("https://www.google.com/maps/search/" + quote(query), wait_until="domcontentloaded", timeout=9000)
+                except PlaywrightError as err:
+                    if "Timeout" not in str(err):
+                        raise  # wolne ładowanie to nie błąd – zrzut pokaże, co już jest
+            settle(page, 1500)  # wyniki wyszukiwania (np. Mapy Google) ładują się chwilę
         else:
             page.wait_for_timeout(600)  # podpowiedzi pod polem
     elif action == "key":
