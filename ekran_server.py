@@ -79,7 +79,7 @@ SIGNATURE = ("() => location.href + '|' + document.getElementsByTagName('*').len
              "(document.activeElement ? document.activeElement.tagName : '') + '|' + scrollY")
 
 
-def page_for(sid):
+def page_for(sid, geo=None):
     now = time.time()
     for old in [s for s, v in sessions.items() if now - v["used"] > IDLE_SECONDS]:
         sessions.pop(old)["context"].close()
@@ -89,8 +89,12 @@ def page_for(sid):
             sessions.pop(oldest)["context"].close()
         context = browser.new_context(viewport={"width": WIDTH, "height": HEIGHT}, device_scale_factor=1, is_mobile=True,
                                       has_touch=True, user_agent=USER_AGENT, locale="pl-PL", timezone_id="Europe/Warsaw")
-        sessions[sid] = {"context": context, "page": context.new_page(), "used": now}
+        sessions[sid] = {"context": context, "page": context.new_page(), "used": now, "geo": None}
     session = sessions[sid]
+    if geo and geo != session["geo"]:  # „Twoja lokalizacja” = miejscowość ustawiona w Szukajce (telefon nie podaje GPS)
+        session["context"].grant_permissions(["geolocation"])
+        session["context"].set_geolocation(geo)
+        session["geo"] = geo
     session["used"] = now
     if session["page"].is_closed():
         session["page"] = session["context"].new_page()
@@ -121,7 +125,11 @@ def act(body):
     sid = str(body.get("sid") or "")[:40]
     if not sid:
         raise ValueError("brak sid")
-    page = page_for(sid)
+    geo = body.get("geo")
+    if not (isinstance(geo, dict) and all(isinstance(geo.get(k), (int, float)) for k in ("latitude", "longitude"))):
+        geo = None
+    page = page_for(sid, {"latitude": float(geo["latitude"]), "longitude": float(geo["longitude"]), "accuracy": 1000}
+                    if geo else None)
     action = body.get("action")
     if action == "open":
         url = str(body.get("url") or "")

@@ -5000,6 +5000,16 @@ def screen_ready():
     return None, state
 
 
+def screen_geo():
+    """Przybliżone położenie dla zdalnej przeglądarki: środek miejscowości z ustawień pogody (domyślnie Warszawa)."""
+    try:
+        places = geocode(user_city())
+    except FetchError:
+        places = []
+    place = places[0] if places else {"lat": 52.2297, "lon": 21.0122}
+    return {"latitude": round(place["lat"], 5), "longitude": round(place["lon"], 5)}
+
+
 def screen_act(url, body, retry=True):
     """Akcja w zdalnej przeglądarce. Gdy bramka InstaBox przerwie czekanie (ciężka strona ładuje się dłużej niż ok.
     20 s) – po chwili bierzemy sam zrzut: strona zwykle zdążyła się już wczytać."""
@@ -5013,7 +5023,7 @@ def screen_act(url, body, retry=True):
     if data is None or resp.status_code in (502, 503, 504):
         if retry and body.get("action") not in ("shot", "close"):
             time.sleep(3)
-            return screen_act(url, {"sid": body["sid"], "action": "shot"}, retry=False)
+            return screen_act(url, {"sid": body["sid"], "action": "shot", "geo": body.get("geo")}, retry=False)
         raise InstaboxError(f"Zdalna przeglądarka nie odpowiedziała ({status}). Spróbuj ponownie albo odśwież (5).")
     if resp.status_code != 200:
         raise InstaboxError(data.get("error") or f"Zdalna przeglądarka: błąd {resp.status_code}.")
@@ -5050,7 +5060,7 @@ def screen_page():
                                              page_url="", error=state.get("error"), here=request.full_path, sw=SCREEN_W))
     else:
         scale = 360 / SCREEN_W
-        body = {"sid": sid, "action": action}
+        body = {"sid": sid, "action": action, "geo": screen_geo()}
         if action == "open":
             body["url"] = target
         elif action == "click":
