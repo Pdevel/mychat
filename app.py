@@ -2089,7 +2089,7 @@ def saving_enabled():
 
 
 # Ustawienia zapamiętane w telefonie (ciasteczka na rok): klucz -> dozwolone wartości.
-SETTINGS = {"obrazki": {"0", "1"}, "linki": {"0", "1"}, "tekst": {"s", "m", "l", "xl"}, "oszcz": {"0", "1"},
+SETTINGS = {"obrazki": {"0", "1"}, "linki": {"0", "1"}, "tekst": {"s", "m", "l", "xl"}, "oszcz": {"0", "1"}, "ekq": {"s", "l"},
             "miasto": None}
 TEXT_SIZES = {"s": 12, "m": 14, "l": 17, "xl": 20}  # px; 14 to wielkość domyślna
 DATA_COOKIE = "dane"
@@ -3829,7 +3829,7 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 """,
     "screen.html": """{% extends "base.html" %}
 {% block title %}{{ page_title or "Zdalny ekran" }}{% endblock %}
-{% block head %}{% if waiting %}<meta http-equiv="refresh" content="5;url={{ here }}">{% endif %}<style>.sc2{text-align:center;padding:2px 0}.sc2 input{border:0;padding:0;margin:0;background:none;border-radius:0}.sk{width:100%;max-width:{{ sw }}px;margin:2px auto;border-collapse:collapse}.sk td{text-align:center;padding:2px}.sk a{display:block;padding:5px 0;border:1px solid #d3e0fb;background:#eef3fd;border-radius:12px;font-weight:bold}.ef{margin:4px 8px}.ef .q{width:120px}</style>{% endblock %}
+{% block head %}{% if waiting %}<meta http-equiv="refresh" content="5;url={{ here }}">{% elif live %}<meta http-equiv="refresh" content="3;url={{ url_for('screen_page', a='shot', live=1, n=tick) }}">{% endif %}<style>.sc2{text-align:center;padding:2px 0}.sc2 input{border:0;padding:0;margin:0;background:none;border-radius:0}.sk{width:100%;max-width:{{ shot.w if shot else sw }}px;margin:2px auto;border-collapse:collapse}.sk td{text-align:center;padding:2px}.sk a{display:block;padding:5px 0;border:1px solid #d3e0fb;background:#eef3fd;border-radius:12px;font-weight:bold}.ef{margin:4px 8px}.ef .q{width:120px}</style>{% endblock %}
 {% block body %}<div class="bar" id="g"><a href="{{ url_for('home') }}" accesskey="0">Nowe szukanie</a>{% if page_url %} <a href="{{ url_for('read', url=page_url) }}">Czytnik</a>{% endif %}</div>
 <form class="ef" action="{{ url_for('screen_page') }}" method="get"><input class="q" type="text" name="u" value="{{ page_url or target }}" maxlength="2000"> <input type="submit" value="Idź"></form>
 {% if waiting %}<div class="w"><div class="ib"><b>{% if error %}Zdalna przeglądarka nie działa{% else %}Uruchamiam zdalną przeglądarkę&hellip;{% endif %}</b><br>
@@ -3837,11 +3837,12 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 <p class="m">{% if error %}Spróbuję ponownie przy następnym wejściu.{% else %}Strona odświeża się sama co 5 s. Pierwsze uruchomienie trwa 1&ndash;2 min, potem kilka sekund.{% endif %}</p>
 <a class="b" href="{{ here }}">Odśwież</a></div>
 {% else %}{% if error %}<div class="w"><div class="e">{{ error }}</div></div>{% endif %}
-{% if shot %}<form class="sc2" action="{{ url_for('screen_page') }}" method="get"><input type="image" name="k" src="{{ url_for('screen_image', id=shot.id) }}" width="{{ sw }}" height="{{ shot.h }}" alt="Ekran – kliknij"></form>{% endif %}
+{% if shot %}<form class="sc2" action="{{ url_for('screen_page') }}" method="get"><input type="image" name="k" src="{{ url_for('screen_image', id=shot.id) }}" width="{{ shot.w }}" height="{{ shot.h }}" alt="Ekran – kliknij"></form>{% endif %}
 <table class="sk" cellspacing="0"><tr><td><a href="{{ url_for('screen_page', a='back') }}" accesskey="1">1 &#9664;</a></td><td><a href="{{ url_for('screen_page', a='up') }}" accesskey="2">2 &#9650;</a></td><td><a href="{{ url_for('screen_page', a='forward') }}" accesskey="3">3 &#9654;</a></td></tr>
 <tr><td><a href="{{ url_for('screen_page', a='reload') }}" accesskey="5">5 &#8635;</a></td><td><a href="{{ url_for('screen_page', a='down') }}" accesskey="8">8 &#9660;</a></td><td><a href="{{ url_for('screen_page', a='key', key='Backspace') }}">&#9003;</a></td></tr></table>
 <form class="ef" action="{{ url_for('screen_page') }}" method="get"><input type="hidden" name="a" value="type"><input class="q" type="text" name="t" maxlength="500"> <input type="submit" value="Wpisz"> <input type="submit" name="enter" value="Wpisz + Enter"></form>
-<div class="w"><p class="m">{% if page_title %}<b>{{ page_title }}</b><br>{% endif %}Kliknij w obraz, aby kliknąć na stronie. Tekst: najpierw kliknij pole na obrazie, potem wpisz go wyżej. 1 wstecz, 3 dalej, 2/8 przewijanie, 5 odśwież. Bez dźwięku. <a href="{{ url_for('screen_page', a='close') }}">Zamknij i wyczyść</a></p></div>
+<div class="w"><p class="m">{% if live %}<a href="{{ url_for('screen_page') }}"><b>&#9632; Zatrzymaj odświeżanie</b></a>{% else %}<a href="{{ url_for('screen_page', a='shot', live=1) }}"><b>&#9654; Odświeżaj na żywo</b></a>{% endif %} &middot; Ekran: {% if mode == 's' %}<b>mały</b> &middot; <a href="{{ url_for('settings', k='ekq', v='l', next=url_for('screen_page')) }}">duży</a>{% else %}<a href="{{ url_for('settings', k='ekq', v='s', next=url_for('screen_page')) }}">mały</a> &middot; <b>duży</b>{% endif %}</p>
+<p class="m">{% if page_title %}<b>{{ page_title }}</b><br>{% endif %}Kliknij w obraz, aby kliknąć na stronie. Tekst: najpierw kliknij pole na obrazie, potem wpisz go wyżej. 1 wstecz, 3 dalej, 2/8 przewijanie, 5 odśwież. Bez dźwięku. <a href="{{ url_for('screen_page', a='close') }}">Zamknij i wyczyść</a></p></div>
 {% endif %}{% if debug %}<!-- wpisywanie: {{ debug }} -->{% endif %}{% endblock %}
 """,
     "error.html": """{% extends "base.html" %}
@@ -4846,6 +4847,19 @@ SCREEN_PLAYWRIGHT = "playwright==1.49.0"
 with open(SCREEN_SERVER, "rb") as _source:
     SCREEN_VERSION = hashlib.sha256(_source.read()).hexdigest()[:12]
 screen_shots = DiskCache("ekran", ttl=900, max_files=300)
+# Mały: Nokia (zrzut zmniejszany do 232 px). Duży: nowoczesne telefony – widok 390 px w podwójnej gęstości pikseli.
+SCREEN_MODES = {
+    "s": {"view": {"w": 360, "h": 560, "scale": 1, "q": 60}, "display": SCREEN_W},
+    "l": {"view": {"w": 390, "h": 700, "scale": 2, "q": 72}, "display": 390},
+}
+SMALL_BROWSER = re.compile(r"Opera Mini|Nokia|KAIOS|J2ME|MIDP|Series ?(?:30|40)|S40|MAUI|Obigo|NetFront", re.I)
+
+
+def screen_mode():
+    chosen = request.cookies.get("ekq")
+    if chosen in SCREEN_MODES:
+        return chosen
+    return "s" if SMALL_BROWSER.search(request.headers.get("User-Agent", "")) else "l"
 _screen_lock = threading.Lock()
 
 
@@ -5023,7 +5037,8 @@ def screen_act(url, body, retry=True):
     if data is None or resp.status_code in (502, 503, 504):
         if retry and body.get("action") not in ("shot", "close"):
             time.sleep(3)
-            return screen_act(url, {"sid": body["sid"], "action": "shot", "geo": body.get("geo")}, retry=False)
+            return screen_act(url, {"sid": body["sid"], "action": "shot", "geo": body.get("geo"), "view": body.get("view")},
+                              retry=False)
         raise InstaboxError(f"Zdalna przeglądarka nie odpowiedziała ({status}). Spróbuj ponownie albo odśwież (5).")
     if resp.status_code != 200:
         raise InstaboxError(data.get("error") or f"Zdalna przeglądarka: błąd {resp.status_code}.")
@@ -5057,10 +5072,12 @@ def screen_page():
     resp = None
     if server is None:
         resp = make_response(render_template("screen.html", waiting=True, state=state, target=target, shot=None, page_title="",
+                                             mode=screen_mode(), live=False, tick=0,
                                              page_url="", error=state.get("error"), here=request.full_path, sw=SCREEN_W))
     else:
-        scale = 360 / SCREEN_W
-        body = {"sid": sid, "action": action, "geo": screen_geo()}
+        mode = SCREEN_MODES[screen_mode()]
+        scale = mode["view"]["w"] / mode["display"]
+        body = {"sid": sid, "action": action, "geo": screen_geo(), "view": mode["view"]}
         if action == "open":
             body["url"] = target
         elif action == "click":
@@ -5080,16 +5097,20 @@ def screen_page():
             raw = base64.b64decode(data["shot"])
             try:
                 with Image.open(io.BytesIO(raw)) as image:
-                    image = image.convert("RGB")
-                    image = image.resize((SCREEN_W, round(image.height * SCREEN_W / image.width)), Image.Resampling.LANCZOS)
-                    out = io.BytesIO()
-                    image.save(out, "JPEG", quality=62, optimize=True)
+                    display = mode["display"]
+                    height = round(image.height * display / image.width)  # wysokość na ekranie (px CSS)
+                    if mode["view"]["scale"] == 1:  # Nokia: plik o rozmiarze ekranu
+                        image = image.convert("RGB").resize((display, height), Image.Resampling.LANCZOS)
+                        out = io.BytesIO()
+                        image.save(out, "JPEG", quality=62, optimize=True)
+                        raw = out.getvalue()
                     shot_id = uuid.uuid4().hex
-                    screen_shots.set(shot_id, out.getvalue())
-                    shot = {"id": shot_id, "h": image.height}
+                    screen_shots.set(shot_id, raw)
+                    shot = {"id": shot_id, "h": height, "w": display}
             except OSError:
                 error = error or "Nie udało się odczytać zrzutu ekranu."
         resp = make_response(render_template("screen.html", waiting=False, state=state, target=target, shot=shot,
+                                             mode=screen_mode(), live=bool(request.args.get("live")), tick=int(time.time()) % 100000,
                                              page_title=data.get("title", ""), page_url=data.get("url", "") or target,
                                              error=error, here=request.full_path, sw=SCREEN_W, closed=data.get("closed"),
                                              debug=json.dumps(data.get("debug"), ensure_ascii=False) if data.get("debug") else ""))

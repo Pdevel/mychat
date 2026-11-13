@@ -23,7 +23,18 @@ TOKEN = os.environ["EKRAN_TOKEN"]
 with open(__file__, "rb") as _source:
     VERSION = hashlib.sha256(_source.read()).hexdigest()[:12]  # Szukajka wgrywa nową wersję, gdy ta się różni
 PORT = int(os.environ.get("EKRAN_PORT", "8765"))
-WIDTH, HEIGHT = 360, 560  # widok telefonu; Szukajka zmniejsza zrzut do szerokości ekranu Nokii
+WIDTH, HEIGHT = 360, 560  # domyślny widok telefonu (Nokia: Szukajka zmniejsza zrzut do 232 px)
+
+
+def view_of(body):
+    """Wielkość widoku z żądania: w×h (px CSS), scale (gęstość pikseli: 2 = ostro na Retinie), q (jakość JPEG)."""
+    view = body.get("view") if isinstance(body.get("view"), dict) else {}
+    def num(key, low, high, default):
+        try:
+            return max(low, min(high, int(view.get(key, default))))
+        except (TypeError, ValueError):
+            return default
+    return {"w": num("w", 240, 480, WIDTH), "h": num("h", 320, 900, HEIGHT), "scale": num("scale", 1, 2, 1), "q": num("q", 40, 85, 60)}
 MAX_SESSIONS = 3
 IDLE_SECONDS = 20 * 60
 KEYS = {"Enter", "Backspace", "Tab", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown",
@@ -79,7 +90,17 @@ SIGNATURE = ("() => location.href + '|' + document.getElementsByTagName('*').len
              "(document.activeElement ? document.activeElement.tagName : '') + '|' + scrollY")
 
 
-def page_for(sid, geo=None):
+def new_context(sid, view):
+    context = browser.new_context(viewport={"width": view["w"], "height": view["h"]}, device_scale_factor=view["scale"],
+                                  is_mobile=True, has_touch=True, user_agent=USER_AGENT, locale="pl-PL",
+                                  timezone_id="Europe/Warsaw")
+    # link otwierający nową kartę (target=_blank, window.open): ekran pokazuje nową kartę
+    context.on("page", lambda new_page, sid=sid: sessions.get(sid) and sessions[sid].update(page=new_page))
+    return context
+
+
+def page_for(sid, geo=None, view=None):
+    view = view or {"w": WIDTH, "h": HEIGHT, "scale": 1, "q": 60}
     now = time.time()
     for old in [s for s, v in sessions.items() if now - v["used"] > IDLE_SECONDS]:
         sessions.pop(old)["context"].close()
@@ -87,12 +108,21 @@ def page_for(sid, geo=None):
         while len(sessions) >= MAX_SESSIONS:
             oldest = min(sessions, key=lambda s: sessions[s]["used"])
             sessions.pop(oldest)["context"].close()
-        context = browser.new_context(viewport={"width": WIDTH, "height": HEIGHT}, device_scale_factor=1, is_mobile=True,
-                                      has_touch=True, user_agent=USER_AGENT, locale="pl-PL", timezone_id="Europe/Warsaw")
-        sessions[sid] = {"context": context, "page": context.new_page(), "used": now, "geo": None}
-        # link otwierający nową kartę (target=_blank, window.open): ekran pokazuje nową kartę
-        context.on("page", lambda new_page, sid=sid: sessions.get(sid) and sessions[sid].update(page=new_page))
+        context = new_context(sid, view)
+        sessions[sid] = {"context": context, "page": context.new_page(), "used": now, "geo": None, "view": view}
     session = sessions[sid]
+    if (session["view"]["w"], session["view"]["h"], session["view"]["scale"]) != (view["w"], view["h"], view["scale"]):
+        # inny rozmiar ekranu (np. przełączenie na duży): nowa karta w nowym rozmiarze, ta sama strona
+        url = session["page"].url if not session["page"].is_closed() else ""
+        session["context"].close()
+        session.update(context=new_context(sid, view), geo=None)
+        session["page"] = session["context"].new_page()
+        if url.startswith(("http://", "https://")):
+            try:
+                session["page"].goto(url, wait_until="domcontentloaded", timeout=12000)
+            except PlaywrightError:
+                pass
+    session["view"] = view
     if geo and geo != session["geo"]:  # „Twoja lokalizacja” = miejscowość ustawiona w Szukajce (telefon nie podaje GPS)
         session["context"].grant_permissions(["geolocation"])
         session["context"].set_geolocation(geo)
@@ -103,7 +133,7 @@ def page_for(sid, geo=None):
     return session["page"]
 
 
-def settle(page, wait=700):
+def settle(page, wait=450):
     try:
         page.wait_for_load_state("domcontentloaded", timeout=4000)
     except PlaywrightError:
@@ -154,8 +184,10 @@ def act(body):
     geo = body.get("geo")
     if not (isinstance(geo, dict) and all(isinstance(geo.get(k), (int, float)) for k in ("latitude", "longitude"))):
         geo = None
+    view = view_of(body)
     page = page_for(sid, {"latitude": float(geo["latitude"]), "longitude": float(geo["longitude"]), "accuracy": 1000}
-                    if geo else None)
+                    if geo else None, view)
+    width, height = view["w"], view["h"]
     action = body.get("action")
     if action == "open":
         url = str(body.get("url") or "")
@@ -168,19 +200,19 @@ def act(body):
                 raise
         settle(page, 800)
     elif action == "click":
-        x = max(0, min(WIDTH - 1, float(body.get("x", 0))))
-        y = max(0, min(HEIGHT - 1, float(body.get("y", 0))))
+        x = max(0, min(width - 1, float(body.get("x", 0))))
+        y = max(0, min(height - 1, float(body.get("y", 0))))
         before = run(page, SIGNATURE, default='nawigacja')
         sessions[sid]["last"] = [x, y]
         page.mouse.click(x, y)
-        page.wait_for_timeout(500)
+        page.wait_for_timeout(350)
         if run(page, SIGNATURE, default='nawigacja') == before:  # nic się nie zmieniło: część stron mobilnych nie reaguje na mysz
             run(page, "([x, y]) => { const e = document.elementFromPoint(x, y); if (e) e.click(); }", [x, y])
         settle(page)
     elif action == "scroll":
-        page.mouse.move(WIDTH / 2, HEIGHT / 2)
+        page.mouse.move(width / 2, height / 2)
         page.mouse.wheel(0, max(-3000, min(3000, int(body.get("dy", 0)))))
-        page.wait_for_timeout(400)
+        page.wait_for_timeout(250)
     elif action == "type":
         text = str(body.get("text") or "")[:500]
         target = run(page, FOCUS, sessions[sid].get("last") or [None, None], default="none")
@@ -240,11 +272,11 @@ def act(body):
     if sid in sessions and sessions[sid]["page"] is not page and not sessions[sid]["page"].is_closed():
         page = sessions[sid]["page"]  # kliknięcie otworzyło nową kartę
         settle(page, 800)
-    shot = page.screenshot(type="jpeg", quality=60, timeout=6000)
+    shot = page.screenshot(type="jpeg", quality=view["q"], timeout=8000)
     if action == "type":
-        return {"debug": debug, "title": title_of(page), "url": page.url, "width": WIDTH, "height": HEIGHT,
+        return {"debug": debug, "title": title_of(page), "url": page.url, "width": width, "height": height,
                 "shot": base64.b64encode(shot).decode()}
-    return {"title": title_of(page), "url": page.url, "width": WIDTH, "height": HEIGHT,
+    return {"title": title_of(page), "url": page.url, "width": width, "height": height,
             "shot": base64.b64encode(shot).decode()}
 
 
