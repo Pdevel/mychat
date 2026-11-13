@@ -36,6 +36,9 @@ version = browser.version.split(".")[0]
 USER_AGENT = (f"Mozilla/5.0 (Linux; Android 14; K) AppleWebKit/537.36 (KHTML, like Gecko) "
               f"Chrome/{version}.0.0.0 Mobile Safari/537.36")  # widok mobilny, jak telefon z Chrome
 sessions = {}
+# „Czy kliknięcie coś zmieniło”: adres, liczba elementów, aktywny element i przewinięcie.
+SIGNATURE = ("() => location.href + '|' + document.getElementsByTagName('*').length + '|' + "
+             "(document.activeElement ? document.activeElement.tagName : '') + '|' + scrollY")
 
 
 def page_for(sid):
@@ -83,7 +86,11 @@ def act(body):
     elif action == "click":
         x = max(0, min(WIDTH - 1, float(body.get("x", 0))))
         y = max(0, min(HEIGHT - 1, float(body.get("y", 0))))
+        before = page.evaluate(SIGNATURE)
         page.mouse.click(x, y)
+        page.wait_for_timeout(500)
+        if page.evaluate(SIGNATURE) == before:  # nic się nie zmieniło: część stron mobilnych nie reaguje na mysz
+            page.evaluate("([x, y]) => { const e = document.elementFromPoint(x, y); if (e) e.click(); }", [x, y])
         settle(page)
     elif action == "scroll":
         page.mouse.move(WIDTH / 2, HEIGHT / 2)
