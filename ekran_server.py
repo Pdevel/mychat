@@ -54,6 +54,18 @@ FOCUS = """([x, y]) => {
 ACTIVE = ("() => { const e = document.activeElement; if (!e) return ''; "
           "return e.tagName + '#' + e.id + '.' + String(e.className).slice(0, 40) + ' v=' + String(e.value || e.innerText || '').slice(0, 40)"
           " + ' ' + JSON.stringify(e.getBoundingClientRect()); }")
+VALUE = "() => { const e = document.activeElement; return e ? String(e.value !== undefined ? e.value : e.innerText) : ''; }"
+SET_VALUE = """(text) => {
+  const e = document.activeElement;
+  if (!e) return;
+  if (e.isContentEditable) { e.innerText += text; }
+  else {
+    const proto = e.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    Object.getOwnPropertyDescriptor(proto, 'value').set.call(e, (e.value || '') + text);
+  }
+  e.dispatchEvent(new InputEvent('input', {bubbles: true, data: text, inputType: 'insertText'}));
+  e.dispatchEvent(new Event('change', {bubbles: true}));
+}"""
 SIGNATURE = ("() => location.href + '|' + document.getElementsByTagName('*').length + '|' + "
              "(document.body ? document.body.innerText.length : 0) + '|' + "
              "(document.activeElement ? document.activeElement.tagName : '') + '|' + scrollY")
@@ -122,6 +134,10 @@ def act(body):
             raise ValueError("Nie widzę pola do wpisania tekstu – kliknij najpierw w pole na obrazie.")
         if text:
             page.keyboard.type(text, delay=15)
+            if text not in page.evaluate(VALUE):  # pole odrzuca symulowane klawisze (np. Mapy Google)
+                page.keyboard.insert_text(text)  # jak klawiatura ekranowa telefonu
+            if text not in page.evaluate(VALUE):
+                page.evaluate(SET_VALUE, text)  # wartość + zdarzenie „input” (pola sterowane przez React i podobne)
         debug = {"target": target, "frames": len(page.frames), "active": page.evaluate(ACTIVE)}
         if body.get("enter"):
             page.keyboard.press("Enter")
