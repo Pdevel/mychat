@@ -36,8 +36,23 @@ version = browser.version.split(".")[0]
 USER_AGENT = (f"Mozilla/5.0 (Linux; Android 14; K) AppleWebKit/537.36 (KHTML, like Gecko) "
               f"Chrome/{version}.0.0.0 Mobile Safari/537.36")  # widok mobilny, jak telefon z Chrome
 sessions = {}
-# „Czy kliknięcie coś zmieniło”: adres, liczba elementów, aktywny element i przewinięcie.
+# Przed wpisaniem: kursor w polu tekstowym – aktywnym, klikniętym (albo jego wnętrzu/otoczeniu) lub pierwszym widocznym.
+FOCUS = """([x, y]) => {
+  const editable = e => !!e && (e.isContentEditable || (/^(INPUT|TEXTAREA)$/.test(e.tagName)
+                                && !/^(hidden|button|submit|checkbox|radio|image|file|range|color)$/i.test(e.type || '')));
+  if (editable(document.activeElement)) return 'active';
+  const sel = 'input,textarea,[contenteditable=""],[contenteditable="true"]';
+  const shown = e => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0 && r.bottom > 0 && r.top < innerHeight; };
+  let e = x === null ? null : document.elementFromPoint(x, y);
+  if (e && !editable(e)) e = e.closest(sel) || e.querySelector(sel) || (e.parentElement && e.parentElement.querySelector(sel));
+  if (!editable(e) || !shown(e)) e = [...document.querySelectorAll(sel)].find(v => editable(v) && shown(v));
+  if (!e) return 'none';
+  e.focus();
+  return editable(document.activeElement) ? 'focused' : 'none';
+}"""
+# „Czy kliknięcie coś zmieniło”: adres, liczba elementów, widoczny tekst (pokazane/schowane menu), fokus, przewinięcie.
 SIGNATURE = ("() => location.href + '|' + document.getElementsByTagName('*').length + '|' + "
+             "(document.body ? document.body.innerText.length : 0) + '|' + "
              "(document.activeElement ? document.activeElement.tagName : '') + '|' + scrollY")
 
 
@@ -87,6 +102,7 @@ def act(body):
         x = max(0, min(WIDTH - 1, float(body.get("x", 0))))
         y = max(0, min(HEIGHT - 1, float(body.get("y", 0))))
         before = page.evaluate(SIGNATURE)
+        sessions[sid]["last"] = [x, y]
         page.mouse.click(x, y)
         page.wait_for_timeout(500)
         if page.evaluate(SIGNATURE) == before:  # nic się nie zmieniło: część stron mobilnych nie reaguje na mysz
@@ -98,11 +114,16 @@ def act(body):
         page.wait_for_timeout(400)
     elif action == "type":
         text = str(body.get("text") or "")[:500]
+        target = page.evaluate(FOCUS, sessions[sid].get("last") or [None, None])
+        if target == "none":
+            raise ValueError("Nie widzę pola do wpisania tekstu – kliknij najpierw w pole na obrazie.")
         if text:
-            page.keyboard.type(text, delay=10)
+            page.keyboard.type(text, delay=15)
         if body.get("enter"):
             page.keyboard.press("Enter")
-        settle(page)
+            settle(page, 2000)  # wyniki wyszukiwania (np. Mapy Google) ładują się chwilę
+        else:
+            page.wait_for_timeout(600)  # podpowiedzi pod polem
     elif action == "key":
         key = str(body.get("key") or "")
         if key not in KEYS:
