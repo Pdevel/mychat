@@ -85,6 +85,36 @@ SUBMIT = """() => {
   for (const type of ['keydown', 'keypress', 'keyup'])
     e.dispatchEvent(new KeyboardEvent(type, {key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true}));
 }"""
+# Klikalne elementy widoczne na ekranie (linki, przyciski, pola): telefon z klawiaturą skacze po nich strzałkami.
+CLICKABLES = """() => {
+  const sel = 'a[href],button,input:not([type=hidden]),textarea,select,summary,label[for],[role=button],[role=link],'
+            + '[role=tab],[role=menuitem],[role=option],[role=checkbox],[onclick],[tabindex]:not([tabindex="-1"]),[contenteditable="true"]';
+  const out = [];
+  for (const e of document.querySelectorAll(sel)) {
+    const r = e.getBoundingClientRect();
+    if (r.width < 8 || r.height < 8 || r.bottom <= 0 || r.right <= 0 || r.top >= innerHeight || r.left >= innerWidth) continue;
+    const st = getComputedStyle(e);
+    if (st.visibility === 'hidden' || +st.opacity === 0 || st.pointerEvents === 'none') continue;
+    const cx = Math.min(Math.max(r.left + r.width / 2, 1), innerWidth - 2), cy = Math.min(Math.max(r.top + r.height / 2, 1), innerHeight - 2);
+    const top = document.elementFromPoint(cx, cy);
+    if (!top || !(top === e || e.contains(top) || top.contains(e))) continue;  // zasłonięte (np. okienkiem)
+    if (out.some(o => o.el.contains(e) || e.contains(o.el))) continue;  // link w przycisku itp. – raz
+    const field = /^(INPUT|TEXTAREA|SELECT)$/.test(e.tagName) && !/^(button|submit|reset|checkbox|radio|image|file|range|color)$/i.test(e.type || '')
+                  || e.isContentEditable;
+    const text = (e.innerText || e.value || e.getAttribute('aria-label') || e.getAttribute('title') || e.getAttribute('placeholder')
+                  || (e.querySelector('img[alt]') || {}).alt || '').trim().replace(/\\s+/g, ' ').slice(0, 60);
+    out.push({el: e, x: Math.max(0, r.left), y: Math.max(0, r.top), r: Math.min(r.right, innerWidth), b: Math.min(r.bottom, innerHeight),
+              cx: Math.round(cx), cy: Math.round(cy), t: text, f: field ? 1 : 0});
+    if (out.length >= 80) break;
+  }
+  return out.map(o => ({x: Math.round(o.x), y: Math.round(o.y), r: Math.round(o.r), b: Math.round(o.b), cx: o.cx, cy: o.cy, t: o.t, f: o.f}));
+}"""
+FIELD = """() => {
+  const e = document.activeElement;
+  const ok = e && (e.isContentEditable || (/^(INPUT|TEXTAREA)$/.test(e.tagName)
+                   && !/^(hidden|button|submit|checkbox|radio|image|file|range|color)$/i.test(e.type || '')));
+  return ok ? (e.getAttribute('aria-label') || e.placeholder || e.name || e.title || 'pole').slice(0, 60) : '';
+}"""
 SIGNATURE = ("() => location.href + '|' + document.getElementsByTagName('*').length + '|' + "
              "(document.body ? document.body.innerText.length : 0) + '|' + "
              "(document.activeElement ? document.activeElement.tagName : '') + '|' + scrollY")
@@ -273,11 +303,13 @@ def act(body):
         page = sessions[sid]["page"]  # kliknięcie otworzyło nową kartę
         settle(page, 800)
     shot = page.screenshot(type="jpeg", quality=view["q"], timeout=8000)
+    result = {"title": title_of(page), "url": page.url, "width": width, "height": height, "shot": base64.b64encode(shot).decode(),
+              "items": run(page, CLICKABLES, default=[]) or []}
+    if action == "click":
+        result["field"] = run(page, FIELD, default="") or ""  # kliknięto pole tekstowe – telefon od razu pokaże wpisywanie
     if action == "type":
-        return {"debug": debug, "title": title_of(page), "url": page.url, "width": width, "height": height,
-                "shot": base64.b64encode(shot).decode()}
-    return {"title": title_of(page), "url": page.url, "width": width, "height": height,
-            "shot": base64.b64encode(shot).decode()}
+        result["debug"] = debug
+    return result
 
 
 class Handler(BaseHTTPRequestHandler):

@@ -3829,20 +3829,24 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 """,
     "screen.html": """{% extends "base.html" %}
 {% block title %}{{ page_title or "Zdalny ekran" }}{% endblock %}
-{% block head %}{% if waiting %}<meta http-equiv="refresh" content="5;url={{ here }}">{% elif live %}<meta http-equiv="refresh" content="3;url={{ url_for('screen_page', a='shot', live=1, n=tick) }}">{% endif %}<style>.sc2{text-align:center;padding:2px 0}.sc2 input{border:0;padding:0;margin:0;background:none;border-radius:0}.sk{width:100%;max-width:{{ shot.w if shot else sw }}px;margin:2px auto;border-collapse:collapse}.sk td{text-align:center;padding:2px}.sk a{display:block;padding:5px 0;border:1px solid #d3e0fb;background:#eef3fd;border-radius:12px;font-weight:bold}.ef{margin:4px 8px}.ef .q{width:120px}</style>{% endblock %}
-{% block body %}<div class="bar" id="g"><a href="{{ url_for('home') }}" accesskey="0">Nowe szukanie</a>{% if page_url %} <a href="{{ url_for('read', url=page_url) }}">Czytnik</a>{% endif %}</div>
+{% block head %}{% if waiting %}<meta http-equiv="refresh" content="5;url={{ here }}">{% elif live %}<meta http-equiv="refresh" content="3;url={{ url_for('screen_page', a='shot', live=1, n=tick) }}">{% endif %}<style>.sc2{text-align:center;padding:2px 0}.sc2 input{border:0;padding:0;margin:0;background:none;border-radius:0}.sk{width:100%;max-width:{{ shot.w if shot else sw }}px;margin:2px auto;border-collapse:collapse}.sk td{text-align:center;padding:2px}.sk a{display:block;padding:5px 0;border:1px solid #d3e0fb;background:#eef3fd;border-radius:12px;font-weight:bold}.ef{margin:4px 8px}.ef .q{width:120px}.fx{background:#fff4e5;border:1px solid #f0c890;border-radius:10px;padding:6px}</style>{% endblock %}
+{% block body %}<div class="bar" id="g"><a href="{{ url_for('home') }}" accesskey="0">Nowe szukanie</a>{% if page_url %} <a href="{{ url_for('read', url=page_url, czytnik=1) }}">Czytnik</a>{% endif %}</div>
 <form class="ef" action="{{ url_for('screen_page') }}" method="get"><input class="q" type="text" name="u" value="{{ page_url or target }}" maxlength="2000"> <input type="submit" value="Idź"></form>
 {% if waiting %}<div class="w"><div class="ib"><b>{% if error %}Zdalna przeglądarka nie działa{% else %}Uruchamiam zdalną przeglądarkę&hellip;{% endif %}</b><br>
 {% if error %}{{ error }}{% else %}{{ state.phase or "start" }}{% endif %}</div>
 <p class="m">{% if error %}Spróbuję ponownie przy następnym wejściu.{% else %}Strona odświeża się sama co 5 s. Pierwsze uruchomienie trwa 1&ndash;2 min, potem kilka sekund.{% endif %}</p>
 <a class="b" href="{{ here }}">Odśwież</a></div>
 {% else %}{% if error %}<div class="w"><div class="e">{{ error }}</div></div>{% endif %}
-{% if shot %}<form class="sc2" action="{{ url_for('screen_page') }}" method="get"><input type="image" name="k" src="{{ url_for('screen_image', id=shot.id) }}" width="{{ shot.w }}" height="{{ shot.h }}" alt="Ekran – kliknij"></form>{% endif %}
+{% if field %}<form class="ef fx" action="{{ url_for('screen_page') }}" method="get"><b>Wpisz w pole &bdquo;{{ field }}&rdquo;:</b><br><input type="hidden" name="a" value="type"><input class="q" type="text" name="t" maxlength="500"> <input type="submit" value="Wpisz"> <input type="submit" name="enter" value="Wpisz + Enter"></form>
+{% endif %}{% if shot and as_list %}<div class="w">{% for it in shot["items"] %}<div class="r"><a href="{{ url_for('screen_page', a='click', vx=it.cx, vy=it.cy) }}">{{ loop.index }}. {% if it.f %}[pole] {% endif %}{{ it.t or "(bez opisu)" }}</a></div>
+{% else %}<p class="m">Na ekranie nie ma linków ani przycisków.</p>{% endfor %}<a class="b" href="{{ url_for('screen_page', a='shot') }}">Pokaż obraz</a></div>
+{% elif shot and mode == 's' and shot["items"] %}<div class="sc2"><img src="{{ url_for('screen_image', id=shot.id) }}" width="{{ shot.w }}" height="{{ shot.h }}" usemap="#ek" alt="Ekran"><map name="ek">{% for it in shot["items"] %}<area shape="rect" coords="{{ it.x1 }},{{ it.y1 }},{{ it.x2 }},{{ it.y2 }}" href="{{ url_for('screen_page', a='click', vx=it.cx, vy=it.cy) }}" alt="{{ it.t or 'link' }}">{% endfor %}</map></div>
+{% elif shot %}<form class="sc2" action="{{ url_for('screen_page') }}" method="get"><input type="image" name="k" src="{{ url_for('screen_image', id=shot.id) }}" width="{{ shot.w }}" height="{{ shot.h }}" alt="Ekran – kliknij"></form>{% endif %}
 <table class="sk" cellspacing="0"><tr><td><a href="{{ url_for('screen_page', a='back') }}" accesskey="1">1 &#9664;</a></td><td><a href="{{ url_for('screen_page', a='up') }}" accesskey="2">2 &#9650;</a></td><td><a href="{{ url_for('screen_page', a='forward') }}" accesskey="3">3 &#9654;</a></td></tr>
 <tr><td><a href="{{ url_for('screen_page', a='reload') }}" accesskey="5">5 &#8635;</a></td><td><a href="{{ url_for('screen_page', a='down') }}" accesskey="8">8 &#9660;</a></td><td><a href="{{ url_for('screen_page', a='key', key='Backspace') }}">&#9003;</a></td></tr></table>
 <form class="ef" action="{{ url_for('screen_page') }}" method="get"><input type="hidden" name="a" value="type"><input class="q" type="text" name="t" maxlength="500"> <input type="submit" value="Wpisz"> <input type="submit" name="enter" value="Wpisz + Enter"></form>
 <div class="w"><p class="m">{% if live %}<a href="{{ url_for('screen_page') }}"><b>&#9632; Zatrzymaj odświeżanie</b></a>{% else %}<a href="{{ url_for('screen_page', a='shot', live=1) }}"><b>&#9654; Odświeżaj na żywo</b></a>{% endif %} &middot; Ekran: {% if mode == 's' %}<b>mały</b> &middot; <a href="{{ url_for('settings', k='ekq', v='l', next=url_for('screen_page')) }}">duży</a>{% else %}<a href="{{ url_for('settings', k='ekq', v='s', next=url_for('screen_page')) }}">mały</a> &middot; <b>duży</b>{% endif %}</p>
-<p class="m">{% if page_title %}<b>{{ page_title }}</b><br>{% endif %}Kliknij w obraz, aby kliknąć na stronie. Tekst: najpierw kliknij pole na obrazie, potem wpisz go wyżej. 1 wstecz, 3 dalej, 2/8 przewijanie, 5 odśwież. Bez dźwięku. <a href="{{ url_for('screen_page', a='close') }}">Zamknij i wyczyść</a></p></div>
+<p class="m">{% if page_title %}<b>{{ page_title }}</b><br>{% endif %}{% if mode == 's' %}Strzałkami przechodzisz po linkach i przyciskach na obrazie, OK klika{% else %}Kliknij w obraz, aby kliknąć na stronie{% endif %}. Kliknięte pole tekstowe pokaże okienko do wpisywania. 1 wstecz, 3 dalej, 2/8 przewijanie, 5 odśwież. Bez dźwięku. {% if shot and not as_list %}<a href="{{ url_for('screen_page', a='shot', lista=1) }}">Lista linków ({{ shot["items"]|length }})</a> &middot; {% endif %}<a href="{{ url_for('screen_page', a='close') }}">Zamknij i wyczyść</a></p></div>
 {% endif %}{% if debug %}<!-- wpisywanie: {{ debug }} -->{% endif %}{% endblock %}
 """,
     "error.html": """{% extends "base.html" %}
@@ -4403,6 +4407,9 @@ def read():
     if not re.match(r"^https?://", url, re.I):
         url = "http://" + url
     common = {"q": query, "rp": results_page}
+    reader_only = bool(request.args.get("czytnik"))
+    if INSTABOX_API_KEY and not reader_only and APP_URL.search(url):  # aplikacje JS (Mapy, Gmail…) – od razu zdalny ekran
+        return redirect(url_for("screen_page", u=url))
     if len(url) > MAX_URL_LENGTH:
         return render_template("error.html", message="Adres jest za długi.", original=None, **common), 400
     started = time.monotonic()
@@ -4411,6 +4418,8 @@ def read():
     except VideoLink as found:
         return redirect(url_for("video", u=found.url, q=query or None, rp=results_page, a=1 if found.audio else None))
     except FetchError as err:
+        if err.status == 422 and INSTABOX_API_KEY and not reader_only:  # czytnik nie wydobył tekstu – zdalna przeglądarka
+            return redirect(url_for("screen_page", u=url))
         resp = make_response(render_template("error.html", message=err.message, original=url, retry=request.full_path,
                                              blocked=err.blocked, **common), err.status)
         if err.blocked:  # następnym razem wyszukiwarka nie pokaże tej strony
@@ -4840,6 +4849,10 @@ INSTABOX_API = "https://api.instabox.sh"
 SCREEN_MACHINE = "szukajka-ekran"
 SCREEN_PORT = 8765
 SCREEN_W = 232  # szerokość zrzutu na telefonie (ekran 240 px)
+# Strony-aplikacje, które bez JavaScriptu nic nie pokazują: czytnik od razu przekazuje je zdalnemu ekranowi.
+APP_URL = re.compile(r"^https?://(?:(?:www|maps)\.google\.[a-z.]+/maps|maps\.google\.|maps\.app\.goo\.gl/|goo\.gl/maps|"
+                     r"(?:docs|mail|drive|calendar|translate)\.google\.|(?:www\.|m\.)?facebook\.com/|(?:www\.)?instagram\.com/|"
+                     r"(?:www\.)?(?:x|twitter)\.com/|web\.whatsapp\.com|(?:www\.)?jakdojade\.pl)", re.I)
 SCREEN_STATE = os.path.join(CACHE_DIR, "ekran.json")
 SCREEN_TOKEN = hashlib.sha256(("ekran:" + INSTABOX_API_KEY).encode()).hexdigest()[:40] if INSTABOX_API_KEY else ""
 SCREEN_SERVER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ekran_server.py")
@@ -4849,7 +4862,7 @@ with open(SCREEN_SERVER, "rb") as _source:
 screen_shots = DiskCache("ekran", ttl=900, max_files=300)
 # Mały: Nokia (zrzut zmniejszany do 232 px). Duży: nowoczesne telefony – widok 390 px w podwójnej gęstości pikseli.
 SCREEN_MODES = {
-    "s": {"view": {"w": 360, "h": 560, "scale": 1, "q": 60}, "display": SCREEN_W},
+    "s": {"view": {"w": 320, "h": 440, "scale": 1, "q": 70}, "display": SCREEN_W},  # 320 -> 232 px: tekst ok. 3/4 wielkości
     "l": {"view": {"w": 390, "h": 700, "scale": 2, "q": 72}, "display": 390},
 }
 SMALL_BROWSER = re.compile(r"Opera Mini|Nokia|KAIOS|J2ME|MIDP|Series ?(?:30|40)|S40|MAUI|Obigo|NetFront", re.I)
@@ -5066,13 +5079,13 @@ def screen_page():
     if target and not re.match(r"^https?://", target, re.I):
         target = "https://" + target
     action = request.args.get("a") or ("open" if target else "shot")
-    if request.args.get("k.x") is not None:
+    if request.args.get("k.x") is not None or request.args.get("vx") is not None:
         action = "click"
     server, state = screen_ready()
     resp = None
     if server is None:
         resp = make_response(render_template("screen.html", waiting=True, state=state, target=target, shot=None, page_title="",
-                                             mode=screen_mode(), live=False, tick=0,
+                                             mode=screen_mode(), live=False, tick=0, field="", as_list=False,
                                              page_url="", error=state.get("error"), here=request.full_path, sw=SCREEN_W))
     else:
         mode = SCREEN_MODES[screen_mode()]
@@ -5080,6 +5093,8 @@ def screen_page():
         body = {"sid": sid, "action": action, "geo": screen_geo(), "view": mode["view"]}
         if action == "open":
             body["url"] = target
+        elif action == "click" and request.args.get("vx") is not None:  # obszar z mapy (strzałki Nokii): już w px widoku
+            body.update(x=clamp_int(request.args.get("vx"), 0, 0, 2000), y=clamp_int(request.args.get("vy"), 0, 0, 4000))
         elif action == "click":
             body.update(x=clamp_int(request.args.get("k.x"), 0, 0, 2000) * scale, y=clamp_int(request.args.get("k.y"), 0, 0, 4000) * scale)
         elif action in ("up", "down"):
@@ -5107,10 +5122,15 @@ def screen_page():
                     shot_id = uuid.uuid4().hex
                     screen_shots.set(shot_id, raw)
                     shot = {"id": shot_id, "h": height, "w": display}
+                    f = display / mode["view"]["w"]
+                    shot["items"] = [dict(it, x1=round(it["x"] * f), y1=round(it["y"] * f), x2=round(it["r"] * f), y2=round(it["b"] * f))
+                                     for it in data.get("items") or [] if isinstance(it, dict) and all(
+                                         isinstance(it.get(k), (int, float)) for k in ("x", "y", "r", "b", "cx", "cy"))][:80]
             except OSError:
                 error = error or "Nie udało się odczytać zrzutu ekranu."
         resp = make_response(render_template("screen.html", waiting=False, state=state, target=target, shot=shot,
                                              mode=screen_mode(), live=bool(request.args.get("live")), tick=int(time.time()) % 100000,
+                                             field=data.get("field") or "", as_list=bool(request.args.get("lista")),
                                              page_title=data.get("title", ""), page_url=data.get("url", "") or target,
                                              error=error, here=request.full_path, sw=SCREEN_W, closed=data.get("closed"),
                                              debug=json.dumps(data.get("debug"), ensure_ascii=False) if data.get("debug") else ""))
