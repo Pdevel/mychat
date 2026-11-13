@@ -4843,6 +4843,8 @@ SCREEN_STATE = os.path.join(CACHE_DIR, "ekran.json")
 SCREEN_TOKEN = hashlib.sha256(("ekran:" + INSTABOX_API_KEY).encode()).hexdigest()[:40] if INSTABOX_API_KEY else ""
 SCREEN_SERVER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ekran_server.py")
 SCREEN_PLAYWRIGHT = "playwright==1.49.0"
+with open(SCREEN_SERVER, "rb") as _source:
+    SCREEN_VERSION = hashlib.sha256(_source.read()).hexdigest()[:12]
 screen_shots = DiskCache("ekran", ttl=900, max_files=300)
 _screen_lock = threading.Lock()
 
@@ -4909,10 +4911,12 @@ def wait_operation(operation, phase, limit=240):
 
 
 def screen_health(url, timeout=5):
+    """Czy ekran na maszynie działa i to w obecnej wersji (inaczej trzeba go wgrać na nowo)."""
     try:
         resp = requests.get(url.rstrip("/") + "/health", timeout=timeout)
-        return resp.status_code == 200 and resp.json().get("ok")
-    except (requests.exceptions.RequestException, ValueError):
+        data = resp.json()
+        return resp.status_code == 200 and data.get("ok") and data.get("version") == SCREEN_VERSION
+    except (requests.exceptions.RequestException, ValueError, AttributeError):
         return False
 
 
@@ -4996,12 +5000,21 @@ def screen_ready():
     return None, state
 
 
-def screen_act(url, body):
+def screen_act(url, body, retry=True):
+    """Akcja w zdalnej przeglądarce. Gdy bramka InstaBox przerwie czekanie (ciężka strona ładuje się dłużej niż ok.
+    20 s) – po chwili bierzemy sam zrzut: strona zwykle zdążyła się już wczytać."""
+    status = "brak odpowiedzi"
     try:
-        resp = requests.post(url.rstrip("/") + "/act", json=body, headers={"X-Ekran-Token": SCREEN_TOKEN}, timeout=(8, 45))
+        resp = requests.post(url.rstrip("/") + "/act", json=body, headers={"X-Ekran-Token": SCREEN_TOKEN}, timeout=(8, 30))
+        status = f"HTTP {resp.status_code}"
         data = resp.json()
-    except (requests.exceptions.RequestException, ValueError) as err:
-        raise InstaboxError(f"Zdalna przeglądarka nie odpowiedziała ({type(err).__name__}). Spróbuj ponownie.")
+    except (requests.exceptions.RequestException, ValueError):
+        data = None
+    if data is None or resp.status_code in (502, 503, 504):
+        if retry and body.get("action") not in ("shot", "close"):
+            time.sleep(3)
+            return screen_act(url, {"sid": body["sid"], "action": "shot"}, retry=False)
+        raise InstaboxError(f"Zdalna przeglądarka nie odpowiedziała ({status}). Spróbuj ponownie albo odśwież (5).")
     if resp.status_code != 200:
         raise InstaboxError(data.get("error") or f"Zdalna przeglądarka: błąd {resp.status_code}.")
     return data

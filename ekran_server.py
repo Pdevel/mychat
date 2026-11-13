@@ -6,6 +6,7 @@ Uruchomienie: EKRAN_TOKEN=… python server.py  (port EKRAN_PORT, domyślnie 876
 nagłówek X-Ekran-Token równy EKRAN_TOKEN.
 """
 import base64
+import hashlib
 import hmac
 import json
 import os
@@ -18,6 +19,8 @@ from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import sync_playwright
 
 TOKEN = os.environ["EKRAN_TOKEN"]
+with open(__file__, "rb") as _source:
+    VERSION = hashlib.sha256(_source.read()).hexdigest()[:12]  # Szukajka wgrywa nową wersję, gdy ta się różni
 PORT = int(os.environ.get("EKRAN_PORT", "8765"))
 WIDTH, HEIGHT = 360, 560  # widok telefonu; Szukajka zmniejsza zrzut do szerokości ekranu Nokii
 MAX_SESSIONS = 3
@@ -72,11 +75,11 @@ def act(body):
         if urlparse(url).scheme not in ("http", "https"):
             raise ValueError("adres musi zaczynać się od http:// albo https://")
         try:
-            page.goto(url, wait_until="domcontentloaded", timeout=25000)
+            page.goto(url, wait_until="domcontentloaded", timeout=12000)  # bramka InstaBox czeka ok. 20 s
         except PlaywrightError as err:
             if "Timeout" not in str(err):
                 raise
-        settle(page, 1200)
+        settle(page, 800)
     elif action == "click":
         x = max(0, min(WIDTH - 1, float(body.get("x", 0))))
         y = max(0, min(HEIGHT - 1, float(body.get("y", 0))))
@@ -99,14 +102,17 @@ def act(body):
             raise ValueError("nieznany klawisz")
         page.keyboard.press(" " if key == "Space" else key)
         settle(page, 400)
-    elif action == "back":
-        page.go_back(wait_until="domcontentloaded", timeout=15000)
-        settle(page)
-    elif action == "forward":
-        page.go_forward(wait_until="domcontentloaded", timeout=15000)
-        settle(page)
-    elif action == "reload":
-        page.reload(wait_until="domcontentloaded", timeout=20000)
+    elif action in ("back", "forward", "reload"):
+        try:
+            if action == "back":
+                page.go_back(wait_until="domcontentloaded", timeout=10000)
+            elif action == "forward":
+                page.go_forward(wait_until="domcontentloaded", timeout=10000)
+            else:
+                page.reload(wait_until="domcontentloaded", timeout=12000)
+        except PlaywrightError as err:
+            if "Timeout" not in str(err):
+                raise
         settle(page)
     elif action == "close":
         session = sessions.pop(sid, None)
@@ -115,7 +121,7 @@ def act(body):
         return {"closed": True}
     elif action != "shot":
         raise ValueError("nieznana akcja")
-    shot = page.screenshot(type="jpeg", quality=60, timeout=15000)
+    shot = page.screenshot(type="jpeg", quality=60, timeout=6000)
     return {"title": page.title()[:200], "url": page.url, "width": WIDTH, "height": HEIGHT,
             "shot": base64.b64encode(shot).decode()}
 
@@ -134,7 +140,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/health":
-            self.reply(200, {"ok": True, "sessions": len(sessions), "chromium": browser.version})
+            self.reply(200, {"ok": True, "sessions": len(sessions), "chromium": browser.version, "version": VERSION})
         else:
             self.reply(404, {"error": "nie ma"})
 
