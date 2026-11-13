@@ -1855,6 +1855,7 @@ CF_GAP = 10.5  # s między zapytaniami (limit darmowego planu)
 CF_WAIT = 8.0  # najwyżej tyle czytnik czeka na wolne miejsce w kolejce
 RENDER_MIN_CHARS = 500  # mniej tekstu niż tyle (a strona wygląda na aplikację JS) = renderujemy
 # Napisy-zastępstwa, które JavaScript podmienia na dane (liczniki, wyniki, ceny): kilka takich = renderujemy zawsze.
+PLACEHOLDER_TEXT = re.compile(r"(?:pobieranie danych|wczytywanie|ładowanie|retrieving data|loading)\s*(?:\.\.\.|…)", re.I)
 PLACEHOLDERS = re.compile(r">\s*(?:pobieranie danych|wczytywanie|ładowanie|retrieving data|loading)\s*(?:\.\.\.|…)\s*<", re.I)
 SPA_MARKERS = re.compile(r'__NEXT_DATA__|__NUXT__|id="(?:root|app|__next|__nuxt|main-app)"|data-reactroot|ng-version|'
                          r"<noscript>[^<]{0,200}(?:JavaScript|javascript)", re.I)
@@ -2007,7 +2008,9 @@ def load_article(url):
             r_videos, r_posters, r_info = [], {}, {}
             r_title, r_blocks = extract_article(html, final_url, r_videos, r_posters, r_info)
             text_len = lambda bl: sum(len(visible(b[1])) for b in bl if b[0] in ("h", "p", "pl"))
-            if text_len(r_blocks) > text_len(blocks):
+            waiting = lambda bl: sum(1 for b in bl if b[0] in ("h", "p", "pl") and PLACEHOLDER_TEXT.search(visible(b[1])))
+            # lepsza: więcej treści albo mniej „pobieranie danych…” (liczba bywa krótsza niż napis, który zastępuje)
+            if text_len(r_blocks) > text_len(blocks) or waiting(r_blocks) < waiting(blocks) and text_len(r_blocks) > 0.5 * text_len(blocks):
                 title, blocks, videos, posters, info, text, rendered = r_title or title, r_blocks, r_videos, r_posters, r_info, html, True
     if not blocks and (videos or info.get("audios")):
         blocks = [("p", "Na tej stronie jest film albo nagranie – wybierz je wyżej.", None)]
