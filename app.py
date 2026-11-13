@@ -3962,6 +3962,14 @@ html,body{margin:0;background:#e8eaed;font-family:system-ui,Roboto,Arial,sans-se
     if (cb && (cb.top + cb.height <= 0 || cb.top >= w.innerHeight)) current = null;  // kursor uciekł z ekranu
     mark(d);
   }
+  function glide(dir) {  // przytrzymana strzałka: płynne przewijanie (ok. 600 px/s) bez zatrzymywania się na linkach
+    var d = doc(); if (!d || loading) return;
+    var w = win(), before = w.scrollY;
+    w.scrollBy(0, dir * 18);
+    if (w.scrollY === before) { if (remote(d, dir)) return; }
+    var cb = current && boxOf(d, current);
+    if (cb && (cb.top + cb.height <= 0 || cb.top >= w.innerHeight)) { current = null; mark(d); }
+  }
   function press(k) {
     var d = doc(), w = win(); if (!d) return;
     if (k === 'up' || k === 'left') return move(-1);
@@ -3988,7 +3996,9 @@ html,body{margin:0;background:#e8eaed;font-family:system-ui,Roboto,Arial,sans-se
         ev.preventDefault(); release();
         if (b.setPointerCapture) { try { b.setPointerCapture(ev.pointerId); } catch (e) {} }
         press(k);
-        holdTimer = setTimeout(function () { holdTimer = setInterval(function () { press(k); }, 90); }, 350);
+        holdTimer = setTimeout(function () {
+          holdTimer = setInterval(function () { if (k === 'up' || k === 'down') glide(k === 'down' ? 1 : -1); else press(k); }, 30);
+        }, 350);
       });
       ['pointerup', 'pointercancel', 'lostpointercapture'].forEach(function (n) { b.addEventListener(n, release); });
       b.addEventListener('click', function (ev) { if (ev.detail === 0) press(k); });  // Enter/spacja na przycisku
