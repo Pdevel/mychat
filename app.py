@@ -3830,7 +3830,7 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 """,
     "screen.html": """{% extends "base.html" %}
 {% block title %}{{ page_title or "Zdalny ekran" }}{% endblock %}
-{% block head %}{% if waiting %}<meta http-equiv="refresh" content="5;url={{ here }}">{% elif live and small_browser %}<meta http-equiv="refresh" content="3;url={{ url_for('screen_page', a='shot', live=1, n=tick) }}">{% endif %}<style>body{max-width:none}.ab{margin:0;padding:2px 2px 1px;background:#f1f3f4;white-space:nowrap}.ab .q{width:68%;padding:3px 8px;font-size:13px}.ab input[type=submit]{padding:4px 8px;font-size:12px}.ab a{padding:0 4px;font-weight:bold;font-size:16px}.sc2{text-align:center;line-height:0}.sc2 input{border:0;padding:0;margin:0;background:none;border-radius:0}.hk{position:absolute;left:-999px;top:0}.ef{margin:2px 4px}.ef .q{width:120px}.fx{background:#fff4e5;border:1px solid #f0c890;border-radius:8px;padding:4px}</style>{% endblock %}
+{% block head %}{% if waiting %}<meta http-equiv="refresh" content="5;url={{ here }}">{% elif live and small_browser %}<meta http-equiv="refresh" content="0.5;url={{ url_for('screen_page', a='shot', live=1, n=tick) }}">{% endif %}<style>body{max-width:none}.ab{margin:0;padding:2px 2px 1px;background:#f1f3f4;white-space:nowrap}.ab .q{width:68%;padding:3px 8px;font-size:13px}.ab input[type=submit]{padding:4px 8px;font-size:12px}.ab a{padding:0 4px;font-weight:bold;font-size:16px}.sc2{text-align:center;line-height:0}.sc2 input{border:0;padding:0;margin:0;background:none;border-radius:0}.hk{position:absolute;left:-999px;top:0}.ef{margin:2px 4px}.ef .q{width:120px}.fx{background:#fff4e5;border:1px solid #f0c890;border-radius:8px;padding:4px}</style>{% endblock %}
 {% block body %}<form class="ab" id="g" action="{{ url_for('screen_page') }}" method="get"><input class="q" type="text" name="u" value="{{ page_url or target }}" maxlength="2000"> <input type="submit" value="Idź"> <a href="{{ url_for('screen_page', a='shot', opcje=1) }}">&#8943;</a></form>
 {% if waiting %}<div class="w"><div class="ib"><b>{% if error %}Zdalna przeglądarka nie działa{% else %}Uruchamiam zdalną przeglądarkę&hellip;{% endif %}</b><br>
 {% if error %}{{ error }}{% else %}{{ state.phase or "start" }}{% endif %}</div>
@@ -3839,7 +3839,7 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 {% if google_q %}<div class="ef"><a href="{{ url_for('search', q=google_q) }}"><b>Szukaj &bdquo;{{ google_q }}&rdquo; w Szukajce</b></a></div>
 {% endif %}{% if field %}<form class="ef fx" action="{{ url_for('screen_page') }}" method="get"><b>{{ field }}:</b><br><input type="hidden" name="a" value="type"><input class="q" type="text" name="t" maxlength="500"> <input type="submit" value="Wpisz"> <input type="submit" name="enter" value="Wpisz + Enter"></form>
 {% endif %}{% if options %}<div class="w">{% if page_title %}<p class="m"><b>{{ page_title }}</b></p>{% endif %}<a class="b" href="{{ url_for('screen_page', a='shot') }}">&laquo; Wróć do strony</a>
-<a class="b" href="{{ url_for('screen_page', a='shot', live=1) }}">Odświeżaj na żywo (co 3 s)</a>
+<a class="b" href="{{ url_for('screen_page', a='shot', live=1) }}">Odświeżaj na żywo (co 0,5 s)</a>
 {% if shot %}<a class="b" href="{{ url_for('screen_page', a='shot', lista=1) }}">Lista linków ({{ shot["items"]|length }})</a>
 {% endif %}<a class="b" href="{{ url_for('screen_page', a='key', key='Backspace') }}">Usuń znak w polu (&#9003;)</a>
 {% if page_url %}<a class="b" href="{{ url_for('read', url=page_url, czytnik=1) }}">Otwórz w czytniku</a>
@@ -3869,12 +3869,12 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
         var a = document.querySelector('#g input[name=u]'), b = doc.querySelector('#g input[name=u]');
         if (a && b && document.activeElement !== a && a.value === a.defaultValue) a.value = a.defaultValue = b.value;  // nie nadpisujemy wpisywanego adresu
         try { window.dispatchEvent(new Event('ekran-odswiezony')); } catch (e) {}
-        later(3000);
+        later(500);  // kolejny zrzut 0,5 s po pokazaniu poprzedniego (bez nakładania się zapytań)
       };
       pre.src = pic.getAttribute('src');
     }).catch(function () { later(5000); });
   }
-  later(3000);
+  later(500);
 })();
 </script>{% endif %}
 {% endif %}<a class="hk" tabindex="-1" href="{{ url_for('screen_page', a='back') }}" accesskey="1">wstecz</a><a class="hk" tabindex="-1" href="{{ url_for('screen_page', a='up') }}" accesskey="2">góra</a><a class="hk" tabindex="-1" href="{{ url_for('screen_page', a='forward') }}" accesskey="3">dalej</a><a class="hk" tabindex="-1" href="{{ url_for('screen_page', a='reload') }}" accesskey="5">odśwież</a><a class="hk" tabindex="-1" href="{{ url_for('screen_page', a='down') }}" accesskey="8">dół</a><a class="hk" tabindex="-1" href="{{ url_for('home') }}" accesskey="0">start</a>
