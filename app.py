@@ -3890,6 +3890,9 @@ html,body{margin:0;background:#e8eaed;font-family:system-ui,Roboto,Arial,sans-se
     box-shadow:0 6px 18px rgba(0,0,0,.35),inset 0 1px 0 #6b6d72;user-select:none;-webkit-user-select:none}
 .top{display:flex;justify-content:space-between;padding:0 30px 8px}.dot{width:9px;height:9px;border-radius:50%;background:#16171a}
 .scr{display:block;margin:0 auto;width:240px;height:320px;border:6px solid #000;border-radius:4px;background:#fff}
+.scrw{position:relative;width:252px;margin:0 auto}
+#nk-load{display:none;position:absolute;left:6px;right:6px;bottom:6px;height:4px;background:rgba(0,0,0,.12)}
+#nk-load i{display:block;height:100%;width:0;background:#e3263b;transition:width .1s linear}
 .brand{color:#d7d9dc;text-align:center;font-weight:800;letter-spacing:2px;font-size:15px;margin:10px 0 8px}
 .keys{display:grid;grid-template-columns:repeat(3,1fr);gap:7px 9px;padding:0 16px}
 .k{height:40px;border:0;border-radius:10px;background:#3c3e43;color:#eee;font-size:20px;box-shadow:inset 0 1px 0 #55575c;cursor:pointer}
@@ -3901,7 +3904,7 @@ html,body{margin:0;background:#e8eaed;font-family:system-ui,Roboto,Arial,sans-se
 .info{max-width:300px;margin:0 auto 20px;font-size:12px;color:#5f6368;text-align:center;line-height:1.5}.info a{color:#0b57d0}
 </style></head><body>
 <div class="ph"><div class="top"><span class="dot"></span><span class="dot"></span></div>
-<iframe class="scr" id="ekran" src="{{ start }}" title="Ekran Nokii"></iframe>
+<div class="scrw"><iframe class="scr" id="ekran" src="{{ start }}" title="Ekran Nokii"></iframe><div id="nk-load"><i></i></div></div>
 <div class="brand">NOKIA</div>
 <div class="keys">
 <button class="k soft" data-k="lsk">Wstecz</button>
@@ -4047,7 +4050,24 @@ html,body{margin:0;background:#e8eaed;font-family:system-ui,Roboto,Arial,sans-se
     if (k) { ev.preventDefault(); press(k); }
   }
   document.addEventListener('keydown', onKey);
+  // pasek ładowania jak w Operze Mini: od kliknięcia (wyjście ze strony w ramce) do wczytania nowej
+  var bar = document.getElementById('nk-load'), fill = bar.firstChild, loadTimer = null, loadSafety = null, progress = 0;
+  function startLoad() {
+    clearInterval(loadTimer); clearTimeout(loadSafety);
+    progress = 0.08; fill.style.width = '8%'; bar.style.display = 'block';
+    loadTimer = setInterval(function () { progress += (0.92 - progress) * 0.05; fill.style.width = (progress * 100).toFixed(1) + '%'; }, 100);
+    loadSafety = setTimeout(stopLoad, 60000);  // np. pobieranie pliku: strona w ramce się nie zmienia
+  }
+  function stopLoad() {
+    clearInterval(loadTimer); clearTimeout(loadSafety);
+    if (bar.style.display !== 'block') return;
+    fill.style.width = '100%';
+    setTimeout(function () { bar.style.display = 'none'; fill.style.width = '0'; }, 150);
+  }
+  startLoad();  // pierwsza strona w ramce
   frame.addEventListener('load', function () {
+    stopLoad();
+    try { win().addEventListener('beforeunload', startLoad); } catch (e) {}
     current = null; loads += 1;
     var d = doc(); if (!d) return;
     d.addEventListener('keydown', onKey);
