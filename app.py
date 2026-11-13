@@ -3868,6 +3868,7 @@ html,body{margin:0;background:#e8eaed;font-family:system-ui,Roboto,Arial,sans-se
 .keys{display:grid;grid-template-columns:repeat(3,1fr);gap:7px 9px;padding:0 16px}
 .k{height:40px;border:0;border-radius:10px;background:#3c3e43;color:#eee;font-size:20px;box-shadow:inset 0 1px 0 #55575c;cursor:pointer}
 .k small{font-size:10px;color:#aaa;margin-left:5px}.k:active{background:#5a5d63}
+.k,.pad button{touch-action:none;-webkit-touch-callout:none}.pad button:active{color:#fff}
 .pad{grid-row:span 2;display:grid;grid-template:1fr 1fr 1fr/1fr 1fr 1fr;background:#2a2c30;border-radius:16px;padding:3px}
 .pad button{border:0;background:none;color:#ccc;font-size:12px;cursor:pointer}.pad .ok{background:#1b1c1f;border-radius:10px;color:#fff;font-size:11px}
 .soft{font-size:13px}.call{color:#34a853}.end{color:#ea4335}
@@ -3910,7 +3911,7 @@ html,body{margin:0;background:#e8eaed;font-family:system-ui,Roboto,Arial,sans-se
         return b && e.getAttribute('tabindex') !== '-1' && b.left + b.width > 0 && b.left < width;
       });
   }
-  var current = null, loads = 0, resume = 0;
+  var current = null, loads = 0, resume = 0, loading = false;
   function mark(d) {
     var m = d.getElementById('nk-kursor');
     if (!m) {
@@ -3937,10 +3938,11 @@ html,body{margin:0;background:#e8eaed;font-family:system-ui,Roboto,Arial,sans-se
   function remote(d, dir) {  // zdalny ekran: koniec obrazu – przewijamy stronę po drugiej stronie
     var hot = d.querySelector('a.hk[accesskey="' + (dir > 0 ? 8 : 2) + '"]'), sc = d.querySelector('.sc2[data-y]');
     if (!hot || !sc || (dir < 0 && !(+sc.getAttribute('data-y') > 0))) return false;  // na górze strony nie ma czego przewijać
-    resume = dir; hot.click(); return true;
+    resume = dir; loading = true; setTimeout(function () { loading = false; }, 15000);  // gdyby strona się nie wczytała
+    hot.click(); return true;
   }
   function move(dir) {  // jak w Operze Mini: krótki krok przewijania, kursor tylko na widocznych elementach
-    var d = doc(); if (!d) return;
+    var d = doc(); if (!d || loading) return;  // zdalna strona się wczytuje – przytrzymana strzałka czeka
     var w = win(), step = Math.round(w.innerHeight * 0.4), list = items(d), i = list.indexOf(current);
     var cb = current && boxOf(d, current);
     if (i < 0 || !cb || cb.top + cb.height <= 0 || cb.top >= w.innerHeight) {  // brak kursora albo został poza ekranem
@@ -3976,9 +3978,25 @@ html,body{margin:0;background:#e8eaed;font-family:system-ui,Roboto,Arial,sans-se
     var hot = d.querySelector('[accesskey="' + k + '"]');
     if (hot) hot.click();
   }
+  var ARROWS = {up: 1, down: 1, left: 1, right: 1}, holdTimer = null;
+  function release() { clearTimeout(holdTimer); clearInterval(holdTimer); holdTimer = null; }
   document.querySelectorAll('[data-k]').forEach(function (b) {
-    b.addEventListener('click', function () { press(b.getAttribute('data-k')); });
+    var k = b.getAttribute('data-k');
+    b.addEventListener('contextmenu', function (ev) { ev.preventDefault(); });  // przytrzymanie palcem bez menu telefonu
+    if (ARROWS[k]) {  // przytrzymana strzałka przewija dalej sama, jak w telefonie
+      b.addEventListener('pointerdown', function (ev) {
+        ev.preventDefault(); release();
+        if (b.setPointerCapture) { try { b.setPointerCapture(ev.pointerId); } catch (e) {} }
+        press(k);
+        holdTimer = setTimeout(function () { holdTimer = setInterval(function () { press(k); }, 90); }, 350);
+      });
+      ['pointerup', 'pointercancel', 'lostpointercapture'].forEach(function (n) { b.addEventListener(n, release); });
+      b.addEventListener('click', function (ev) { if (ev.detail === 0) press(k); });  // Enter/spacja na przycisku
+    } else {
+      b.addEventListener('click', function () { press(k); });
+    }
   });
+  document.addEventListener('visibilitychange', release);  // nie „blur”: kursor w ramce zabiera fokus oknu
   var keymap = {ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right', Enter: 'ok', Backspace: 'lsk', Escape: 'end'};
   function onKey(ev) {
     var t = ev.target && ev.target.tagName;
@@ -3988,7 +4006,7 @@ html,body{margin:0;background:#e8eaed;font-family:system-ui,Roboto,Arial,sans-se
   }
   document.addEventListener('keydown', onKey);
   frame.addEventListener('load', function () {
-    current = null; loads += 1;
+    current = null; loads += 1; loading = false;
     var d = doc(); if (!d) return;
     d.addEventListener('keydown', onKey);
     win().addEventListener('scroll', function () { mark(d); });
