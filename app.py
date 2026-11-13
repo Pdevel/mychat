@@ -3830,7 +3830,7 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 """,
     "screen.html": """{% extends "base.html" %}
 {% block title %}{{ page_title or "Zdalny ekran" }}{% endblock %}
-{% block head %}{% if waiting %}<meta http-equiv="refresh" content="5;url={{ here }}">{% elif live %}<meta http-equiv="refresh" content="3;url={{ url_for('screen_page', a='shot', live=1, n=tick) }}">{% endif %}<style>body{max-width:none}.ab{margin:0;padding:2px 2px 1px;background:#f1f3f4;white-space:nowrap}.ab .q{width:68%;padding:3px 8px;font-size:13px}.ab input[type=submit]{padding:4px 8px;font-size:12px}.ab a{padding:0 4px;font-weight:bold;font-size:16px}.sc2{text-align:center;line-height:0}.sc2 input{border:0;padding:0;margin:0;background:none;border-radius:0}.hk{position:absolute;left:-999px;top:0}.ef{margin:2px 4px}.ef .q{width:120px}.fx{background:#fff4e5;border:1px solid #f0c890;border-radius:8px;padding:4px}</style>{% endblock %}
+{% block head %}{% if waiting %}<meta http-equiv="refresh" content="5;url={{ here }}">{% elif live and small_browser %}<meta http-equiv="refresh" content="3;url={{ url_for('screen_page', a='shot', live=1, n=tick) }}">{% endif %}<style>body{max-width:none}.ab{margin:0;padding:2px 2px 1px;background:#f1f3f4;white-space:nowrap}.ab .q{width:68%;padding:3px 8px;font-size:13px}.ab input[type=submit]{padding:4px 8px;font-size:12px}.ab a{padding:0 4px;font-weight:bold;font-size:16px}.sc2{text-align:center;line-height:0}.sc2 input{border:0;padding:0;margin:0;background:none;border-radius:0}.hk{position:absolute;left:-999px;top:0}.ef{margin:2px 4px}.ef .q{width:120px}.fx{background:#fff4e5;border:1px solid #f0c890;border-radius:8px;padding:4px}</style>{% endblock %}
 {% block body %}<form class="ab" id="g" action="{{ url_for('screen_page') }}" method="get"><input class="q" type="text" name="u" value="{{ page_url or target }}" maxlength="2000"> <input type="submit" value="Idź"> <a href="{{ url_for('screen_page', a='shot', opcje=1) }}">&#8943;</a></form>
 {% if waiting %}<div class="w"><div class="ib"><b>{% if error %}Zdalna przeglądarka nie działa{% else %}Uruchamiam zdalną przeglądarkę&hellip;{% endif %}</b><br>
 {% if error %}{{ error }}{% else %}{{ state.phase or "start" }}{% endif %}</div>
@@ -3851,7 +3851,32 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 {% else %}<p class="m">Na ekranie nie ma linków ani przycisków.</p>{% endfor %}<a class="b" href="{{ url_for('screen_page', a='shot') }}">Pokaż obraz</a></div>
 {% elif shot and mode == 's' and shot["items"] %}<div class="sc2" data-y="{{ shot.y|int }}"><img src="{{ url_for('screen_image', id=shot.id) }}" width="{{ shot.w }}" height="{{ shot.h }}" usemap="#ek" alt="Ekran"><map name="ek">{% for it in shot["items"] %}<area shape="rect" coords="{{ it.x1 }},{{ it.y1 }},{{ it.x2 }},{{ it.y2 }}" href="{{ url_for('screen_page', a='click', vx=it.cx, vy=it.cy) }}" alt="{{ it.t or 'link' }}">{% endfor %}</map></div>
 {% elif shot %}<form class="sc2" action="{{ url_for('screen_page') }}" method="get"><input type="image" name="k" src="{{ url_for('screen_image', id=shot.id) }}" width="{{ shot.w }}" height="{{ shot.h }}" alt="Ekran"></form>{% endif %}
-{% if live %}<div class="ef"><a href="{{ url_for('screen_page') }}">&#9632; Zatrzymaj odświeżanie</a></div>{% endif %}
+{% if live %}<div class="ef"><a href="{{ url_for('screen_page') }}">&#9632; Zatrzymaj odświeżanie</a></div>{% endif %}{% if live and not small_browser %}<script>
+(function () {  // na żywo bez przeładowania strony: podmieniamy tylko obraz – zostaje przewinięcie i wpisany tekst
+  var url = {{ url_for('screen_page', a='shot', live=1)|tojson }};
+  function later(ms) { setTimeout(tick, ms); }
+  function tick() {
+    if (document.hidden) return later(3000);
+    fetch(url + '&n=' + Date.now(), {credentials: 'same-origin'}).then(function (r) { return r.text(); }).then(function (html) {
+      var doc = new DOMParser().parseFromString(html, 'text/html');
+      var fresh = doc.querySelector('.sc2'), old = document.querySelector('.sc2');
+      var pic = fresh && (fresh.querySelector('img') || fresh.querySelector('input[type=image]'));
+      if (!fresh || !old || !pic) return later(5000);  // błąd albo przerwa maszyny – spróbujemy za chwilę
+      var pre = new Image();
+      pre.onload = pre.onerror = function () {  // obraz już pobrany – podmiana bez mrugnięcia
+        old.parentNode.replaceChild(document.importNode(fresh, true), old);
+        if (doc.title) document.title = doc.title;
+        var a = document.querySelector('#g input[name=u]'), b = doc.querySelector('#g input[name=u]');
+        if (a && b && document.activeElement !== a && a.value === a.defaultValue) a.value = a.defaultValue = b.value;  // nie nadpisujemy wpisywanego adresu
+        try { window.dispatchEvent(new Event('ekran-odswiezony')); } catch (e) {}
+        later(3000);
+      };
+      pre.src = pic.getAttribute('src');
+    }).catch(function () { later(5000); });
+  }
+  later(3000);
+})();
+</script>{% endif %}
 {% endif %}<a class="hk" tabindex="-1" href="{{ url_for('screen_page', a='back') }}" accesskey="1">wstecz</a><a class="hk" tabindex="-1" href="{{ url_for('screen_page', a='up') }}" accesskey="2">góra</a><a class="hk" tabindex="-1" href="{{ url_for('screen_page', a='forward') }}" accesskey="3">dalej</a><a class="hk" tabindex="-1" href="{{ url_for('screen_page', a='reload') }}" accesskey="5">odśwież</a><a class="hk" tabindex="-1" href="{{ url_for('screen_page', a='down') }}" accesskey="8">dół</a><a class="hk" tabindex="-1" href="{{ url_for('home') }}" accesskey="0">start</a>
 {% if debug %}<!-- wpisywanie: {{ debug }} -->{% endif %}{% endblock %}
 """,
@@ -3911,7 +3936,7 @@ html,body{margin:0;background:#e8eaed;font-family:system-ui,Roboto,Arial,sans-se
         return b && e.getAttribute('tabindex') !== '-1' && b.left + b.width > 0 && b.left < width;
       });
   }
-  var current = null, loads = 0, resume = 0, loading = false;
+  var current = null, loads = 0, resume = 0, loading = false, lastIdx = -1;
   function mark(d) {
     var m = d.getElementById('nk-kursor');
     if (!m) {
@@ -3929,7 +3954,7 @@ html,body{margin:0;background:#e8eaed;font-family:system-ui,Roboto,Arial,sans-se
   function fits(b, w) { return b.top >= 0 && b.top + b.height <= w.innerHeight; }
   function pick(d, e) {  // kursor na element; dosuwamy stronę tylko o tyle, ile trzeba
     var w = win(), b = boxOf(d, e);
-    current = e;
+    current = e; lastIdx = items(d).indexOf(e);
     if (b && !fits(b, w)) w.scrollBy(0, b.top < 0 ? b.top - 6 : Math.min(b.top - 6, b.top + b.height - w.innerHeight + 6));
     mark(d);  // bez focus(): żółta ramka wystarczy, a fokus na iPhonie potrafi wywołać klawiaturę
   }
@@ -4038,6 +4063,10 @@ html,body{margin:0;background:#e8eaed;font-family:system-ui,Roboto,Arial,sans-se
     var d = doc(); if (!d) return;
     d.addEventListener('keydown', onKey);
     win().addEventListener('scroll', function () { mark(d); });
+    win().addEventListener('ekran-odswiezony', function () {  // na żywo: nowy obraz – kursor zostaje na tym samym miejscu listy
+      if (current && !d.contains(current)) current = items(d)[lastIdx] || null;
+      mark(d);
+    });
     if (resume) {  // po przewinięciu zdalnej strony kursor wraca na obraz, nie na pasek adresu
       var areas = items(d).filter(function (e) { return e.tagName === 'AREA'; });
       if (areas.length) pick(d, resume > 0 ? areas[0] : areas[areas.length - 1]);
@@ -5583,7 +5612,8 @@ def settings():
 def page_settings():
     return {"text_css": text_css(), "saving": saving_enabled(), "data_mb": data_used() / 1_000_000,
             "text_size": request.cookies.get("tekst") or "m", "nokia_preview": nokia_preview(),
-            "in_frame": request.headers.get("Sec-Fetch-Dest") == "iframe"}
+            "in_frame": request.headers.get("Sec-Fetch-Dest") == "iframe",
+            "small_browser": bool(SMALL_BROWSER.search(request.headers.get("User-Agent", "")))}
 
 
 def nokia_preview():
