@@ -107,7 +107,9 @@ CLICKABLES = """() => {
     if (out.some(o => o.el.contains(e) || e.contains(o.el))) continue;  // link w przycisku itp. – raz
     const field = /^(INPUT|TEXTAREA|SELECT)$/.test(e.tagName) && !/^(button|submit|reset|checkbox|radio|image|file|range|color)$/i.test(e.type || '')
                   || e.isContentEditable;
-    const text = (e.innerText || e.value || e.getAttribute('aria-label') || e.getAttribute('title') || e.getAttribute('placeholder')
+    const labelled = e.getAttribute('aria-labelledby');
+    const byId = labelled ? labelled.split(' ').map(id => (document.getElementById(id) || {}).innerText || '').join(' ') : '';
+    const text = (e.innerText || e.value || e.getAttribute('aria-label') || byId || e.getAttribute('title') || e.getAttribute('placeholder')
                   || (e.querySelector('img[alt]') || {}).alt || '').trim().replace(/\\s+/g, ' ').slice(0, 60);
     out.push({el: e, x: Math.max(0, r.left), y: Math.max(0, r.top), r: Math.min(r.right, innerWidth), b: Math.min(r.bottom, innerHeight),
               cx: Math.round(cx), cy: Math.round(cy), t: text, f: field ? 1 : 0});
@@ -209,6 +211,28 @@ def title_of(page):
             return page.title()[:200]
         except PlaywrightError:
             return ""
+
+
+def clickables(page, width, height):
+    """Klikalne elementy strony i jej ramek (iframe: np. „Nie jestem robotem”, osadzone mapy) we współrzędnych ekranu."""
+    items = run(page, CLICKABLES, default=[]) or []
+    for frame in page.frames[1:]:
+        if len(items) >= 80:
+            break
+        try:
+            box = frame.frame_element().bounding_box()
+            if not box or box["width"] < 20 or box["height"] < 20 or box["y"] >= height or box["y"] + box["height"] <= 0:
+                continue
+            found = frame.evaluate(CLICKABLES)
+        except PlaywrightError:
+            continue  # ramka z innej domeny w trakcie ładowania, odłączona itp.
+        for it in found or []:
+            x1, y1 = max(0, it["x"] + box["x"]), max(0, it["y"] + box["y"])
+            x2, y2 = min(width, it["r"] + box["x"]), min(height, it["b"] + box["y"])
+            cx, cy = it["cx"] + box["x"], it["cy"] + box["y"]
+            if x2 - x1 >= 6 and y2 - y1 >= 6 and 0 <= cx < width and 0 <= cy < height:
+                items.append(dict(it, x=round(x1), y=round(y1), r=round(x2), b=round(y2), cx=round(cx), cy=round(cy)))
+    return items[:80]
 
 
 def press_enter(page):
@@ -325,7 +349,7 @@ def act(body):
         settle(page, 800)
     shot = page.screenshot(type="jpeg", quality=view["q"], timeout=8000)
     result = {"title": title_of(page), "url": page.url, "width": width, "height": height, "shot": base64.b64encode(shot).decode(),
-              "items": run(page, CLICKABLES, default=[]) or []}
+              "items": clickables(page, width, height)}
     if action == "click":
         result["field"] = run(page, FIELD, default="") or ""  # kliknięto pole tekstowe – telefon od razu pokaże wpisywanie
         if not result["field"] and sessions[sid].get("search_click"):  # nakładka wyszukiwania jeszcze się otwiera

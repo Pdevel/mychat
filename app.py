@@ -3837,7 +3837,8 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 <p class="m">{% if error %}Spróbuję ponownie przy następnym wejściu.{% else %}Strona odświeża się sama co 5 s. Pierwsze uruchomienie trwa 1&ndash;2 min, potem kilka sekund.{% endif %}</p>
 <a class="b" href="{{ here }}">Odśwież</a></div>
 {% else %}{% if error %}<div class="w"><div class="e">{{ error }}</div></div>{% endif %}
-{% if field %}<form class="ef fx" action="{{ url_for('screen_page') }}" method="get"><b>Wpisz w pole &bdquo;{{ field }}&rdquo;:</b><br><input type="hidden" name="a" value="type"><input class="q" type="text" name="t" maxlength="500"> <input type="submit" value="Wpisz"> <input type="submit" name="enter" value="Wpisz + Enter"></form>
+{% if google_q %}<div class="w"><a class="b" href="{{ url_for('search', q=google_q) }}">Szukaj &bdquo;{{ google_q }}&rdquo; w Szukajce</a><p class="m">Google często sprawdza serwery w chmurze (&bdquo;Nie jestem robotem&rdquo;) &ndash; wyszukiwarka Szukajki działa bez tego i szybciej. Sprawdzenie Google możesz też przejść sam na obrazie.</p></div>
+{% endif %}{% if field %}<form class="ef fx" action="{{ url_for('screen_page') }}" method="get"><b>Wpisz w pole &bdquo;{{ field }}&rdquo;:</b><br><input type="hidden" name="a" value="type"><input class="q" type="text" name="t" maxlength="500"> <input type="submit" value="Wpisz"> <input type="submit" name="enter" value="Wpisz + Enter"></form>
 {% endif %}{% if shot and as_list %}<div class="w">{% for it in shot["items"] %}<div class="r"><a href="{{ url_for('screen_page', a='click', vx=it.cx, vy=it.cy) }}">{{ loop.index }}. {% if it.f %}[pole] {% endif %}{{ it.t or "(bez opisu)" }}</a></div>
 {% else %}<p class="m">Na ekranie nie ma linków ani przycisków.</p>{% endfor %}<a class="b" href="{{ url_for('screen_page', a='shot') }}">Pokaż obraz</a></div>
 {% elif shot and mode == 's' and shot["items"] %}<div class="sc2"><img src="{{ url_for('screen_image', id=shot.id) }}" width="{{ shot.w }}" height="{{ shot.h }}" usemap="#ek" alt="Ekran"><map name="ek">{% for it in shot["items"] %}<area shape="rect" coords="{{ it.x1 }},{{ it.y1 }},{{ it.x2 }},{{ it.y2 }}" href="{{ url_for('screen_page', a='click', vx=it.cx, vy=it.cy) }}" alt="{{ it.t or 'link' }}">{% endfor %}</map></div>
@@ -5030,6 +5031,17 @@ def screen_ready():
     return None, state
 
 
+def google_query(url):
+    """Hasło z wyszukiwarki Google (także z jej sprawdzenia „nie jestem robotem” – /sorry/?continue=…) albo ""."""
+    parts = urlparse(url)
+    if not re.match(r"(?:www\.)?google\.[a-z.]+$", parts.hostname or "") or not parts.path.startswith(("/search", "/sorry")):
+        return ""
+    args = parse_qs(parts.query)
+    if "continue" in args:
+        args = parse_qs(urlparse(args["continue"][0]).query)
+    return squash((args.get("q") or [""])[0])[:200]
+
+
 def screen_geo():
     """Przybliżone położenie dla zdalnej przeglądarki: środek miejscowości z ustawień pogody (domyślnie Warszawa)."""
     try:
@@ -5088,7 +5100,7 @@ def screen_page():
     resp = None
     if server is None:
         resp = make_response(render_template("screen.html", waiting=True, state=state, target=target, shot=None, page_title="",
-                                             mode=screen_mode(), live=False, tick=0, field="", as_list=False,
+                                             mode=screen_mode(), live=False, tick=0, field="", as_list=False, google_q="",
                                              page_url="", error=state.get("error"), here=request.full_path, sw=SCREEN_W))
     else:
         mode = SCREEN_MODES[screen_mode()]
@@ -5134,6 +5146,7 @@ def screen_page():
         resp = make_response(render_template("screen.html", waiting=False, state=state, target=target, shot=shot,
                                              mode=screen_mode(), live=bool(request.args.get("live")), tick=int(time.time()) % 100000,
                                              field=data.get("field") or "", as_list=bool(request.args.get("lista")),
+                                             google_q=google_query(data.get("url") or ""),
                                              page_title=data.get("title", ""), page_url=data.get("url", "") or target,
                                              error=error, here=request.full_path, sw=SCREEN_W, closed=data.get("closed"),
                                              debug=json.dumps(data.get("debug"), ensure_ascii=False) if data.get("debug") else ""))
