@@ -3842,7 +3842,7 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 <tr><td><a href="{{ url_for('screen_page', a='reload') }}" accesskey="5">5 &#8635;</a></td><td><a href="{{ url_for('screen_page', a='down') }}" accesskey="8">8 &#9660;</a></td><td><a href="{{ url_for('screen_page', a='key', key='Backspace') }}">&#9003;</a></td></tr></table>
 <form class="ef" action="{{ url_for('screen_page') }}" method="get"><input type="hidden" name="a" value="type"><input class="q" type="text" name="t" maxlength="500"> <input type="submit" value="Wpisz"> <input type="submit" name="enter" value="Wpisz + Enter"></form>
 <div class="w"><p class="m">{% if page_title %}<b>{{ page_title }}</b><br>{% endif %}Kliknij w obraz, aby kliknąć na stronie. Tekst: najpierw kliknij pole na obrazie, potem wpisz go wyżej. 1 wstecz, 3 dalej, 2/8 przewijanie, 5 odśwież. Bez dźwięku. <a href="{{ url_for('screen_page', a='close') }}">Zamknij i wyczyść</a></p></div>
-{% endif %}{% endblock %}
+{% endif %}{% if debug %}<!-- wpisywanie: {{ debug }} -->{% endif %}{% endblock %}
 """,
     "error.html": """{% extends "base.html" %}
 {% block title %}Błąd{% endblock %}
@@ -5081,7 +5081,8 @@ def screen_page():
                 error = error or "Nie udało się odczytać zrzutu ekranu."
         resp = make_response(render_template("screen.html", waiting=False, state=state, target=target, shot=shot,
                                              page_title=data.get("title", ""), page_url=data.get("url", "") or target,
-                                             error=error, here=request.full_path, sw=SCREEN_W, closed=data.get("closed")))
+                                             error=error, here=request.full_path, sw=SCREEN_W, closed=data.get("closed"),
+                                             debug=json.dumps(data.get("debug"), ensure_ascii=False) if data.get("debug") else ""))
     resp.set_cookie("ekr", sid, max_age=30 * 24 * 3600, samesite="Lax", httponly=True)
     return resp
 

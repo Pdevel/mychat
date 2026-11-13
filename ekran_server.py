@@ -51,6 +51,9 @@ FOCUS = """([x, y]) => {
   return editable(document.activeElement) ? 'focused' : 'none';
 }"""
 # „Czy kliknięcie coś zmieniło”: adres, liczba elementów, widoczny tekst (pokazane/schowane menu), fokus, przewinięcie.
+ACTIVE = ("() => { const e = document.activeElement; if (!e) return ''; "
+          "return e.tagName + '#' + e.id + '.' + String(e.className).slice(0, 40) + ' v=' + String(e.value || e.innerText || '').slice(0, 40)"
+          " + ' ' + JSON.stringify(e.getBoundingClientRect()); }")
 SIGNATURE = ("() => location.href + '|' + document.getElementsByTagName('*').length + '|' + "
              "(document.body ? document.body.innerText.length : 0) + '|' + "
              "(document.activeElement ? document.activeElement.tagName : '') + '|' + scrollY")
@@ -119,6 +122,7 @@ def act(body):
             raise ValueError("Nie widzę pola do wpisania tekstu – kliknij najpierw w pole na obrazie.")
         if text:
             page.keyboard.type(text, delay=15)
+        debug = {"target": target, "frames": len(page.frames), "active": page.evaluate(ACTIVE)}
         if body.get("enter"):
             page.keyboard.press("Enter")
             settle(page, 2000)  # wyniki wyszukiwania (np. Mapy Google) ładują się chwilę
@@ -150,6 +154,9 @@ def act(body):
     elif action != "shot":
         raise ValueError("nieznana akcja")
     shot = page.screenshot(type="jpeg", quality=60, timeout=6000)
+    if action == "type":
+        return {"debug": debug, "title": page.title()[:200], "url": page.url, "width": WIDTH, "height": HEIGHT,
+                "shot": base64.b64encode(shot).decode()}
     return {"title": page.title()[:200], "url": page.url, "width": WIDTH, "height": HEIGHT,
             "shot": base64.b64encode(shot).decode()}
 
