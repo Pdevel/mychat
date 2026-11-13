@@ -10,10 +10,11 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import shutil
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import sync_playwright
@@ -112,6 +113,8 @@ def press_enter(page):
     page.wait_for_timeout(700)
     if page.evaluate(SIGNATURE) == before:
         page.evaluate(SUBMIT)
+        page.wait_for_timeout(500)
+    return page.evaluate(SIGNATURE) != before
 
 
 def act(body):
@@ -157,7 +160,10 @@ def act(body):
                 page.evaluate(SET_VALUE, text)  # wartość + zdarzenie „input” (pola sterowane przez React i podobne)
         debug = {"target": target, "frames": len(page.frames), "active": page.evaluate(ACTIVE)}
         if body.get("enter"):
-            press_enter(page)
+            query = page.evaluate(VALUE).strip()
+            if not press_enter(page) and query and re.match(r"https://www\.google\.[a-z.]+/maps", page.url):
+                # Mapy Google przyjmują tylko „prawdziwy” Enter – ten sam wynik daje adres wyszukiwania
+                page.goto("https://www.google.com/maps/search/" + quote(query), wait_until="domcontentloaded", timeout=12000)
             settle(page, 2000)  # wyniki wyszukiwania (np. Mapy Google) ładują się chwilę
         else:
             page.wait_for_timeout(600)  # podpowiedzi pod polem
