@@ -90,6 +90,8 @@ def page_for(sid, geo=None):
         context = browser.new_context(viewport={"width": WIDTH, "height": HEIGHT}, device_scale_factor=1, is_mobile=True,
                                       has_touch=True, user_agent=USER_AGENT, locale="pl-PL", timezone_id="Europe/Warsaw")
         sessions[sid] = {"context": context, "page": context.new_page(), "used": now, "geo": None}
+        # link otwierający nową kartę (target=_blank, window.open): ekran pokazuje nową kartę
+        context.on("page", lambda new_page, sid=sid: sessions.get(sid) and sessions[sid].update(page=new_page))
     session = sessions[sid]
     if geo and geo != session["geo"]:  # „Twoja lokalizacja” = miejscowość ustawiona w Szukajce (telefon nie podaje GPS)
         session["context"].grant_permissions(["geolocation"])
@@ -109,16 +111,40 @@ def settle(page, wait=700):
     page.wait_for_timeout(wait)
 
 
+def run(page, script, arg=None, default=None):
+    """page.evaluate odporne na przejście na inną stronę w trakcie (kliknięty link): po chwili jeszcze raz,
+    a gdy dalej się nie da – `default`."""
+    for attempt in range(2):
+        try:
+            return page.evaluate(script, arg) if arg is not None else page.evaluate(script)
+        except PlaywrightError as err:
+            if "context was destroyed" not in str(err) and "navigat" not in str(err).lower():
+                raise
+            settle(page, 300)
+    return default
+
+
+def title_of(page):
+    try:
+        return page.title()[:200]
+    except PlaywrightError:
+        settle(page, 300)
+        try:
+            return page.title()[:200]
+        except PlaywrightError:
+            return ""
+
+
 def press_enter(page):
     """Enter; gdy strona go zignoruje (Mapy Google odrzucają symulowane klawisze) – wysłanie formularza pola
     albo zdarzenie Enter wysłane z poziomu strony."""
-    before = page.evaluate(SIGNATURE)
+    before = run(page, SIGNATURE, default='nawigacja')
     page.keyboard.press("Enter")
     page.wait_for_timeout(700)
-    if page.evaluate(SIGNATURE) == before:
-        page.evaluate(SUBMIT)
+    if run(page, SIGNATURE, default='nawigacja') == before:
+        run(page, SUBMIT)
         page.wait_for_timeout(500)
-    return page.evaluate(SIGNATURE) != before
+    return run(page, SIGNATURE, default='nawigacja') != before
 
 
 def act(body):
@@ -144,12 +170,12 @@ def act(body):
     elif action == "click":
         x = max(0, min(WIDTH - 1, float(body.get("x", 0))))
         y = max(0, min(HEIGHT - 1, float(body.get("y", 0))))
-        before = page.evaluate(SIGNATURE)
+        before = run(page, SIGNATURE, default='nawigacja')
         sessions[sid]["last"] = [x, y]
         page.mouse.click(x, y)
         page.wait_for_timeout(500)
-        if page.evaluate(SIGNATURE) == before:  # nic się nie zmieniło: część stron mobilnych nie reaguje na mysz
-            page.evaluate("([x, y]) => { const e = document.elementFromPoint(x, y); if (e) e.click(); }", [x, y])
+        if run(page, SIGNATURE, default='nawigacja') == before:  # nic się nie zmieniło: część stron mobilnych nie reaguje na mysz
+            run(page, "([x, y]) => { const e = document.elementFromPoint(x, y); if (e) e.click(); }", [x, y])
         settle(page)
     elif action == "scroll":
         page.mouse.move(WIDTH / 2, HEIGHT / 2)
@@ -157,18 +183,18 @@ def act(body):
         page.wait_for_timeout(400)
     elif action == "type":
         text = str(body.get("text") or "")[:500]
-        target = page.evaluate(FOCUS, sessions[sid].get("last") or [None, None])
+        target = run(page, FOCUS, sessions[sid].get("last") or [None, None], default="none")
         if target == "none":
             raise ValueError("Nie widzę pola do wpisania tekstu – kliknij najpierw w pole na obrazie.")
         if text:
             page.keyboard.type(text, delay=15)
-            if text not in page.evaluate(VALUE):  # pole odrzuca symulowane klawisze (np. Mapy Google)
+            if text not in (run(page, VALUE, default='') or ''):  # pole odrzuca symulowane klawisze (np. Mapy Google)
                 page.keyboard.insert_text(text)  # jak klawiatura ekranowa telefonu
-            if text not in page.evaluate(VALUE):
-                page.evaluate(SET_VALUE, text)  # wartość + zdarzenie „input” (pola sterowane przez React i podobne)
-        debug = {"target": target, "frames": len(page.frames), "active": page.evaluate(ACTIVE)}
+            if text not in (run(page, VALUE, default='') or ''):
+                run(page, SET_VALUE, text)  # wartość + zdarzenie „input” (pola sterowane przez React i podobne)
+        debug = {"target": target, "frames": len(page.frames), "active": run(page, ACTIVE, default='')}
         if body.get("enter"):
-            query = page.evaluate(VALUE).strip()
+            query = (run(page, VALUE, default='') or '').strip()
             press_enter(page)
             maps = re.match(r"https://www\.google\.[a-z.]+/maps", page.url)
             if query and maps and not re.search(r"/maps/(?:search|place|dir)/", page.url):
@@ -193,7 +219,9 @@ def act(body):
     elif action in ("back", "forward", "reload"):
         try:
             if action == "back":
-                page.go_back(wait_until="domcontentloaded", timeout=10000)
+                if page.go_back(wait_until="domcontentloaded", timeout=10000) is None and len(page.context.pages) > 1:
+                    page.close()  # nowa karta bez historii – wracamy do tej, z której ją otwarto
+                    page = sessions[sid]["page"] = page.context.pages[-1]
             elif action == "forward":
                 page.go_forward(wait_until="domcontentloaded", timeout=10000)
             else:
@@ -209,11 +237,14 @@ def act(body):
         return {"closed": True}
     elif action != "shot":
         raise ValueError("nieznana akcja")
+    if sid in sessions and sessions[sid]["page"] is not page and not sessions[sid]["page"].is_closed():
+        page = sessions[sid]["page"]  # kliknięcie otworzyło nową kartę
+        settle(page, 800)
     shot = page.screenshot(type="jpeg", quality=60, timeout=6000)
     if action == "type":
-        return {"debug": debug, "title": page.title()[:200], "url": page.url, "width": WIDTH, "height": HEIGHT,
+        return {"debug": debug, "title": title_of(page), "url": page.url, "width": WIDTH, "height": HEIGHT,
                 "shot": base64.b64encode(shot).decode()}
-    return {"title": page.title()[:200], "url": page.url, "width": WIDTH, "height": HEIGHT,
+    return {"title": title_of(page), "url": page.url, "width": WIDTH, "height": HEIGHT,
             "shot": base64.b64encode(shot).decode()}
 
 
