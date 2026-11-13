@@ -36,7 +36,7 @@ def view_of(body):
             return max(low, min(high, int(view.get(key, default))))
         except (TypeError, ValueError):
             return default
-    return {"w": num("w", 240, 480, WIDTH), "h": num("h", 320, 1600, HEIGHT), "scale": num("scale", 1, 2, 1), "q": num("q", 40, 85, 60),
+    return {"w": num("w", 240, 480, WIDTH), "h": num("h", 320, 4000, HEIGHT), "scale": num("scale", 1, 2, 1), "q": num("q", 40, 85, 60),
             "fmt": "webp" if view.get("fmt") == "webp" else "jpeg"}
 MAX_SESSIONS = 3
 IDLE_SECONDS = 20 * 60
@@ -114,7 +114,7 @@ CLICKABLES = """() => {
                   || (e.querySelector('img[alt]') || {}).alt || '').trim().replace(/\\s+/g, ' ').slice(0, 60);
     out.push({el: e, x: Math.max(0, r.left), y: Math.max(0, r.top), r: Math.min(r.right, innerWidth), b: Math.min(r.bottom, innerHeight),
               cx: Math.round(cx), cy: Math.round(cy), t: text, f: field ? 1 : 0});
-    if (out.length >= 200) break;
+    if (out.length >= 400) break;
   }
   return out.map(o => ({x: Math.round(o.x), y: Math.round(o.y), r: Math.round(o.r), b: Math.round(o.b), cx: o.cx, cy: o.cy, t: o.t, f: o.f}));
 }"""
@@ -233,7 +233,7 @@ def clickables(page, width, height):
     """Klikalne elementy strony i jej ramek (iframe: np. „Nie jestem robotem”, osadzone mapy) we współrzędnych ekranu."""
     items = run(page, CLICKABLES, default=[]) or []
     for frame in page.frames[1:]:
-        if len(items) >= 200:
+        if len(items) >= 400:
             break
         try:
             box = frame.frame_element().bounding_box()
@@ -248,7 +248,7 @@ def clickables(page, width, height):
             cx, cy = it["cx"] + box["x"], it["cy"] + box["y"]
             if x2 - x1 >= 6 and y2 - y1 >= 6 and 0 <= cx < width and 0 <= cy < height:
                 items.append(dict(it, x=round(x1), y=round(y1), r=round(x2), b=round(y2), cx=round(cx), cy=round(cy)))
-    return items[:200]
+    return items[:400]
 
 
 def press_enter(page):

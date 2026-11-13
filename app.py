@@ -3962,10 +3962,24 @@ html,body{margin:0;background:#e8eaed;font-family:system-ui,Roboto,Arial,sans-se
     if (cb && (cb.top + cb.height <= 0 || cb.top >= w.innerHeight)) current = null;  // kursor uciekł z ekranu
     mark(d);
   }
-  function glide(dir) {  // przytrzymana strzałka: płynne przewijanie (ok. 600 px/s) bez zatrzymywania się na linkach
+  var gliding = 0;
+  function startGlide(dir) {  // przytrzymana strzałka: płynne przewijanie co klatkę, coraz szybciej (1000 -> 3000 px/s)
+    var started = performance.now(), last = started, rest = 0;
+    gliding = dir;
+    function frameStep(now) {
+      if (gliding !== dir) return;
+      var speed = Math.min(3000, 1000 + 2000 * (now - started) / 1200);  // pełna prędkość po 1,2 s
+      rest += speed * Math.min(now - last, 50) / 1000; last = now;
+      var px = Math.floor(rest); rest -= px;
+      if (px) glide(dir, px);
+      requestAnimationFrame(frameStep);
+    }
+    requestAnimationFrame(frameStep);
+  }
+  function glide(dir, px) {  // bez zatrzymywania się na linkach
     var d = doc(); if (!d || loading) return;
     var w = win(), before = w.scrollY;
-    w.scrollBy(0, dir * 18);
+    w.scrollBy(0, dir * px);
     if (w.scrollY === before) { if (remote(d, dir)) return; }
     var cb = current && boxOf(d, current);
     if (cb && (cb.top + cb.height <= 0 || cb.top >= w.innerHeight)) { current = null; mark(d); }
@@ -3987,7 +4001,7 @@ html,body{margin:0;background:#e8eaed;font-family:system-ui,Roboto,Arial,sans-se
     if (hot) hot.click();
   }
   var ARROWS = {up: 1, down: 1, left: 1, right: 1}, holdTimer = null;
-  function release() { clearTimeout(holdTimer); clearInterval(holdTimer); holdTimer = null; }
+  function release() { clearTimeout(holdTimer); clearInterval(holdTimer); holdTimer = null; gliding = 0; }
   document.querySelectorAll('[data-k]').forEach(function (b) {
     var k = b.getAttribute('data-k');
     b.addEventListener('contextmenu', function (ev) { ev.preventDefault(); });  // przytrzymanie palcem bez menu telefonu
@@ -3997,8 +4011,9 @@ html,body{margin:0;background:#e8eaed;font-family:system-ui,Roboto,Arial,sans-se
         if (b.setPointerCapture) { try { b.setPointerCapture(ev.pointerId); } catch (e) {} }
         press(k);
         holdTimer = setTimeout(function () {
-          holdTimer = setInterval(function () { if (k === 'up' || k === 'down') glide(k === 'down' ? 1 : -1); else press(k); }, 30);
-        }, 350);
+          if (k === 'up' || k === 'down') { holdTimer = null; startGlide(k === 'down' ? 1 : -1); }
+          else holdTimer = setInterval(function () { press(k); }, 90);
+        }, 300);
       });
       ['pointerup', 'pointercancel', 'lostpointercapture'].forEach(function (n) { b.addEventListener(n, release); });
       b.addEventListener('click', function (ev) { if (ev.detail === 0) press(k); });  // Enter/spacja na przycisku
@@ -5043,8 +5058,8 @@ with open(SCREEN_SERVER, "rb") as _source:
 screen_shots = DiskCache("ekran", ttl=900, max_files=300)
 # Mały: Nokia (zrzut zmniejszany do 232 px). Duży: nowoczesne telefony – widok 390 px w podwójnej gęstości pikseli.
 SCREEN_MODES = {
-    "s": {"view": {"w": 320, "h": 1200, "scale": 1, "q": 82}, "display": SCREEN_W, "step": 1000},  # 320×1200 -> 232×870: trzy ekrany Nokii
-    # w jednym obrazie (ok. 0,8 MB po rozpakowaniu) – przewijanie w obrębie zrzutu jest natychmiastowe, bez pytania serwera
+    "s": {"view": {"w": 320, "h": 3000, "scale": 1, "q": 80}, "display": SCREEN_W, "step": 2800},  # 320×3000 -> 232×2175: ok. 7 ekranów
+    # Nokii w jednym obrazie (ok. 2 MB po rozpakowaniu, z pracą Opery Mini do ok. 10 MB) – przewijanie w obrębie zrzutu jest natychmiastowe
     "l": {"view": {"w": 390, "h": 630, "scale": 2, "q": 68, "fmt": "webp"}, "display": 390},  # WebP: ok. 1/3 lżejszy od JPEG
 }
 SMALL_BROWSER = re.compile(r"Opera Mini|Nokia|KAIOS|J2ME|MIDP|Series ?(?:30|40)|S40|MAUI|Obigo|NetFront", re.I)
@@ -5340,7 +5355,7 @@ def screen_page():
                     f = display / mode["view"]["w"]
                     shot["items"] = [dict(it, x1=round(it["x"] * f), y1=round(it["y"] * f), x2=round(it["r"] * f), y2=round(it["b"] * f))
                                      for it in data.get("items") or [] if isinstance(it, dict) and all(
-                                         isinstance(it.get(k), (int, float)) for k in ("x", "y", "r", "b", "cx", "cy"))][:200]
+                                         isinstance(it.get(k), (int, float)) for k in ("x", "y", "r", "b", "cx", "cy"))][:400]
             except OSError:
                 error = error or "Nie udało się odczytać zrzutu ekranu."
         resp = make_response(render_template("screen.html", waiting=False, state=state, target=target, shot=shot,
