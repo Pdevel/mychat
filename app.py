@@ -4864,7 +4864,7 @@ screen_shots = DiskCache("ekran", ttl=900, max_files=300)
 # Mały: Nokia (zrzut zmniejszany do 232 px). Duży: nowoczesne telefony – widok 390 px w podwójnej gęstości pikseli.
 SCREEN_MODES = {
     "s": {"view": {"w": 320, "h": 440, "scale": 1, "q": 70}, "display": SCREEN_W},  # 320 -> 232 px: tekst ok. 3/4 wielkości
-    "l": {"view": {"w": 390, "h": 700, "scale": 2, "q": 72}, "display": 390},
+    "l": {"view": {"w": 390, "h": 700, "scale": 2, "q": 68, "fmt": "webp"}, "display": 390},  # WebP: ok. 1/3 lżejszy od JPEG
 }
 SMALL_BROWSER = re.compile(r"Opera Mini|Nokia|KAIOS|J2ME|MIDP|Series ?(?:30|40)|S40|MAUI|Obigo|NetFront", re.I)
 
@@ -5078,12 +5078,14 @@ def screen_image():
     data = screen_shots.get(request.args.get("id") or "")
     if data is None:
         abort(404)
-    return Response(data, mimetype="image/jpeg", headers={"Cache-Control": "private, max-age=900"})
+    mime = "image/webp" if data[:4] == b"RIFF" and data[8:12] == b"WEBP" else "image/jpeg"
+    return Response(data, mimetype=mime, headers={"Cache-Control": "private, max-age=900"})
 
 
 @app.route("/ekran")
 def screen_page():
     """Zdalny ekran: u=adres do otwarcia, a=akcja (click/up/down/back/forward/reload/type/key/close), k.x/k.y=kliknięcie."""
+    started = time.monotonic()
     if not INSTABOX_API_KEY:
         return render_template("error.html", message="Zdalny ekran nie jest skonfigurowany (brak klucza INSTABOX_API_KEY).",
                                original=None, q="", rp=1), 503
@@ -5119,10 +5121,12 @@ def screen_page():
         elif action == "key":
             body["key"] = request.args.get("key") or ""
         error, shot, data = None, None, {}
+        asked = time.monotonic()
         try:
             data = screen_act(server, body)
         except InstaboxError as err:
             error = err.message
+        trip = round((time.monotonic() - asked) * 1000)
         if data.get("shot"):
             raw = base64.b64decode(data["shot"])
             try:
@@ -5151,6 +5155,10 @@ def screen_page():
                                              error=error, here=request.full_path, sw=SCREEN_W, closed=data.get("closed"),
                                              debug=json.dumps(data.get("debug"), ensure_ascii=False) if data.get("debug") else ""))
     resp.set_cookie("ekr", sid, max_age=30 * 24 * 3600, samesite="Lax", httponly=True)
+    if server is not None:  # gdzie ucieka czas: akcja i zrzut na maszynie, droga do niej, praca Szukajki
+        ms = data.get("ms") or {}
+        resp.headers["Server-Timing"] = ", ".join([f"{k};dur={v}" for k, v in ms.items()] + [f"instabox;dur={trip}",
+                                                  f"razem;dur={round((time.monotonic() - started) * 1000)}"])
     return resp
 
 

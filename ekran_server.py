@@ -36,7 +36,8 @@ def view_of(body):
             return max(low, min(high, int(view.get(key, default))))
         except (TypeError, ValueError):
             return default
-    return {"w": num("w", 240, 480, WIDTH), "h": num("h", 320, 900, HEIGHT), "scale": num("scale", 1, 2, 1), "q": num("q", 40, 85, 60)}
+    return {"w": num("w", 240, 480, WIDTH), "h": num("h", 320, 900, HEIGHT), "scale": num("scale", 1, 2, 1), "q": num("q", 40, 85, 60),
+            "fmt": "webp" if view.get("fmt") == "webp" else "jpeg"}
 MAX_SESSIONS = 3
 IDLE_SECONDS = 20 * 60
 KEYS = {"Enter", "Backspace", "Tab", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown",
@@ -213,6 +214,21 @@ def title_of(page):
             return ""
 
 
+def capture(page, view):
+    """Zrzut widocznej części strony (base64). Wprost przez Chromium (Page.captureScreenshot): bez czekania na czcionki
+    i „stabilny” obraz, na którym page.screenshot potrafi utknąć na stronach z animacjami. Zapasowo page.screenshot."""
+    try:
+        cdp = page.context.new_cdp_session(page) if getattr(page, "_ekran_cdp", None) is None else page._ekran_cdp
+        page._ekran_cdp = cdp
+        x, y = run(page, "() => [scrollX, scrollY]", default=[0, 0])  # obszar zrzutu liczy się od początku dokumentu
+        clip = {"x": x, "y": y, "width": view["w"], "height": view["h"], "scale": view["scale"]}  # scale: ostrość (Retina)
+        return cdp.send("Page.captureScreenshot", {"format": view["fmt"], "quality": view["q"], "clip": clip})["data"]
+    except PlaywrightError:
+        page._ekran_cdp = None
+        shot = page.screenshot(type="jpeg", quality=view["q"], timeout=6000, animations="disabled", caret="hide")
+        return base64.b64encode(shot).decode()
+
+
 def clickables(page, width, height):
     """Klikalne elementy strony i jej ramek (iframe: np. „Nie jestem robotem”, osadzone mapy) we współrzędnych ekranu."""
     items = run(page, CLICKABLES, default=[]) or []
@@ -254,6 +270,7 @@ def act(body):
     geo = body.get("geo")
     if not (isinstance(geo, dict) and all(isinstance(geo.get(k), (int, float)) for k in ("latitude", "longitude"))):
         geo = None
+    started = time.monotonic()
     view = view_of(body)
     page = page_for(sid, {"latitude": float(geo["latitude"]), "longitude": float(geo["longitude"]), "accuracy": 1000}
                     if geo else None, view)
@@ -347,17 +364,22 @@ def act(body):
     if sid in sessions and sessions[sid]["page"] is not page and not sessions[sid]["page"].is_closed():
         page = sessions[sid]["page"]  # kliknięcie otworzyło nową kartę
         settle(page, 800)
-    shot = page.screenshot(type="jpeg", quality=view["q"], timeout=8000)
-    result = {"title": title_of(page), "url": page.url, "width": width, "height": height, "shot": base64.b64encode(shot).decode(),
+    acted = time.monotonic()
+    shot = capture(page, view)
+    shot_done = time.monotonic()
+    result = {"title": title_of(page), "url": page.url, "width": width, "height": height, "shot": shot, "fmt": view["fmt"],
               "items": clickables(page, width, height)}
     if action == "click":
         result["field"] = run(page, FIELD, default="") or ""  # kliknięto pole tekstowe – telefon od razu pokaże wpisywanie
         if not result["field"] and sessions[sid].get("search_click"):  # nakładka wyszukiwania jeszcze się otwiera
             page.wait_for_timeout(600)
             result["field"] = run(page, FIELD, default="") or ""
-            result["shot"] = base64.b64encode(page.screenshot(type="jpeg", quality=view["q"], timeout=8000)).decode()
+            result["shot"] = capture(page, view)
     if action == "type":
         result["debug"] = debug
+    done = time.monotonic()
+    result["ms"] = {"akcja": round((acted - started) * 1000), "zrzut": round((shot_done - acted) * 1000),
+                    "reszta": round((done - shot_done) * 1000)}
     return result
 
 
