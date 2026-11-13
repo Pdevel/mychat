@@ -85,6 +85,21 @@ wyśrodkowuje (Opera Mini wysyła współrzędne kliknięcia); przyciski i skró
 0 nowe szukanie. Szukanie miejsc: Nominatim (najwyżej 1 zapytanie na sekundę, wyniki w pamięci 30 dni), kafelki
 w pamięci tydzień. Zasady OSM zalecają kontakt w nazwie programu – można go podać w zmiennej `OSM_CONTACT`.
 
+## Zdalny ekran (prawdziwa przeglądarka na InstaBox)
+
+Strony, które bez JavaScriptu nie działają (Mapy Google, aplikacje, panele), można otworzyć w prawdziwym Chromium
+na maszynie InstaBox: telefon dostaje zrzut ekranu (232 px, ok. 10–25 KB), w który klika, i przyciski –
+1 wstecz, 3 dalej, 2/8 przewijanie, 5 odśwież, ⌫, pole „Wpisz” (+ Enter), „Zamknij i wyczyść”. Klatka po klatce
+(ok. 1–6 s na akcję), bez dźwięku. Wejścia: [Zdalny ekran] w stopce czytnika, „Otwórz w zdalnej przeglądarce” na
+stronie błędu, „Mapy Google (zdalny ekran)” na mapie, chip na stronie głównej.
+
+- Klucz: w InstaBox (dashboard → API keys → Create Key, uprawnienia machines) i zmienna `INSTABOX_API_KEY` w Render.
+- Szukajka sama zakłada maszynę `szukajka-ekran` (szablon agent-browser), budzi ją, wgrywa `ekran_server.py`
+  (Playwright + Chromium, osobna karta na telefon, tajny token) i publikuje port. Pierwsze uruchomienie ok. 1 min.
+- Darmowy InstaBox: maszyna usypia się po 30 min bezczynności (budzi się sama), po 2–8 h pracy ma przerwę –
+  wtedy ekran pokazuje komunikat, reszta Szukajki działa. Stan: `/diag`, `/diag?ibx=1`.
+- Nie logować się tam do ważnych kont (hasło przechodzi przez serwery). Blokad stron nie obchodzi.
+
 ## Strony działające tylko z JavaScriptem (Cloudflare Browser Rendering)
 
 Część stron przysyła sam szkielet aplikacji, a treść dopisuje JavaScriptem. Gdy zwykłe pobranie da prawie pusty
