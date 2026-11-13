@@ -65,14 +65,14 @@ FIND_PER_PAGE = 15  # trafień „Szukaj na tej stronie” na jeden ekran
 FIND_MAX_HITS = 150
 MAX_RESULT_PAGES = 30
 SNIPPET_CHARS = 220
-ARTICLE_PAGE_CHARS = int(os.environ.get("ARTICLE_PAGE_CHARS", "3000"))  # tyle tekstu na jedną stronę w telefonie
+ARTICLE_PAGE_CHARS = int(os.environ.get("ARTICLE_PAGE_CHARS", "12000"))  # tyle tekstu na jedną stronę w telefonie (ok. 40 KB HTML – rzadziej „Dalej”)
 ARTICLE_MAX_CHARS = 150_000  # dłuższe artykuły są przycinane
 
 # Obrazki dla Nokii 235 4G / 3210 4G (ekran 240×320, 64 MB RAM): serwer zmniejsza je do szerokości ekranu i zapisuje
 # jako lekki JPEG (zwykle kilka–kilkanaście KB), więc telefon nie pobiera ani nie dekoduje wielkich plików.
 IMAGE_MAX_WIDTH = int(os.environ.get("IMAGE_MAX_WIDTH", "220"))  # ekran 240 px minus marginesy Opera Mini
 IMAGE_MAX_HEIGHT = int(os.environ.get("IMAGE_MAX_HEIGHT", "400"))  # wysokie grafiki też się zmieszczą
-IMAGE_QUALITY = int(os.environ.get("IMAGE_QUALITY", "45"))  # JPEG: mały plik, wciąż czytelny na tym ekranie
+IMAGE_QUALITY = int(os.environ.get("IMAGE_QUALITY", "70"))  # JPEG: ostry na ekranie 240 px, plik nadal kilkanaście KB
 IMAGE_MAX_BYTES = 4_000_000  # większych plików nie pobieramy
 # Powiększenie (zdjęcie wybrane w czytniku, otwierane w nowej karcie): większe i ostrzejsze, ale nadal lekkie.
 # Nokia 3210 4G / 235 4G ma 64 MB RAM: powiększenie to najwyżej ok. 1 mln pikseli (≤ 3,8 MB po rozpakowaniu),
@@ -82,16 +82,16 @@ IMAGE_HQ_HEIGHT = 2000  # wysokie obrazki (np. strony komiksu) zostają czytelne
 IMAGE_HQ_QUALITY = int(os.environ.get("IMAGE_HQ_QUALITY", "65"))
 IMAGE_HQ_MAX_BYTES = 10_000_000
 IMAGE_MIN_SIZE = 48  # mniejsze to ikonki, flagi i piksele śledzące – na ekranie 240 px to tylko szum
-IMAGES_PER_ARTICLE = 12  # więcej obrazków to zbyt dużo danych i pracy dla telefonu i darmowego serwera
+IMAGES_PER_ARTICLE = 30  # więcej obrazków to zbyt dużo danych i pracy dla telefonu i darmowego serwera
 GALLERY_MAX = 60  # obrazków z galerii (np. strony komiksu, zdjęcia z relacji) na jedną stronę serwisu
-IMAGE_WEIGHT = 600  # obrazek zajmuje na stronie czytnika tyle „znaków” z limitu ARTICLE_PAGE_CHARS
+IMAGE_WEIGHT = 1000  # obrazek zajmuje tyle „znaków” z limitu ARTICLE_PAGE_CHARS: najwyżej ok. 12 zdjęć (≤ 4 MB po rozpakowaniu) na stronę
 # Miniatury na stronach z listą artykułów (np. główna serwisu): mniejsze i lżejsze niż zdjęcia w artykule.
 THUMB_MAX_SIZE = int(os.environ.get("THUMB_MAX_SIZE", "80"))  # najdłuższy bok miniatury w px (stoi obok tytułu)
 THUMBS_PER_LISTING = 30
 THUMB_WEIGHT = 300  # ok. 10 miniatur na jedną stronę czytnika
 # Galeria (kilka obrazków z rzędu, np. strony komiksu, zdjęcia z relacji): po dwa obok siebie, jak w oryginale.
 GRID_IMAGE_SIZE = (160, 240)  # najdłuższe boki obrazka w siatce; kliknięcie otwiera pełny obrazek
-GRID_WEIGHT = 300  # ok. 10 obrazków galerii na jedną stronę czytnika
+GRID_WEIGHT = 600  # ok. 20 obrazków galerii (ok. 3 MB po rozpakowaniu) na jedną stronę czytnika
 Image.MAX_IMAGE_PIXELS = 25_000_000  # ochrona przed „bombami” (ogromne wymiary w małym pliku)
 
 # Filmy: serwer pobiera plik (albo strumień HLS .m3u8), przekodowuje go ffmpegiem do małego pliku, który odtwarzacz
@@ -5015,7 +5015,8 @@ with open(SCREEN_SERVER, "rb") as _source:
 screen_shots = DiskCache("ekran", ttl=900, max_files=300)
 # Mały: Nokia (zrzut zmniejszany do 232 px). Duży: nowoczesne telefony – widok 390 px w podwójnej gęstości pikseli.
 SCREEN_MODES = {
-    "s": {"view": {"w": 320, "h": 405, "scale": 1, "q": 70}, "display": SCREEN_W},  # 320×405 -> 232×294: z paskiem adresu cały ekran 240×320
+    "s": {"view": {"w": 320, "h": 1200, "scale": 1, "q": 82}, "display": SCREEN_W, "step": 1000},  # 320×1200 -> 232×870: trzy ekrany Nokii
+    # w jednym obrazie (ok. 0,8 MB po rozpakowaniu) – przewijanie w obrębie zrzutu jest natychmiastowe, bez pytania serwera
     "l": {"view": {"w": 390, "h": 630, "scale": 2, "q": 68, "fmt": "webp"}, "display": 390},  # WebP: ok. 1/3 lżejszy od JPEG
 }
 SMALL_BROWSER = re.compile(r"Opera Mini|Nokia|KAIOS|J2ME|MIDP|Series ?(?:30|40)|S40|MAUI|Obigo|NetFront", re.I)
@@ -5281,7 +5282,7 @@ def screen_page():
         elif action == "click":
             body.update(x=clamp_int(request.args.get("k.x"), 0, 0, 2000) * scale, y=clamp_int(request.args.get("k.y"), 0, 0, 4000) * scale)
         elif action in ("up", "down"):
-            step = mode["view"]["h"] // 2  # pół ekranu: zostaje kawałek poprzedniego widoku, nic nie ginie
+            step = mode.get("step") or mode["view"]["h"] // 2  # zostaje kawałek poprzedniego widoku, nic nie ginie
             body.update(action="scroll", dy=-step if action == "up" else step)
         elif action == "type":
             body.update(text=(request.args.get("t") or "")[:500], enter=bool(request.args.get("enter")))
@@ -5303,7 +5304,7 @@ def screen_page():
                     if mode["view"]["scale"] == 1:  # Nokia: plik o rozmiarze ekranu
                         image = image.convert("RGB").resize((display, height), Image.Resampling.LANCZOS)
                         out = io.BytesIO()
-                        image.save(out, "JPEG", quality=62, optimize=True)
+                        image.save(out, "JPEG", quality=76, optimize=True)
                         raw = out.getvalue()
                     shot_id = uuid.uuid4().hex
                     screen_shots.set(shot_id, raw)
@@ -5311,7 +5312,7 @@ def screen_page():
                     f = display / mode["view"]["w"]
                     shot["items"] = [dict(it, x1=round(it["x"] * f), y1=round(it["y"] * f), x2=round(it["r"] * f), y2=round(it["b"] * f))
                                      for it in data.get("items") or [] if isinstance(it, dict) and all(
-                                         isinstance(it.get(k), (int, float)) for k in ("x", "y", "r", "b", "cx", "cy"))][:80]
+                                         isinstance(it.get(k), (int, float)) for k in ("x", "y", "r", "b", "cx", "cy"))][:200]
             except OSError:
                 error = error or "Nie udało się odczytać zrzutu ekranu."
         resp = make_response(render_template("screen.html", waiting=False, state=state, target=target, shot=shot,
