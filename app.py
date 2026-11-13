@@ -3830,25 +3830,29 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 """,
     "screen.html": """{% extends "base.html" %}
 {% block title %}{{ page_title or "Zdalny ekran" }}{% endblock %}
-{% block head %}{% if waiting %}<meta http-equiv="refresh" content="5;url={{ here }}">{% elif live %}<meta http-equiv="refresh" content="3;url={{ url_for('screen_page', a='shot', live=1, n=tick) }}">{% endif %}<style>.sc2{text-align:center;padding:2px 0}.sc2 input{border:0;padding:0;margin:0;background:none;border-radius:0}.sk{width:100%;max-width:{{ shot.w if shot else sw }}px;margin:2px auto;border-collapse:collapse}.sk td{text-align:center;padding:2px}.sk a{display:block;padding:5px 0;border:1px solid #d3e0fb;background:#eef3fd;border-radius:12px;font-weight:bold}.ef{margin:4px 8px}.ef .q{width:120px}.fx{background:#fff4e5;border:1px solid #f0c890;border-radius:10px;padding:6px}</style>{% endblock %}
-{% block body %}<div class="bar" id="g"><a href="{{ url_for('home') }}" accesskey="0">Nowe szukanie</a>{% if page_url %} <a href="{{ url_for('read', url=page_url, czytnik=1) }}">Czytnik</a>{% endif %}</div>
-<form class="ef" action="{{ url_for('screen_page') }}" method="get"><input class="q" type="text" name="u" value="{{ page_url or target }}" maxlength="2000"> <input type="submit" value="Idź"></form>
+{% block head %}{% if waiting %}<meta http-equiv="refresh" content="5;url={{ here }}">{% elif live %}<meta http-equiv="refresh" content="3;url={{ url_for('screen_page', a='shot', live=1, n=tick) }}">{% endif %}<style>body{max-width:none}.ab{margin:0;padding:2px 2px 1px;background:#f1f3f4;white-space:nowrap}.ab .q{width:68%;padding:3px 8px;font-size:13px}.ab input[type=submit]{padding:4px 8px;font-size:12px}.ab a{padding:0 4px;font-weight:bold;font-size:16px}.sc2{text-align:center;line-height:0}.sc2 input{border:0;padding:0;margin:0;background:none;border-radius:0}.hk{position:absolute;left:-999px;top:0}.ef{margin:2px 4px}.ef .q{width:120px}.fx{background:#fff4e5;border:1px solid #f0c890;border-radius:8px;padding:4px}</style>{% endblock %}
+{% block body %}<form class="ab" id="g" action="{{ url_for('screen_page') }}" method="get"><input class="q" type="text" name="u" value="{{ page_url or target }}" maxlength="2000"> <input type="submit" value="Idź"> <a href="{{ url_for('screen_page', a='shot', opcje=1) }}">&#8943;</a></form>
+<a class="hk" href="{{ url_for('screen_page', a='back') }}" accesskey="1">wstecz</a><a class="hk" href="{{ url_for('screen_page', a='up') }}" accesskey="2">góra</a><a class="hk" href="{{ url_for('screen_page', a='forward') }}" accesskey="3">dalej</a><a class="hk" href="{{ url_for('screen_page', a='reload') }}" accesskey="5">odśwież</a><a class="hk" href="{{ url_for('screen_page', a='down') }}" accesskey="8">dół</a><a class="hk" href="{{ url_for('home') }}" accesskey="0">start</a>
 {% if waiting %}<div class="w"><div class="ib"><b>{% if error %}Zdalna przeglądarka nie działa{% else %}Uruchamiam zdalną przeglądarkę&hellip;{% endif %}</b><br>
 {% if error %}{{ error }}{% else %}{{ state.phase or "start" }}{% endif %}</div>
-<p class="m">{% if error %}Spróbuję ponownie przy następnym wejściu.{% else %}Strona odświeża się sama co 5 s. Pierwsze uruchomienie trwa 1&ndash;2 min, potem kilka sekund.{% endif %}</p>
 <a class="b" href="{{ here }}">Odśwież</a></div>
-{% else %}{% if error %}<div class="w"><div class="e">{{ error }}</div></div>{% endif %}
-{% if google_q %}<div class="w"><a class="b" href="{{ url_for('search', q=google_q) }}">Szukaj &bdquo;{{ google_q }}&rdquo; w Szukajce</a><p class="m">Google często sprawdza serwery w chmurze (&bdquo;Nie jestem robotem&rdquo;) &ndash; wyszukiwarka Szukajki działa bez tego i szybciej. Sprawdzenie Google możesz też przejść sam na obrazie.</p></div>
-{% endif %}{% if field %}<form class="ef fx" action="{{ url_for('screen_page') }}" method="get"><b>Wpisz w pole &bdquo;{{ field }}&rdquo;:</b><br><input type="hidden" name="a" value="type"><input class="q" type="text" name="t" maxlength="500"> <input type="submit" value="Wpisz"> <input type="submit" name="enter" value="Wpisz + Enter"></form>
-{% endif %}{% if shot and as_list %}<div class="w">{% for it in shot["items"] %}<div class="r"><a href="{{ url_for('screen_page', a='click', vx=it.cx, vy=it.cy) }}">{{ loop.index }}. {% if it.f %}[pole] {% endif %}{{ it.t or "(bez opisu)" }}</a></div>
+{% else %}{% if error %}<div class="e">{{ error }}</div>{% endif %}
+{% if google_q %}<div class="ef"><a href="{{ url_for('search', q=google_q) }}"><b>Szukaj &bdquo;{{ google_q }}&rdquo; w Szukajce</b></a></div>
+{% endif %}{% if field %}<form class="ef fx" action="{{ url_for('screen_page') }}" method="get"><b>{{ field }}:</b><br><input type="hidden" name="a" value="type"><input class="q" type="text" name="t" maxlength="500"> <input type="submit" value="Wpisz"> <input type="submit" name="enter" value="Wpisz + Enter"></form>
+{% endif %}{% if options %}<div class="w">{% if page_title %}<p class="m"><b>{{ page_title }}</b></p>{% endif %}<a class="b" href="{{ url_for('screen_page', a='shot') }}">&laquo; Wróć do strony</a>
+<a class="b" href="{{ url_for('screen_page', a='shot', live=1) }}">Odświeżaj na żywo (co 3 s)</a>
+{% if shot %}<a class="b" href="{{ url_for('screen_page', a='shot', lista=1) }}">Lista linków ({{ shot["items"]|length }})</a>
+{% endif %}<a class="b" href="{{ url_for('screen_page', a='key', key='Backspace') }}">Usuń znak w polu (&#9003;)</a>
+{% if page_url %}<a class="b" href="{{ url_for('read', url=page_url, czytnik=1) }}">Otwórz w czytniku</a>
+{% endif %}<a class="b" href="{{ url_for('settings', k='ekq', v='l' if mode == 's' else 's', next=url_for('screen_page')) }}">Ekran: {{ "duży" if mode == "s" else "mały" }}</a>
+{% if not in_frame %}<a class="b" href="{{ url_for('nokia_emulator', u=url_for('screen_page')) }}">Podgląd Nokii</a>
+{% endif %}<a class="b" href="{{ url_for('home') }}">Nowe szukanie</a>
+<a class="b" href="{{ url_for('screen_page', a='close') }}">Zamknij i wyczyść</a></div>
+{% elif shot and as_list %}<div class="w">{% for it in shot["items"] %}<div class="r"><a href="{{ url_for('screen_page', a='click', vx=it.cx, vy=it.cy) }}">{{ loop.index }}. {% if it.f %}[pole] {% endif %}{{ it.t or "(bez opisu)" }}</a></div>
 {% else %}<p class="m">Na ekranie nie ma linków ani przycisków.</p>{% endfor %}<a class="b" href="{{ url_for('screen_page', a='shot') }}">Pokaż obraz</a></div>
 {% elif shot and mode == 's' and shot["items"] %}<div class="sc2"><img src="{{ url_for('screen_image', id=shot.id) }}" width="{{ shot.w }}" height="{{ shot.h }}" usemap="#ek" alt="Ekran"><map name="ek">{% for it in shot["items"] %}<area shape="rect" coords="{{ it.x1 }},{{ it.y1 }},{{ it.x2 }},{{ it.y2 }}" href="{{ url_for('screen_page', a='click', vx=it.cx, vy=it.cy) }}" alt="{{ it.t or 'link' }}">{% endfor %}</map></div>
-{% elif shot %}<form class="sc2" action="{{ url_for('screen_page') }}" method="get"><input type="image" name="k" src="{{ url_for('screen_image', id=shot.id) }}" width="{{ shot.w }}" height="{{ shot.h }}" alt="Ekran – kliknij"></form>{% endif %}
-<table class="sk" cellspacing="0"><tr><td><a href="{{ url_for('screen_page', a='back') }}" accesskey="1">1 &#9664;</a></td><td><a href="{{ url_for('screen_page', a='up') }}" accesskey="2">2 &#9650;</a></td><td><a href="{{ url_for('screen_page', a='forward') }}" accesskey="3">3 &#9654;</a></td></tr>
-<tr><td><a href="{{ url_for('screen_page', a='reload') }}" accesskey="5">5 &#8635;</a></td><td><a href="{{ url_for('screen_page', a='down') }}" accesskey="8">8 &#9660;</a></td><td><a href="{{ url_for('screen_page', a='key', key='Backspace') }}">&#9003;</a></td></tr></table>
-<form class="ef" action="{{ url_for('screen_page') }}" method="get"><input type="hidden" name="a" value="type"><input class="q" type="text" name="t" maxlength="500"> <input type="submit" value="Wpisz"> <input type="submit" name="enter" value="Wpisz + Enter"></form>
-<div class="w"><p class="m">{% if live %}<a href="{{ url_for('screen_page') }}"><b>&#9632; Zatrzymaj odświeżanie</b></a>{% else %}<a href="{{ url_for('screen_page', a='shot', live=1) }}"><b>&#9654; Odświeżaj na żywo</b></a>{% endif %} &middot; {% if not in_frame %}<a href="{{ url_for('nokia_emulator', u=url_for('screen_page')) }}">Podgląd Nokii</a> &middot; {% endif %}Ekran: {% if mode == 's' %}<b>mały</b> &middot; <a href="{{ url_for('settings', k='ekq', v='l', next=url_for('screen_page')) }}">duży</a>{% else %}<a href="{{ url_for('settings', k='ekq', v='s', next=url_for('screen_page')) }}">mały</a> &middot; <b>duży</b>{% endif %}</p>
-<p class="m">{% if page_title %}<b>{{ page_title }}</b><br>{% endif %}{% if mode == 's' %}Strzałkami przechodzisz po linkach i przyciskach na obrazie, OK klika{% else %}Kliknij w obraz, aby kliknąć na stronie{% endif %}. Kliknięte pole tekstowe pokaże okienko do wpisywania. 1 wstecz, 3 dalej, 2/8 przewijanie, 5 odśwież. Bez dźwięku. {% if shot and not as_list %}<a href="{{ url_for('screen_page', a='shot', lista=1) }}">Lista linków ({{ shot["items"]|length }})</a> &middot; {% endif %}<a href="{{ url_for('screen_page', a='close') }}">Zamknij i wyczyść</a></p></div>
+{% elif shot %}<form class="sc2" action="{{ url_for('screen_page') }}" method="get"><input type="image" name="k" src="{{ url_for('screen_image', id=shot.id) }}" width="{{ shot.w }}" height="{{ shot.h }}" alt="Ekran"></form>{% endif %}
+{% if live %}<div class="ef"><a href="{{ url_for('screen_page') }}">&#9632; Zatrzymaj odświeżanie</a></div>{% endif %}
 {% endif %}{% if debug %}<!-- wpisywanie: {{ debug }} -->{% endif %}{% endblock %}
 """,
     "nokia.html": """<!DOCTYPE html>
@@ -4978,8 +4982,8 @@ with open(SCREEN_SERVER, "rb") as _source:
 screen_shots = DiskCache("ekran", ttl=900, max_files=300)
 # Mały: Nokia (zrzut zmniejszany do 232 px). Duży: nowoczesne telefony – widok 390 px w podwójnej gęstości pikseli.
 SCREEN_MODES = {
-    "s": {"view": {"w": 320, "h": 440, "scale": 1, "q": 70}, "display": SCREEN_W},  # 320 -> 232 px: tekst ok. 3/4 wielkości
-    "l": {"view": {"w": 390, "h": 700, "scale": 2, "q": 68, "fmt": "webp"}, "display": 390},  # WebP: ok. 1/3 lżejszy od JPEG
+    "s": {"view": {"w": 320, "h": 405, "scale": 1, "q": 70}, "display": SCREEN_W},  # 320×405 -> 232×294: z paskiem adresu cały ekran 240×320
+    "l": {"view": {"w": 390, "h": 630, "scale": 2, "q": 68, "fmt": "webp"}, "display": 390},  # WebP: ok. 1/3 lżejszy od JPEG
 }
 SMALL_BROWSER = re.compile(r"Opera Mini|Nokia|KAIOS|J2ME|MIDP|Series ?(?:30|40)|S40|MAUI|Obigo|NetFront", re.I)
 
@@ -5231,7 +5235,7 @@ def screen_page():
     resp = None
     if server is None:
         resp = make_response(render_template("screen.html", waiting=True, state=state, target=target, shot=None, page_title="",
-                                             mode=screen_mode(), live=False, tick=0, field="", as_list=False, google_q="",
+                                             mode=screen_mode(), live=False, tick=0, field="", as_list=False, google_q="", options=False,
                                              page_url="", error=state.get("error"), here=request.full_path, sw=SCREEN_W))
     else:
         mode = SCREEN_MODES[screen_mode()]
@@ -5279,6 +5283,7 @@ def screen_page():
         resp = make_response(render_template("screen.html", waiting=False, state=state, target=target, shot=shot,
                                              mode=screen_mode(), live=bool(request.args.get("live")), tick=int(time.time()) % 100000,
                                              field=data.get("field") or "", as_list=bool(request.args.get("lista")),
+                                             options=bool(request.args.get("opcje")),
                                              google_q=google_query(data.get("url") or ""),
                                              page_title=data.get("title", ""), page_url=data.get("url", "") or target,
                                              error=error, here=request.full_path, sw=SCREEN_W, closed=data.get("closed"),
