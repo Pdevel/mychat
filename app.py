@@ -5017,8 +5017,11 @@ def prepare_screen():
 def screen_ready():
     """(adres ekranu albo None, stan). Gdy ekran nie działa – przygotowanie w tle."""
     state = screen_state()
-    if state.get("status") == "ready" and state.get("url") and screen_health(state["url"], timeout=8):
-        return state["url"], state
+    if state.get("status") == "ready" and state.get("url"):
+        for wait in (0, 2, 4):  # chwilowy brak odpowiedzi to nie powód, by wgrywać ekran od nowa (traci otwarte strony)
+            time.sleep(wait)
+            if screen_health(state["url"], timeout=8):
+                return state["url"], state
     busy = state.get("status") == "starting" and time.time() - state.get("updated", 0) < 300
     if not busy and time.time() >= state.get("retry_until", 0):
         screen_state({"status": "starting", "phase": "start", "error": ""})

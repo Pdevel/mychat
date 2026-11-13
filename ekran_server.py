@@ -13,7 +13,9 @@ import os
 import re
 import shutil
 import time
-from http.server import BaseHTTPRequestHandler, HTTPServer
+import queue
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import quote, urlparse
 
 from playwright.sync_api import Error as PlaywrightError
@@ -232,13 +234,17 @@ def act(body):
     elif action == "click":
         x = max(0, min(width - 1, float(body.get("x", 0))))
         y = max(0, min(height - 1, float(body.get("y", 0))))
-        before = run(page, SIGNATURE, default='nawigacja')
+        before, url_before = run(page, SIGNATURE, default='nawigacja'), page.url
         sessions[sid]["last"] = [x, y]
         page.mouse.click(x, y)
         page.wait_for_timeout(350)
         if run(page, SIGNATURE, default='nawigacja') == before:  # nic się nie zmieniło: część stron mobilnych nie reaguje na mysz
             run(page, "([x, y]) => { const e = document.elementFromPoint(x, y); if (e) e.click(); }", [x, y])
-        settle(page)
+            page.wait_for_timeout(300)
+        if page.url != url_before or run(page, "() => document.readyState", default="loading") != "complete":
+            settle(page, 700)  # kliknięcie otworzyło inną stronę – zrzut dopiero, gdy się wczyta
+        else:
+            page.wait_for_timeout(350)  # nakładka, menu, pole: animacja i kursor
     elif action == "scroll":
         page.mouse.move(width / 2, height / 2)
         page.mouse.wheel(0, max(-3000, min(3000, int(body.get("dy", 0)))))
@@ -325,8 +331,8 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_GET(self):
-        if self.path == "/health":
-            self.reply(200, {"ok": True, "sessions": len(sessions), "chromium": browser.version, "version": VERSION})
+        if self.path == "/health":  # odpowiada od razu, także gdy przeglądarka akurat pracuje
+            self.reply(200, {"ok": True, "sessions": len(sessions), "chromium": CHROMIUM, "version": VERSION, "busy": jobs.qsize()})
         else:
             self.reply(404, {"error": "nie ma"})
 
@@ -339,10 +345,31 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(413, {"error": "za duże"})
             return
         try:
-            self.reply(200, act(json.loads(self.rfile.read(length) or b"{}")))
-        except (ValueError, PlaywrightError) as err:
-            self.reply(400, {"error": str(err).splitlines()[0][:300]})
+            body = json.loads(self.rfile.read(length) or b"{}")
+        except ValueError:
+            self.reply(400, {"error": "zły JSON"})
+            return
+        job = {"body": body, "done": threading.Event()}
+        jobs.put(job)
+        job["done"].wait(120)
+        if "result" in job:
+            self.reply(200, job["result"])
+        else:
+            self.reply(400, {"error": job.get("error") or "przeglądarka nie zdążyła"})
 
+
+CHROMIUM = browser.version
+jobs = queue.Queue()  # akcje wykonuje jeden wątek (Playwright sync działa tylko w wątku, który go uruchomił)
 
 if __name__ == "__main__":
-    HTTPServer(("0.0.0.0", PORT), Handler).serve_forever()  # jeden wątek: Playwright (sync) nie lubi wielu wątków
+    server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    while True:
+        job = jobs.get()
+        try:
+            job["result"] = act(job["body"])
+        except (ValueError, PlaywrightError) as err:
+            job["error"] = str(err).splitlines()[0][:300]
+        except Exception as err:  # przeglądarka nie może paść przez jedną stronę
+            job["error"] = f"{type(err).__name__}: {str(err)[:200]}"
+        job["done"].set()
