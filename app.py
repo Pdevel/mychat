@@ -1960,11 +1960,14 @@ def render_page(url):
         except ValueError:
             data = {}
         html = data.get("result") if data.get("success") else None
+        used = resp.headers.get("X-Browser-Ms-Used")
+        cf_state({"last_render": f"{time.strftime('%H:%M UTC', time.gmtime())} {url[:80]} – HTTP {resp.status_code}, "
+                                 + (f"{len(html)} znaków, zastępstw: {len(PLACEHOLDERS.findall(html))}, {used or '?'} ms"
+                                    if isinstance(html, str) else cf_error(resp))})
         if not isinstance(html, str):
             log.warning("cloudflare %s: %s", resp.status_code, resp.text[:200])
             render_cache.set(url, "")  # ta strona się nie renderuje – nie próbujemy znowu przez godzinę
             return None
-        used = resp.headers.get("X-Browser-Ms-Used")
         log.info("cloudflare: %s (%s ms przeglądarki)", url, used or "?")
         cf_state({"reason": "", "used_ms": int(used) if (used or "").isdigit() else None})
         render_cache.set(url, html)
@@ -2012,6 +2015,8 @@ def load_article(url):
             # lepsza: więcej treści albo mniej „pobieranie danych…” (liczba bywa krótsza niż napis, który zastępuje)
             if text_len(r_blocks) > text_len(blocks) or waiting(r_blocks) < waiting(blocks) and text_len(r_blocks) > 0.5 * text_len(blocks):
                 title, blocks, videos, posters, info, text, rendered = r_title or title, r_blocks, r_videos, r_posters, r_info, html, True
+            cf_state({"last_choice": f"{final_url[:80]}: {'użyta' if rendered else 'odrzucona'} (tekst {text_len(r_blocks)} "
+                                     f"vs {text_len(blocks if rendered else blocks)}, zastępstw {waiting(r_blocks)})"})
     if not blocks and (videos or info.get("audios")):
         blocks = [("p", "Na tej stronie jest film albo nagranie – wybierz je wyżej.", None)]
     if not blocks:
@@ -4851,6 +4856,9 @@ def diag():
         "brak kluczy CF_ACCOUNT_ID / CF_API_TOKEN" if not (CF_ACCOUNT_ID and CF_API_TOKEN) else
         f"wstrzymane do {time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime(state['down_until']))} – {state.get('reason')}"
         if time.time() < state.get("down_until", 0) else "skonfigurowane"))
+    for key, name in (("last_render", "ostatnie renderowanie"), ("last_choice", "ostatni wybór")):
+        if state.get(key):
+            lines.append(f"Cloudflare {name}: {state[key]}")
     if request.args.get("cf") and CF_ACCOUNT_ID and CF_API_TOKEN:  # /diag?cf=1 – jedno zapytanie próbne
         started = time.monotonic()
         resp = cf_content({"url": "https://example.com/", "rejectResourceTypes": ["image", "media", "font", "stylesheet"]})
