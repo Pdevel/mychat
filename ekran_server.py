@@ -66,6 +66,13 @@ SET_VALUE = """(text) => {
   e.dispatchEvent(new InputEvent('input', {bubbles: true, data: text, inputType: 'insertText'}));
   e.dispatchEvent(new Event('change', {bubbles: true}));
 }"""
+SUBMIT = """() => {
+  const e = document.activeElement;
+  if (!e) return;
+  if (e.form) { e.form.requestSubmit ? e.form.requestSubmit() : e.form.submit(); return; }
+  for (const type of ['keydown', 'keypress', 'keyup'])
+    e.dispatchEvent(new KeyboardEvent(type, {key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true}));
+}"""
 SIGNATURE = ("() => location.href + '|' + document.getElementsByTagName('*').length + '|' + "
              "(document.body ? document.body.innerText.length : 0) + '|' + "
              "(document.activeElement ? document.activeElement.tagName : '') + '|' + scrollY")
@@ -95,6 +102,16 @@ def settle(page, wait=700):
     except PlaywrightError:
         pass
     page.wait_for_timeout(wait)
+
+
+def press_enter(page):
+    """Enter; gdy strona go zignoruje (Mapy Google odrzucają symulowane klawisze) – wysłanie formularza pola
+    albo zdarzenie Enter wysłane z poziomu strony."""
+    before = page.evaluate(SIGNATURE)
+    page.keyboard.press("Enter")
+    page.wait_for_timeout(700)
+    if page.evaluate(SIGNATURE) == before:
+        page.evaluate(SUBMIT)
 
 
 def act(body):
@@ -140,7 +157,7 @@ def act(body):
                 page.evaluate(SET_VALUE, text)  # wartość + zdarzenie „input” (pola sterowane przez React i podobne)
         debug = {"target": target, "frames": len(page.frames), "active": page.evaluate(ACTIVE)}
         if body.get("enter"):
-            page.keyboard.press("Enter")
+            press_enter(page)
             settle(page, 2000)  # wyniki wyszukiwania (np. Mapy Google) ładują się chwilę
         else:
             page.wait_for_timeout(600)  # podpowiedzi pod polem
@@ -148,7 +165,10 @@ def act(body):
         key = str(body.get("key") or "")
         if key not in KEYS:
             raise ValueError("nieznany klawisz")
-        page.keyboard.press(" " if key == "Space" else key)
+        if key == "Enter":
+            press_enter(page)
+        else:
+            page.keyboard.press(" " if key == "Space" else key)
         settle(page, 400)
     elif action in ("back", "forward", "reload"):
         try:
