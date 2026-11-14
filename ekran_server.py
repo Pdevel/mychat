@@ -99,6 +99,17 @@ def setup_audio(install=False):
         return False
 
 
+def sound_playing():
+    """Czy przeglądarka coś teraz gra: aktywny (nie wstrzymany) strumień w wirtualnej karcie dźwiękowej."""
+    if audio["state"] != "gotowy":
+        return False
+    try:
+        out = subprocess.run(["pactl", "list", "sink-inputs"], env=AUDIO_ENV, capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return "Corked: no" in out
+
+
 def launch_browser():
     executable = next((p for p in (shutil.which("chromium"), shutil.which("chromium-browser"), shutil.which("google-chrome"))
                        if p), None)
@@ -703,6 +714,8 @@ def act(body):
         result["debug"] = debug
     if body.get("mem"):
         result["mem"] = memory_mb(page)
+    result["sound"] = sound_playing()  # telefon pokaże „Gra dźwięk – słuchaj”, gdy jeszcze nikt nie słucha
+    result["listeners"] = len(listeners)
     done = time.monotonic()
     result["ms"] = {"akcja": round((acted - started) * 1000), "zrzut": round((shot_done - acted) * 1000),
                     "reszta": round((done - shot_done) * 1000)}

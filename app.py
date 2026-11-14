@@ -3841,8 +3841,9 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 """,
     "screen.html": """{% extends "base.html" %}
 {% block title %}{{ page_title or "Zdalny ekran" }}{% endblock %}
-{% block head %}{% if waiting %}<meta http-equiv="refresh" content="5;url={{ here }}">{% elif live and small_browser %}{% if in_frame %}<meta name="nk-refresh" content="{{ live_left }};url={{ url_for('screen_page', a='shot', live=1, n=tick) }}">{% else %}<meta http-equiv="refresh" content="{{ live_wait }};url={{ url_for('screen_page', a='shot', live=1, n=tick) }}">{% endif %}{% endif %}<style>body{max-width:none}.ab{margin:0;padding:2px 2px 1px;background:#f1f3f4;white-space:nowrap}.ab .q{width:68%;padding:3px 8px;font-size:13px}.ab input[type=submit]{padding:4px 8px;font-size:12px}.ab a{padding:0 4px;font-weight:bold;font-size:16px}.sc2{text-align:center;line-height:0}.sc2 input{border:0;padding:0;margin:0;background:none;border-radius:0}.hk{position:absolute;left:-999px;top:0}.ef{margin:2px 4px}.ef .q{width:120px}.fx{background:#fff4e5;border:1px solid #f0c890;border-radius:8px;padding:4px}.nx{text-align:center;font-size:12px;line-height:1.7}.nx a{padding:0 12px}.ab.lv a{font-size:13px;padding:0 6px}</style>{% endblock %}
-{% block body %}{% if live and mode == 's' and shot %}<div class="nx ab lv" id="g"><a href="{{ url_for('screen_page', a='down', live=1) }}">8 &#9660; dalej</a><a href="{{ url_for('screen_page', a='up', live=1) }}">2 &#9650; wyżej</a><a href="{{ url_for('screen_page') }}">5 &#9632; stop</a></div>
+{% block head %}{% if waiting %}<meta http-equiv="refresh" content="5;url={{ here }}">{% elif live and small_browser %}{% if in_frame %}<meta name="nk-refresh" content="{{ live_left }};url={{ url_for('screen_page', a='shot', live=1, n=tick) }}">{% else %}<meta http-equiv="refresh" content="{{ live_wait }};url={{ url_for('screen_page', a='shot', live=1, n=tick) }}">{% endif %}{% endif %}<style>body{max-width:none}.ab{margin:0;padding:2px 2px 1px;background:#f1f3f4;white-space:nowrap}.ab .q{width:68%;padding:3px 8px;font-size:13px}.ab input[type=submit]{padding:4px 8px;font-size:12px}.ab a{padding:0 4px;font-weight:bold;font-size:16px}.sc2{text-align:center;line-height:0}.sc2 input{border:0;padding:0;margin:0;background:none;border-radius:0}.hk{position:absolute;left:-999px;top:0}.ef{margin:2px 4px}.ef .q{width:120px}.fx{background:#fff4e5;border:1px solid #f0c890;border-radius:8px;padding:4px}.snd{display:block;background:#0b57d0;color:#fff;font-weight:bold;text-align:center;padding:5px;font-size:13px}.snd .k{color:#0b57d0}.nx{text-align:center;font-size:12px;line-height:1.7}.nx a{padding:0 12px}.ab.lv a{font-size:13px;padding:0 6px}</style>{% endblock %}
+{% block body %}{% if sound_link %}<a class="snd" href="{{ sound_link }}" accesskey="5"><span class="k">5</span>&#9835; Gra dźwięk &ndash; słuchaj</a>
+{% endif %}{% if live and mode == 's' and shot %}<div class="nx ab lv" id="g"><a href="{{ url_for('screen_page', a='down', live=1) }}">8 &#9660; dalej</a><a href="{{ url_for('screen_page', a='up', live=1) }}">2 &#9650; wyżej</a><a href="{{ url_for('screen_page') }}">5 &#9632; stop</a></div>
 {% else %}<form class="ab" id="g" action="{{ url_for('screen_page') }}" method="get"><input class="q" type="text" name="u" value="{{ page_url or target }}" maxlength="2000"> <input type="submit" value="Idź"> <a href="{{ url_for('screen_page', a='shot', opcje=1) }}">&#8943;</a></form>{% endif %}
 {% if waiting %}<div class="w"><div class="ib"><b>{% if error %}Zdalna przeglądarka nie działa{% else %}Uruchamiam zdalną przeglądarkę&hellip;{% endif %}</b><br>
 {% if error %}{{ error }}{% else %}{{ state.phase or "start" }}{% endif %}</div>
@@ -3890,7 +3891,7 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
   later(500);
 })();
 </script>{% endif %}
-{% endif %}<a class="hk" tabindex="-1" href="{{ url_for('screen_page', a='back') }}" accesskey="1">wstecz</a><a class="hk" tabindex="-1" href="{{ url_for('screen_page', a='up', live=1 if live else None) }}" accesskey="2">góra</a><a class="hk" tabindex="-1" href="{{ url_for('screen_page', a='forward') }}" accesskey="3">dalej</a><a class="hk" tabindex="-1" href="{{ url_for('screen_page') if live else url_for('screen_page', a='reload') }}" accesskey="5">{{ "stop" if live else "odśwież" }}</a><a class="hk" tabindex="-1" href="{{ url_for('screen_page', a='down', live=1 if live else None) }}" accesskey="8">dół</a><a class="hk" tabindex="-1" href="{{ url_for('home') }}" accesskey="0">start</a>
+{% endif %}<a class="hk" tabindex="-1" href="{{ url_for('screen_page', a='back') }}" accesskey="1">wstecz</a><a class="hk" tabindex="-1" href="{{ url_for('screen_page', a='up', live=1 if live else None) }}" accesskey="2">góra</a><a class="hk" tabindex="-1" href="{{ url_for('screen_page', a='forward') }}" accesskey="3">dalej</a>{% if not sound_link %}<a class="hk" tabindex="-1" href="{{ url_for('screen_page') if live else url_for('screen_page', a='reload') }}" accesskey="5">{{ "stop" if live else "odśwież" }}</a>{% endif %}<a class="hk" tabindex="-1" href="{{ url_for('screen_page', a='down', live=1 if live else None) }}" accesskey="8">dół</a><a class="hk" tabindex="-1" href="{{ url_for('home') }}" accesskey="0">start</a>
 {% if debug %}<!-- wpisywanie: {{ debug }} -->{% endif %}{% endblock %}
 """,
     "anim_test.html": """<!DOCTYPE html>
@@ -5514,6 +5515,13 @@ def nokia_emulator():
     return resp
 
 
+def audio_link(server):
+    """Podpisany (HMAC) link do strumienia dźwięku na maszynie, ważny 6 godzin."""
+    expires = int(time.time()) + 6 * 3600
+    sig = hmac.new(SCREEN_TOKEN.encode(), f"audio:{expires}".encode(), hashlib.sha256).hexdigest()[:32]
+    return f"{server.rstrip('/')}/audio?t={expires}.{sig}"
+
+
 @app.route("/ekran/dzwiek")
 def screen_audio():
     """Dźwięk ze zdalnej przeglądarki na żywo: podpisany link do strumienia MP3 na maszynie InstaBox (odtwarzacz telefonu)."""
@@ -5527,9 +5535,7 @@ def screen_audio():
         except InstaboxError as err:
             info = {"audio": "błąd", "audio_error": err.message}
         if info.get("audio") == "gotowy":
-            expires = int(time.time()) + 6 * 3600
-            sig = hmac.new(SCREEN_TOKEN.encode(), f"audio:{expires}".encode(), hashlib.sha256).hexdigest()[:32]
-            link = f"{server.rstrip('/')}/audio?t={expires}.{sig}"
+            link = audio_link(server)
     resp = make_response(render_template("screen_audio.html", link=link, state=info.get("audio") or "brak",
                                          error=info.get("audio_error") or "", restarted=bool(info.get("restarted"))))
     resp.headers["Cache-Control"] = "no-store"
@@ -5640,6 +5646,8 @@ def screen_page():
                                              field=data.get("field") or "", as_list=bool(request.args.get("lista")),
                                              options=bool(request.args.get("opcje")), mem=data.get("mem") if isinstance(data.get("mem"), dict) else None,
                                              google_q=google_query(data.get("url") or ""),
+                                             # gra dźwięk, a nikt go nie słucha: na górze link „słuchaj” (jedno OK)
+                                             sound_link=audio_link(server) if data.get("sound") and not data.get("listeners") else "",
                                              page_title=data.get("title", ""), page_url=data.get("url", "") or target,
                                              error=error, here=request.full_path, sw=SCREEN_W, closed=data.get("closed"),
                                              debug=json.dumps(data.get("debug"), ensure_ascii=False) if data.get("debug") else ""))
