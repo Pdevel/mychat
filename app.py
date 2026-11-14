@@ -3964,6 +3964,8 @@ html,body{margin:0;background:#e8eaed;font-family:system-ui,Roboto,Arial,sans-se
 .top{display:flex;justify-content:space-between;padding:0 30px 8px}.dot{width:9px;height:9px;border-radius:50%;background:#16171a}
 .scr{display:block;margin:0 auto;width:240px;height:320px;border:6px solid #000;border-radius:4px;background:#fff}
 .scrw{position:relative;width:252px;margin:0 auto}
+#nk-muz{display:none;margin:-4px 16px 8px;padding:4px 8px;border-radius:10px;background:#1b1c1f;color:#d7d9dc;font-size:12px;text-align:center}
+#nk-muz button{border:0;border-radius:8px;background:#3c3e43;color:#eee;font-size:12px;padding:2px 8px;margin-left:6px}
 #nk-load{display:none;position:absolute;left:6px;right:6px;bottom:6px;height:4px;background:rgba(0,0,0,.12)}
 #nk-load i{display:block;height:100%;width:0;background:#e3263b;transition:width .1s linear}
 .brand{color:#d7d9dc;text-align:center;font-weight:800;letter-spacing:2px;font-size:15px;margin:10px 0 8px}
@@ -3979,6 +3981,7 @@ html,body{margin:0;background:#e8eaed;font-family:system-ui,Roboto,Arial,sans-se
 <div class="ph"><div class="top"><span class="dot"></span><span class="dot"></span></div>
 <div class="scrw"><iframe class="scr" id="ekran" src="{{ start }}" title="Ekran Nokii"></iframe><div id="nk-load"><i></i></div></div>
 <div class="brand">NOKIA</div>
+<div id="nk-muz"><span id="nk-muz-t">&#9835; Odtwarzacz telefonu: gra</span> <button type="button" id="nk-muz-stop">&#9632; stop</button></div>
 <div class="keys">
 <button class="k soft" data-k="lsk">Wstecz</button>
 <div class="pad"><span></span><button data-k="up">&#9650;</button><span></span><button data-k="left">&#9664;</button><button class="ok" data-k="ok">OK</button><button data-k="right">&#9654;</button><span></span><button data-k="down">&#9660;</button><span></span></div>
@@ -4189,6 +4192,20 @@ html,body{margin:0;background:#e8eaed;font-family:system-ui,Roboto,Arial,sans-se
       startLoad();
     }, Math.max(0, parseFloat(parts[1]) * 1000));  // 0: klatka powstawała długo – następna od razu
   }
+  // odtwarzacz telefonu: strumień dźwięku gra w tle, a strona w ekranie zostaje (na Nokii otwiera się osobny odtwarzacz)
+  var player = new Audio(), muz = document.getElementById('nk-muz'), muzText = document.getElementById('nk-muz-t');
+  function playStream(url) {
+    player.src = url;
+    var started = player.play();  // w obsłudze naciśnięcia klawisza – iPhone na to pozwala
+    if (started && started.catch) started.catch(function () { muzText.textContent = '\u266B Odtwarzacz: nie udało się włączyć'; });
+    muzText.textContent = '\u266B Odtwarzacz telefonu: łączę\u2026';
+    muz.style.display = 'block';
+  }
+  player.addEventListener('playing', function () { muzText.textContent = '\u266B Odtwarzacz telefonu: gra'; });
+  player.addEventListener('error', function () { muzText.textContent = '\u266B Odtwarzacz: dźwięk niedostępny'; });
+  document.getElementById('nk-muz-stop').addEventListener('click', function () {
+    player.pause(); player.removeAttribute('src'); player.load(); muz.style.display = 'none';
+  });
   startLoad();  // pierwsza strona w ramce
   frame.addEventListener('load', onFrameLoad);
   function onFrameLoad() {
@@ -4203,6 +4220,7 @@ html,body{margin:0;background:#e8eaed;font-family:system-ui,Roboto,Arial,sans-se
         if (!a || ev.defaultPrevented || (a.target && a.target !== '_self')) return;
         var href = a.getAttribute('href') || '';
         if (!href || href.charAt(0) === '#' || /^javascript:/i.test(href)) return;
+        if (/\/audio\?t=/.test(href)) { ev.preventDefault(); playStream(a.href); return; }  // jak na Nokii: osobny odtwarzacz
         startNav();
       });
       fd.addEventListener('submit', function (ev) { if (!ev.defaultPrevented) startNav(); });
