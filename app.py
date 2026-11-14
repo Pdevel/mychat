@@ -3831,7 +3831,7 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
     "screen.html": """{% extends "base.html" %}
 {% block title %}{{ page_title or "Zdalny ekran" }}{% endblock %}
 {% block head %}{% if waiting %}<meta http-equiv="refresh" content="5;url={{ here }}">{% elif live and small_browser %}{% if in_frame %}<meta name="nk-refresh" content="1;url={{ url_for('screen_page', a='shot', live=1, n=tick) }}">{% else %}<meta http-equiv="refresh" content="1;url={{ url_for('screen_page', a='shot', live=1, n=tick) }}">{% endif %}{% endif %}<style>body{max-width:none}.ab{margin:0;padding:2px 2px 1px;background:#f1f3f4;white-space:nowrap}.ab .q{width:68%;padding:3px 8px;font-size:13px}.ab input[type=submit]{padding:4px 8px;font-size:12px}.ab a{padding:0 4px;font-weight:bold;font-size:16px}.sc2{text-align:center;line-height:0}.sc2 input{border:0;padding:0;margin:0;background:none;border-radius:0}.hk{position:absolute;left:-999px;top:0}.ef{margin:2px 4px}.ef .q{width:120px}.fx{background:#fff4e5;border:1px solid #f0c890;border-radius:8px;padding:4px}.nx{text-align:center;font-size:12px;line-height:1.7}.nx a{padding:0 12px}.ab.lv a{font-size:13px;padding:0 6px}</style>{% endblock %}
-{% block body %}{% if live and mode == 's' and shot %}<div class="nx ab lv" id="g"><a href="{{ url_for('screen_page', a='down', live=1) }}">8 &#9660; dalej</a><a href="{{ url_for('screen_page', a='up', live=1) }}">2 &#9650; wyżej</a><a href="{{ url_for('screen_page') }}">&#9632; stop</a></div>
+{% block body %}{% if live and mode == 's' and shot %}<div class="nx ab lv" id="g"><a href="{{ url_for('screen_page', a='down', live=1) }}">8 &#9660; dalej</a><a href="{{ url_for('screen_page', a='up', live=1) }}">2 &#9650; wyżej</a><a href="{{ url_for('screen_page') }}">5 &#9632; stop</a></div>
 {% else %}<form class="ab" id="g" action="{{ url_for('screen_page') }}" method="get"><input class="q" type="text" name="u" value="{{ page_url or target }}" maxlength="2000"> <input type="submit" value="Idź"> <a href="{{ url_for('screen_page', a='shot', opcje=1) }}">&#8943;</a></form>{% endif %}
 {% if waiting %}<div class="w"><div class="ib"><b>{% if error %}Zdalna przeglądarka nie działa{% else %}Uruchamiam zdalną przeglądarkę&hellip;{% endif %}</b><br>
 {% if error %}{{ error }}{% else %}{{ state.phase or "start" }}{% endif %}</div>
@@ -3850,8 +3850,8 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 <a class="b" href="{{ url_for('screen_page', a='close') }}">Zamknij i wyczyść</a></div>
 {% elif shot and as_list %}<div class="w">{% for it in shot["items"] %}<div class="r"><a href="{{ url_for('screen_page', a='click', vx=it.cx, vy=it.cy) }}">{{ loop.index }}. {% if it.f %}[pole] {% endif %}{{ it.t or "(bez opisu)" }}</a></div>
 {% else %}<p class="m">Na ekranie nie ma linków ani przycisków.</p>{% endfor %}<a class="b" href="{{ url_for('screen_page', a='shot') }}">Pokaż obraz</a></div>
-{% elif shot and mode == 's' and shot["items"] %}{% if shot.y > 0 and not live %}<div class="nx"><a href="{{ url_for('screen_page', a='up') }}">&#9650; wyżej</a></div>{% endif %}<div class="sc2" data-y="{{ shot.y|int }}"><img src="{{ url_for('screen_image', id=shot.id) }}" width="{{ shot.w }}" height="{{ shot.h }}" usemap="#ek" alt="Ekran"><map name="ek">{% for it in shot["items"] %}<area shape="rect" coords="{{ it.x1 }},{{ it.y1 }},{{ it.x2 }},{{ it.y2 }}" href="{{ url_for('screen_page', a='click', vx=it.cx, vy=it.cy) }}" alt="{{ it.t or 'link' }}">{% endfor %}</map></div>{% if not live %}<div class="nx"><a href="{{ url_for('screen_page', a='down') }}">&#9660; dalej</a></div>{% endif %}
-{% elif shot %}<form class="sc2" data-y="{{ shot.y|int }}" action="{{ url_for('screen_page') }}" method="get"><input type="image" name="k" src="{{ url_for('screen_image', id=shot.id) }}" width="{{ shot.w }}" height="{{ shot.h }}" alt="Ekran"></form>{% if mode == 's' and not live %}<div class="nx"><a href="{{ url_for('screen_page', a='down') }}">&#9660; dalej</a></div>{% endif %}{% endif %}
+{% elif shot and mode == 's' and shot["items"] %}{% if shot.y > 0 and not live %}<div class="nx"><a href="{{ url_for('screen_page', a='up') }}">&#9650; wyżej</a></div>{% endif %}<div class="sc2" data-y="{{ shot.y|int }}"><img src="{{ url_for('screen_image', id=shot.id) }}" width="{{ shot.w }}" height="{{ shot.h }}" usemap="#ek" alt="Ekran"><map name="ek">{% for it in shot["items"] %}<area shape="rect" coords="{{ it.x1 }},{{ it.y1 }},{{ it.x2 }},{{ it.y2 }}" href="{{ url_for('screen_page', a='click', vx=it.cx, vy=it.cy, live=1 if live else None) }}" alt="{{ it.t or 'link' }}">{% endfor %}</map></div>{% if not live %}<div class="nx"><a href="{{ url_for('screen_page', a='down') }}">&#9660; dalej</a></div>{% endif %}
+{% elif shot %}<form class="sc2" data-y="{{ shot.y|int }}" action="{{ url_for('screen_page') }}" method="get">{% if live %}<input type="hidden" name="live" value="1">{% endif %}<input type="image" name="k" src="{{ url_for('screen_image', id=shot.id) }}" width="{{ shot.w }}" height="{{ shot.h }}" alt="Ekran"></form>{% if mode == 's' and not live %}<div class="nx"><a href="{{ url_for('screen_page', a='down') }}">&#9660; dalej</a></div>{% endif %}{% endif %}
 {% if live and not (mode == 's' and shot) %}<div class="ef"><a href="{{ url_for('screen_page') }}">&#9632; Zatrzymaj odświeżanie</a></div>{% endif %}{% if live and not small_browser %}<script>
 (function () {  // na żywo bez przeładowania strony: podmieniamy tylko obraz – zostaje przewinięcie i wpisany tekst
   var url = {{ url_for('screen_page', a='shot', live=1)|tojson }};
@@ -3878,7 +3878,7 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
   later(500);
 })();
 </script>{% endif %}
-{% endif %}<a class="hk" tabindex="-1" href="{{ url_for('screen_page', a='back') }}" accesskey="1">wstecz</a><a class="hk" tabindex="-1" href="{{ url_for('screen_page', a='up', live=1 if live else None) }}" accesskey="2">góra</a><a class="hk" tabindex="-1" href="{{ url_for('screen_page', a='forward') }}" accesskey="3">dalej</a><a class="hk" tabindex="-1" href="{{ url_for('screen_page', a='reload') }}" accesskey="5">odśwież</a><a class="hk" tabindex="-1" href="{{ url_for('screen_page', a='down', live=1 if live else None) }}" accesskey="8">dół</a><a class="hk" tabindex="-1" href="{{ url_for('home') }}" accesskey="0">start</a>
+{% endif %}<a class="hk" tabindex="-1" href="{{ url_for('screen_page', a='back') }}" accesskey="1">wstecz</a><a class="hk" tabindex="-1" href="{{ url_for('screen_page', a='up', live=1 if live else None) }}" accesskey="2">góra</a><a class="hk" tabindex="-1" href="{{ url_for('screen_page', a='forward') }}" accesskey="3">dalej</a><a class="hk" tabindex="-1" href="{{ url_for('screen_page') if live else url_for('screen_page', a='reload') }}" accesskey="5">{{ "stop" if live else "odśwież" }}</a><a class="hk" tabindex="-1" href="{{ url_for('screen_page', a='down', live=1 if live else None) }}" accesskey="8">dół</a><a class="hk" tabindex="-1" href="{{ url_for('home') }}" accesskey="0">start</a>
 {% if debug %}<!-- wpisywanie: {{ debug }} -->{% endif %}{% endblock %}
 """,
     "nokia.html": """<!DOCTYPE html>
@@ -4100,11 +4100,16 @@ html,body{margin:0;background:#e8eaed;font-family:system-ui,Roboto,Arial,sans-se
         try { if (b.contentWindow.location.href === 'about:blank') return; } catch (e) {}
         buffer = null;
         swapping = true;  // podmiana w jednym kroku: nowa ramka na miejsce starej
+        var keepIdx = current ? lastIdx : -1, keepY = 0;
+        try { keepY = win().scrollY; } catch (e) {}
+        try { b.contentWindow.scrollTo(0, keepY); } catch (e) {}  // nowa klatka w tym samym miejscu, zanim ją pokażemy
         var old = frame; frame = b; b.style.cssText = ''; old.parentNode.removeChild(old); b.id = 'ekran';
         swapping = false;
         loads = 0;  // historia usuniętej ramki przepada – „Wstecz” nie może cofnąć całego podglądu
         b.addEventListener('load', onFrameLoad);
         onFrameLoad();
+        var nd = doc();  // żółta ramka zostaje na tym samym elemencie – co sekundę nie wraca na początek
+        if (nd && keepIdx >= 0) { current = items(nd)[keepIdx] || null; lastIdx = keepIdx; mark(nd); }
       });
       buffer.src = url;  // przed wstawieniem: pusta ramka (about:blank) zgłasza „load” od razu
       frame.parentNode.insertBefore(buffer, frame.nextSibling);

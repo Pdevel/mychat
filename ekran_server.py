@@ -104,6 +104,26 @@ SUBMIT = ("""() => {""" + DEEP + """
   for (const type of ['keydown', 'keypress', 'keyup'])
     e.dispatchEvent(new KeyboardEvent(type, {key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true}));
 }""")
+# Przewinięcie o dy px: strona, a gdy się nie przewija – największy widoczny przewijany element (panel aplikacji).
+SCROLL = ("""([dy, shown]) => {""" + DEEP + """
+  const se = document.scrollingElement || document.documentElement;
+  const before = se.scrollTop;
+  scrollBy({top: dy, behavior: 'instant'});  // bez płynnego przewijania strony (scroll-behavior: smooth)
+  if (Math.abs(se.scrollTop - before) > 2) return 'strona';
+  let best = null, area = 0;
+  for (const e of deepAll('*')) {
+    if (e.scrollHeight <= e.clientHeight + 5 || e.clientHeight < 60) continue;
+    const r = e.getBoundingClientRect();
+    const vis = Math.max(0, Math.min(r.bottom, shown) - Math.max(r.top, 0)) * Math.max(0, Math.min(r.right, innerWidth) - Math.max(r.left, 0));
+    if (vis <= area || !/(auto|scroll|overlay)/.test(getComputedStyle(e).overflowY)) continue;
+    const top = e.scrollTop;
+    if ((dy > 0 && top + e.clientHeight >= e.scrollHeight - 1) || (dy < 0 && top <= 0)) continue;  // już na końcu
+    area = vis; best = e;
+  }
+  if (!best) return '';
+  best.scrollBy({top: dy, behavior: 'instant'});
+  return 'panel';
+}""")
 # Klikalne elementy widoczne na ekranie (linki, przyciski, pola): telefon z klawiaturą skacze po nich strzałkami.
 CLICKABLES = ("""() => {""" + DEEP + """
   const sel = 'a[href],button,input:not([type=hidden]),textarea,select,summary,label[for],[role=button],[role=link],'
@@ -387,7 +407,11 @@ def act(body):
         page.mouse.move(width / 2, shown / 2)  # środek tego, co widać na telefonie
         dy = int(body.get("dy", 0))
         limit = shown - 200 if shown > 1000 else max(100, shown * 3 // 4)  # okno aplikacji: krok 3/4 ekranu
-        page.mouse.wheel(0, max(-limit, min(limit, dy)))
+        dy = max(-limit, min(limit, dy))
+        # dokładnie o dy px: kółko myszy w trybie telefonu Chrome mnoży (ok. 4×), a w aplikacjach (Jakdojade) przewija się
+        # panel w środku, nie strona – wtedy największy widoczny przewijany element
+        if not run(page, SCROLL, [dy, shown], default=""):
+            page.mouse.wheel(0, dy / 4)
         page.wait_for_timeout(250)
     elif action == "type":
         text = str(body.get("text") or "")[:500]
