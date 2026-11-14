@@ -14,6 +14,7 @@ Strony to czysty HTML: bez CSS, bez JavaScriptu, z jak najmniejszą liczbą link
 
 import base64
 import collections
+import datetime
 import hashlib
 import hmac
 import io
@@ -45,6 +46,7 @@ from markupsafe import Markup, escape
 from flask import Flask, Response, abort, make_response, redirect, render_template, request, send_file, url_for
 from jinja2 import DictLoader
 from PIL import Image, ImageDraw, ImageOps
+from zoneinfo import ZoneInfo
 
 try:  # readability daje najlepszy wybór treści; bez niego działa prostsza metoda zapasowa
     from readability import Document
@@ -121,7 +123,7 @@ FROGFIND_UA = "LekkaSzukajka/1.0 (+https://github.com/Pdevel/mychat)"  # przedst
 BRAVE_API = "https://api.search.brave.com/res/v1/web/search"
 BRAVE_API_KEY = os.environ.get("BRAVE_API_KEY", "").strip()  # opcjonalny (darmowy plan); bez niego tylko DuckDuckGo
 PROBE_WAIT = float(os.environ.get("PROBE_WAIT", "2.0"))  # tyle s najwyżej czekamy przy szukaniu na sprawdzenie, czy strony z wyników nie blokują serwera
-PREFETCH_RESULTS = int(os.environ.get("PREFETCH_RESULTS", "2"))  # tyle pierwszych wyników wczytujemy z wyprzedzeniem
+PREFETCH_RESULTS = int(os.environ.get("PREFETCH_RESULTS", "5"))  # tyle pierwszych wyników wczytujemy z wyprzedzeniem
 DDG_BACKOFF = 600  # po nieudanej próbie DuckDuckGo przez tyle sekund pytamy od razu źródło zapasowe (bez czekania)
 ddg_down_until = 0.0
 
@@ -247,7 +249,7 @@ class DiskCache:
 CACHE_DIR = os.environ.get("CACHE_DIR") or os.path.join(tempfile.gettempdir(), "szukajka-cache")
 search_cache = DiskCache("wyniki", ttl=1800, max_files=500)  # wyniki wyszukiwania: 30 min
 article_cache = DiskCache("strony", ttl=900, max_files=200)  # przeczytane strony: 15 min
-image_cache = TTLCache(maxsize=80, ttl=1800)  # gotowe, zmniejszone JPEG-i (ok. 10 KB każdy)
+image_cache = DiskCache("obrazki", ttl=6 * 3600, max_files=3000)  # gotowe, zmniejszone JPEG-i (ok. 10 KB każdy), wspólne dla procesów
 
 
 # ---------- Pobieranie stron (z ochroną przed adresami wewnętrznymi) ----------
@@ -687,28 +689,69 @@ def ddg_succeeded():
         pass
 
 
-_prefetching = threading.Lock()
+# Wczytywanie z wyprzedzeniem: kolejka zadań w tle (2 wątki w każdym procesie). Najnowsze wyszukiwanie wypiera stare
+# zadania. „article” – strona w czytniku i obrazki jej pierwszej strony; „image” – jeden obrazek (np. następnej strony).
+PREFETCH_WORKERS = 2
+PREFETCH_IMAGES = 12  # najwyżej tyle obrazków jednej strony czytnika
+_prefetch_jobs = collections.deque()
+_prefetch_cv = threading.Condition()
+_prefetch_threads = []
 
 
-def prefetch_articles(urls):
-    """Wczytuje w tle pierwsze wyniki do pamięci podręcznej – kliknięty wynik otwiera się od razu."""
-    def run():
-        if not _prefetching.acquire(blocking=False):
-            return  # inne wczytywanie z wyprzedzeniem już trwa
-        _render_local.background = True  # nie czeka w kolejce Cloudflare – to tylko przyspieszenie
+def prefetch(jobs, replace=False):
+    with _prefetch_cv:
+        if replace:
+            _prefetch_jobs.clear()
+        for job in jobs:
+            if job not in _prefetch_jobs:
+                _prefetch_jobs.append(job)
+        while len(_prefetch_threads) < PREFETCH_WORKERS:
+            thread = threading.Thread(target=_prefetch_worker, daemon=True)
+            _prefetch_threads.append(thread)
+            thread.start()
+        _prefetch_cv.notify_all()
+
+
+def _prefetch_worker():
+    _render_local.background = True  # nie czeka w kolejce Cloudflare – to tylko przyspieszenie
+    while True:
+        with _prefetch_cv:
+            while not _prefetch_jobs:
+                _prefetch_cv.wait()
+            job = _prefetch_jobs.popleft()
         try:
-            for url in urls:
-                if article_cache.get(url) is None:
-                    try:
-                        get_article(url)
-                    except (FetchError, VideoLink):
-                        pass
-                    except Exception:
-                        log.exception("wczytywanie z wyprzedzeniem: %s", url)
-        finally:
-            _prefetching.release()
+            if job[0] == "article":
+                _, url, with_images = job
+                article = get_article(url)
+                if with_images and article.get("pages"):
+                    prefetch(page_image_jobs(article, 0))
+            elif job[0] == "image":
+                _, url, referer, mode = job
+                build_image(url, referer, mode)
+        except (FetchError, VideoLink):
+            pass
+        except Exception:
+            log.exception("wczytywanie z wyprzedzeniem: %s", job[:2])
 
-    threading.Thread(target=run, daemon=True).start()
+
+def page_image_jobs(article, index):
+    """Zadania przygotowania obrazków jednej strony czytnika – te same, o które poprosi telefon (/img)."""
+    parts = urlparse(article["url"])
+    site = f"{parts.scheme}://{parts.netloc}"
+    jobs = []
+    for item in page_items(article["pages"][index]):
+        if item["kind"] == "img" and item.get("href"):
+            jobs.append(("image", item["href"], site, False))
+        elif item["kind"] == "item" and item.get("img"):
+            jobs.append(("image", item["img"], site, True))
+        elif item["kind"] == "grid":
+            jobs += [("image", im["src"], site, "g") for im in item["imgs"]]
+    return jobs[:PREFETCH_IMAGES]
+
+
+def prefetch_articles(urls, with_images=True):
+    """Pierwsze wyniki wyszukiwania (z obrazkami pierwszej strony) – kliknięty wynik otwiera się od razu."""
+    prefetch([("article", url, with_images) for url in urls], replace=True)
 
 
 def ddg_search(query, page):
@@ -3665,8 +3708,25 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 </div>
 <div class="hb">{% if weather %}<a class="cd" href="{{ url_for('weather_page') }}"><b>{{ weather.temp }}&deg;</b> {{ weather.city }}, {{ weather.desc }}{% for day in weather.days %}<br><span class="m">{{ day.label }} od {{ day.min }} do {{ day.max }}&deg;C, {{ day.desc }}</span>{% endfor %}</a>{% else %}<a class="cd" href="{{ url_for('weather_page') }}">Pogoda</a>{% endif %}
 {% if rates %}<div class="cd"><span class="m">Kursy NBP</span><br>{% for code, value in rates.rates %}<span class="nw">{{ code }} {{ value }}</span>{% if not loop.last %} &middot; {% endif %}{% endfor %} <span class="m">zł</span></div>
-{% endif %}<p><a href="{{ url_for('map_page') }}" class="ch">Mapa</a> {% if screen_on %}<a href="{{ url_for('screen_page') }}" class="ch">Zdalny ekran</a> {% endif %}{% if not in_frame %}<a href="{{ url_for('nokia_emulator') }}" class="ch">Podgląd Nokii</a> {% endif %}<a href="{{ url_for('bookmarks') }}" accesskey="4" class="ch">Zakładki{% if bookmarks_count %} ({{ bookmarks_count }}){% endif %}</a> <a href="{{ url_for('settings', k='oszcz', v=0 if saving else 1, next='/') }}" class="ch">Oszczędzanie danych: {{ "wyłącz" if saving else "włącz" }}</a> <a href="{{ url_for('settings', k='ciemny', v=0 if dark else 1, next='/') }}" class="ch">Ciemny motyw: {{ "wyłącz" if dark else "włącz" }}</a></p>
+{% endif %}<p><a href="{{ url_for('map_page') }}" class="ch">Mapa</a> {% if screen_on %}<a href="{{ url_for('screen_page') }}" class="ch">Zdalny ekran</a> {% endif %}{% if not in_frame %}<a href="{{ url_for('nokia_emulator') }}" class="ch">Podgląd Nokii</a> {% endif %}<a href="{{ url_for('history') }}" class="ch">Historia</a> <a href="{{ url_for('bookmarks') }}" accesskey="4" class="ch">Zakładki{% if bookmarks_count %} ({{ bookmarks_count }}){% endif %}</a> <a href="{{ url_for('settings', k='oszcz', v=0 if saving else 1, next='/') }}" class="ch">Oszczędzanie danych: {{ "wyłącz" if saving else "włącz" }}</a> <a href="{{ url_for('settings', k='ciemny', v=0 if dark else 1, next='/') }}" class="ch">Ciemny motyw: {{ "wyłącz" if dark else "włącz" }}</a></p>
 <p class="m">Dane z Szukajki w tym miesiącu: {{ data_mb|mb1 }} &middot; tekst:{% for size, label in (("s", "A-"), ("m", "A"), ("l", "A+"), ("xl", "A++")) %} {% if text_size == size %}<b>{{ label }}</b>{% else %}<a href="{{ url_for('settings', k='tekst', v=size, next='/') }}">{{ label }}</a>{% endif %}{% endfor %}</p></div>
+{% endblock %}
+""",
+    "history.html": """{% extends "base.html" %}
+{% block title %}Historia{% endblock %}
+{% block extra_style %}<style>{{ dark_style }}</style>{% endblock %}
+{% block bodyattr %} class="dk"{% endblock %}
+{% block body %}<div class="sh"><div class="lg"><a href="{{ url_for('home') }}" accesskey="0">Szukajka</a></div>
+<form action="{{ url_for('history') }}" method="get"><input class="q" type="text" name="q" value="{{ q }}" maxlength="100" style="width:150px"> <input type="submit" value="Szukaj w historii"></form></div>
+<div class="w">
+<h2>Historia{% if q %}: &bdquo;{{ q }}&rdquo;{% endif %}</h2>
+{% for day, rows in days %}<p class="m"><b>{{ day }}</b></p>
+{% for url, title, when, screen in rows %}<div class="r"><a class="t" href="{{ url_for('screen_page', u=url) if screen else url_for('read', url=url) }}">{{ title }}</a>
+<span class="h">{{ when }} &middot; {{ url|host }}{% if screen %} &middot; zdalny ekran{% endif %}</span></div>
+{% endfor %}{% else %}<p>{% if q %}Nic nie pasuje do &bdquo;{{ q }}&rdquo;.{% else %}Historia jest pusta.{% endif %}</p>
+{% endfor %}{% if q %}<a class="b" href="{{ url_for('history') }}">Cała historia</a>{% endif %}
+{% if total %}<a class="b" href="{{ url_for('history_clear') }}">Wyczyść historię</a>{% endif %}
+<p class="m">Historia jest zapisana tylko w telefonie (ostatnie ok. {{ limit }} stron &ndash; najstarsze wypadają).</p></div>
 {% endblock %}
 """,
     "bookmarks.html": """{% extends "base.html" %}
@@ -4554,7 +4614,8 @@ def search():
         hidden = sum(1 for r in items if r["works"] is False)
         items = [r for r in items if r["works"] is not False]
     if items and PREFETCH_RESULTS:
-        prefetch_articles([r["url"] for r in items[:PREFETCH_RESULTS] if not is_video_url(r["url"])])
+        prefetch_articles([r["url"] for r in items[:PREFETCH_RESULTS] if not is_video_url(r["url"])],
+                          with_images=images_enabled())
     body = render_template(
         "search.html", q=query, page=page, offset=(page - 1) * RESULTS_PER_PAGE,
         results=items, has_more=has_more, error=error, hidden=hidden, blocked_hidden=blocked_hidden, show_all=show_all,
@@ -4888,6 +4949,10 @@ def read():
         bookmarked=is_bookmarked(article["url"]), **common,
     ))
     resp.headers["Server-Timing"] = server_timing(article, time.monotonic() - started)
+    if page == 1 and not phrase:
+        remember_visit(resp, article["url"], article["title"])
+    if page < len(pages) and images_enabled():  # „Dalej” otworzy się od razu: obrazki następnej strony już gotowe
+        prefetch(page_image_jobs(article, page))
     cookie = read_blocked_cookie()
     if site_host(url) in cookie or blocked_memory.get(site_host(url)):  # strona znowu wpuszcza serwer
         blocked_memory.set(site_host(url), False)
@@ -4988,38 +5053,49 @@ def image():
     else:
         icon_bg = ""
         mode = "hq" if hq else ("g" if grid else thumb)
-    data = image_cache.get((url, mode))
+    try:
+        data = build_image(url, referer, mode)
+    except FetchError as err:
+        return Response("", status=err.status)
     if data is None:
-        headers = {"Accept": "image/avif,image/webp,image/jpeg,image/png,image/*;q=0.8"}
-        if re.match(r"^https?://[^/\s]+$", referer):
-            headers["Referer"] = referer + "/"
-        try:
-            resp = None
-            bigger = hq_variant(url) if hq else None
-            if bigger:  # Wikimedia: ta sama fotografia w większym rozmiarze
-                _, resp = http_request(bigger, extra_headers=headers)
-                if resp.status_code >= 400 or not resp.headers.get("Content-Type", "").lower().startswith("image/"):
-                    resp.close()
-                    resp = None
-            if resp is None:
-                _, resp = http_request(url, extra_headers=headers)
-            if resp.status_code >= 400 or not resp.headers.get("Content-Type", "").lower().startswith("image/"):
-                resp.close()
-                return Response("", status=404)
-            if icon_bg:
-                color = tuple(int(icon_bg[i:i + 2], 16) for i in (0, 2, 4))
-                data = shrink_image(read_body(resp, limit=1_000_000), 32, 32, 80, background=color, min_size=8)
-            elif hq:
-                data = shrink_image(read_body(resp, limit=IMAGE_HQ_MAX_BYTES), IMAGE_HQ_WIDTH, IMAGE_HQ_HEIGHT, IMAGE_HQ_QUALITY)
-            else:
-                size = (THUMB_MAX_SIZE, THUMB_MAX_SIZE) if thumb else GRID_IMAGE_SIZE if grid else (IMAGE_MAX_WIDTH, IMAGE_MAX_HEIGHT)
-                data = shrink_image(read_body(resp, limit=IMAGE_MAX_BYTES), *size)
-        except FetchError as err:
-            return Response("", status=err.status)
-        if data is None:
-            return Response("", status=404)
-        image_cache.set((url, mode), data)
+        return Response("", status=404)
     return Response(data, mimetype="image/jpeg", headers={"Cache-Control": "public, max-age=86400"})
+
+
+def build_image(url, referer, mode):
+    """Gotowy JPEG dla telefonu (z pamięci albo pobrany i zmniejszony). mode: False – zdjęcie w artykule, True –
+    miniatura, "g" – obrazek galerii, "hq" – powiększenie, "icRRGGBB" – ikona serwisu na kolorze paska. None = nie obrazek."""
+    data = image_cache.get((url, mode))
+    if data is not None:
+        return data
+    icon_bg = mode[2:] if isinstance(mode, str) and mode.startswith("ic") else ""
+    hq, thumb, grid = mode == "hq", mode is True, mode == "g"
+    headers = {"Accept": "image/avif,image/webp,image/jpeg,image/png,image/*;q=0.8"}
+    if re.match(r"^https?://[^/\s]+$", referer):
+        headers["Referer"] = referer + "/"
+    resp = None
+    bigger = hq_variant(url) if hq else None
+    if bigger:  # Wikimedia: ta sama fotografia w większym rozmiarze
+        _, resp = http_request(bigger, extra_headers=headers)
+        if resp.status_code >= 400 or not resp.headers.get("Content-Type", "").lower().startswith("image/"):
+            resp.close()
+            resp = None
+    if resp is None:
+        _, resp = http_request(url, extra_headers=headers)
+    if resp.status_code >= 400 or not resp.headers.get("Content-Type", "").lower().startswith("image/"):
+        resp.close()
+        return None
+    if icon_bg:
+        color = tuple(int(icon_bg[i:i + 2], 16) for i in (0, 2, 4))
+        data = shrink_image(read_body(resp, limit=1_000_000), 32, 32, 80, background=color, min_size=8)
+    elif hq:
+        data = shrink_image(read_body(resp, limit=IMAGE_HQ_MAX_BYTES), IMAGE_HQ_WIDTH, IMAGE_HQ_HEIGHT, IMAGE_HQ_QUALITY)
+    else:
+        size = (THUMB_MAX_SIZE, THUMB_MAX_SIZE) if thumb else GRID_IMAGE_SIZE if grid else (IMAGE_MAX_WIDTH, IMAGE_MAX_HEIGHT)
+        data = shrink_image(read_body(resp, limit=IMAGE_MAX_BYTES), *size)
+    if data is not None:
+        image_cache.set((url, mode), data)
+    return data
 
 
 WIKIMEDIA_THUMB = re.compile(r"^(https://(?:upload|thumb)\.wikimedia\.org/.+/thumb/.+/)(\d+)px-([^/]+)$")
@@ -5616,6 +5692,8 @@ def screen_page():
             body["mem"] = 1  # menu „⋯”: ile pamięci zajmuje zdalna przeglądarka
         if request.args.get("live"):
             body["live"] = 1
+        if request.cookies.get("ciemny") == "1":
+            body["dark"] = 1  # ciemny motyw: zdalne strony też przyciemnione
         if action == "open":
             body["url"] = target
         elif action == "click" and request.args.get("vx") is not None:  # obszar z mapy (strzałki Nokii): już w px widoku
@@ -5684,6 +5762,8 @@ def screen_page():
                                              error=error, here=request.full_path, sw=SCREEN_W, closed=data.get("closed"),
                                              debug=json.dumps(data.get("debug"), ensure_ascii=False) if data.get("debug") else ""))
     resp.set_cookie("ekr", sid, max_age=30 * 24 * 3600, samesite="Lax", httponly=True)
+    if server is not None and action in ("open", "click") and data.get("url"):
+        remember_visit(resp, data["url"], data.get("title") or "", screen=True)  # historia: strony ze zdalnego ekranu
     if server is not None:  # gdzie ucieka czas: akcja i zrzut na maszynie, droga do niej, praca Szukajki
         ms = data.get("ms") or {}
         resp.headers["Server-Timing"] = ", ".join([f"{k};dur={v}" for k, v in ms.items()] + [f"instabox;dur={trip}",
@@ -5717,6 +5797,70 @@ def encode_bookmarks(items):
 
 def is_bookmarked(url):
     return any(u == url for u, _ in read_bookmarks())
+
+
+HISTORY_COOKIE = "hist"
+HISTORY_MAX = 60
+HISTORY_BYTES = 2400  # razem z zakładkami ciasteczka nie mogą być za duże dla Opery Mini
+
+
+def read_history():
+    """Historia z ciasteczka: [adres, tytuł, minuta (czas uniksowy / 60), 1 = zdalny ekran] – najnowsze pierwsze."""
+    raw = request.cookies.get(HISTORY_COOKIE) or ""
+    try:
+        data = json.loads(zlib.decompress(base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4))).decode("utf-8"))
+    except (ValueError, zlib.error, TypeError):
+        return []
+    if not isinstance(data, list):
+        return []
+    return [row for row in data if isinstance(row, list) and len(row) == 4 and isinstance(row[0], str)
+            and isinstance(row[1], str) and isinstance(row[2], int)][:HISTORY_MAX]
+
+
+def remember_visit(resp, url, title, screen=False):
+    """Dopisuje stronę na początek historii (odwiedzona znowu – przesuwa się na górę)."""
+    if not re.match(r"^https?://", url or "", re.I) or len(url) > 500:
+        return
+    rows = [[url, shorten(squash(title or ""), 60) or host_of(url), int(time.time() // 60), 1 if screen else 0]]
+    rows += [row for row in read_history() if row[0] != url]
+    rows = rows[:HISTORY_MAX]
+    while True:
+        raw = base64.urlsafe_b64encode(zlib.compress(json.dumps(rows, ensure_ascii=False).encode("utf-8"), 9)).decode().rstrip("=")
+        if len(raw) <= HISTORY_BYTES or len(rows) <= 1:
+            break
+        rows = rows[:-1]
+    resp.set_cookie(HISTORY_COOKIE, raw, max_age=365 * 24 * 3600, samesite="Lax")
+
+
+@app.route("/historia")
+def history():
+    q = squash(request.args.get("q") or "")[:100]
+    rows = read_history()
+    total = len(rows)
+    if q:
+        needle = q.lower()
+        rows = [row for row in rows if needle in row[1].lower() or needle in row[0].lower()]
+    try:
+        zone = ZoneInfo("Europe/Warsaw")  # serwer liczy czas w UTC
+    except Exception:  # brak bazy stref czasowych w systemie
+        zone = datetime.timezone(datetime.timedelta(hours=1))
+    now = datetime.datetime.now(zone)
+    days, today, yesterday = [], now.date(), (now - datetime.timedelta(days=1)).date()
+    for url, title, minute, screen in rows:
+        moment = datetime.datetime.fromtimestamp(minute * 60, zone)
+        day = moment.date()
+        label = "Dziś" if day == today else "Wczoraj" if day == yesterday else f"{DAY_NAMES[moment.weekday()]} {moment:%d.%m}"
+        if not days or days[-1][0] != label:
+            days.append((label, []))
+        days[-1][1].append((url, title, f"{moment:%H:%M}", screen))
+    return render_template("history.html", days=days, q=q, total=total, limit=HISTORY_MAX)
+
+
+@app.route("/historia/wyczysc")
+def history_clear():
+    resp = redirect(url_for("history"))
+    resp.delete_cookie(HISTORY_COOKIE)
+    return resp
 
 
 @app.route("/zakladki")

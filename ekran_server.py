@@ -525,6 +525,21 @@ def compose_panel(page, view, width, shown, pause=150):
     return parts, items[:400], {"start": start, "end": min(pos + ph, info["max"])}
 
 
+def apply_dark(page, dark):
+    """Ciemny motyw Szukajki także na zdalnych stronach: wbudowane przyciemnianie Chrome (jak „wymuszony ciemny
+    motyw” w Androidzie) i prefers-color-scheme: dark dla stron, które mają własny ciemny wygląd. Raz na kartę."""
+    if getattr(page, "_ekran_dark", None) == dark:
+        return
+    try:
+        cdp = getattr(page, "_ekran_cdp", None) or page.context.new_cdp_session(page)
+        page._ekran_cdp = cdp
+        cdp.send("Emulation.setAutoDarkModeOverride", {"enabled": dark})
+        page.emulate_media(color_scheme="dark" if dark else "light")
+        page._ekran_dark = dark
+    except PlaywrightError:
+        pass
+
+
 def fit_height(page, view):
     """Wysokość okna dopasowana do strony. Aplikacje (Mapy Google, Jakdojade) rozciągają się na całe okno – w oknie
     wysokim na 3000 px treść ląduje u góry, a pod nią jest pustka; dostają okno wielkości ekranu telefonu. Długie strony
@@ -596,6 +611,7 @@ def act(body):
     page = page_for(sid, {"latitude": float(geo["latitude"]), "longitude": float(geo["longitude"]), "accuracy": 1000}
                     if geo else None, view)
     width, height = view["w"], view["h"]
+    apply_dark(page, bool(body.get("dark")))
     action = body.get("action")
     if action == "open":
         url = str(body.get("url") or "")
@@ -703,6 +719,7 @@ def act(body):
     if sid in sessions and sessions[sid]["page"] is not page and not sessions[sid]["page"].is_closed():
         page = sessions[sid]["page"]  # kliknięcie otworzyło nową kartę
         settle(page, 800)
+    apply_dark(page, bool(body.get("dark")))  # nowa karta (link z target=_blank) też ciemna
     fitted = fit_height(page, view)
     view = dict(view, clip=min(view.get("clip") or view["h"], fitted))  # zrzut tylko tego, co jest w oknie
     height = view["clip"]
