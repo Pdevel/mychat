@@ -5169,7 +5169,7 @@ with open(SCREEN_SERVER, "rb") as _source:
 screen_shots = DiskCache("ekran", ttl=900, max_files=300)
 # Mały: Nokia (zrzut zmniejszany do 232 px). Duży: nowoczesne telefony – widok 390 px w podwójnej gęstości pikseli.
 SCREEN_MODES = {
-    "s": {"view": {"w": 320, "h": 3000, "base": 405, "scale": 1, "q": 76, "out": SCREEN_W}, "display": SCREEN_W, "step": 2800},  # 320×3000 -> 232×2175: ok. 7 ekranów
+    "s": {"view": {"w": 320, "h": 3000, "base": 405, "scale": 1, "q": 76, "out": SCREEN_W}, "display": SCREEN_W},  # 320×3000 -> 232×2175: ok. 7 ekranów
     # Nokii w jednym obrazie (ok. 2 MB po rozpakowaniu, z pracą Opery Mini do ok. 10 MB) – przewijanie w obrębie zrzutu jest natychmiastowe
     "l": {"view": {"w": 390, "h": 630, "scale": 2, "q": 68, "fmt": "webp"}, "display": 390},  # WebP: ok. 1/3 lżejszy od JPEG
 }
@@ -5449,7 +5449,7 @@ def screen_page():
         elif action == "click":
             body.update(x=clamp_int(request.args.get("k.x"), 0, 0, 2000) * scale, y=clamp_int(request.args.get("k.y"), 0, 0, 4000) * scale)
         elif action in ("up", "down"):
-            step = LIVE_CLIP * 3 // 4 if live_one else mode.get("step") or mode["view"]["h"] // 2  # zostaje kawałek poprzedniego widoku
+            step = mode["view"]["h"]  # zdalna przeglądarka przewija o dokładnie jeden pokazany ekran (bez powtórzeń)
             body.update(action="scroll", dy=-step if action == "up" else step)
         elif action == "type":
             body.update(text=(request.args.get("t") or "")[:500], enter=bool(request.args.get("enter")))

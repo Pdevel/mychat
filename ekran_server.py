@@ -105,23 +105,39 @@ SUBMIT = ("""() => {""" + DEEP + """
     e.dispatchEvent(new KeyboardEvent(type, {key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true}));
 }""")
 # Przewinięcie o dy px: strona, a gdy się nie przewija – największy widoczny przewijany element (panel aplikacji).
-SCROLL = ("""([dy, shown]) => {""" + DEEP + """
+SCROLL = ("""([dir, shown]) => {""" + DEEP + """
+  // pasek przypięty do góry/dołu ekranu (nagłówek strony): zasłania treść, więc krok jest o niego krótszy
+  const bar = y => {
+    let found = null;
+    for (const x of [10, innerWidth / 2, innerWidth - 10]) {
+      for (let e = document.elementFromPoint(x, y); e && e !== document.body && e !== document.documentElement; e = e.parentElement) {
+        const pos = getComputedStyle(e).position;
+        if (pos !== 'fixed' && pos !== 'sticky') continue;
+        const r = e.getBoundingClientRect();
+        if (r.height < shown * 0.4 && (!found || (y < 5 ? r.bottom > found.bottom : r.top < found.top))) found = r;
+        break;
+      }
+    }
+    return found;
+  };
+  const top = bar(2), bottom = bar(shown - 2);
+  const step = Math.max(80, shown - (top ? Math.max(0, top.bottom) : 0) - (bottom ? Math.max(0, shown - bottom.top) : 0));
   const se = document.scrollingElement || document.documentElement;
   const before = se.scrollTop;
-  scrollBy({top: dy, behavior: 'instant'});  // bez płynnego przewijania strony (scroll-behavior: smooth)
+  scrollBy({top: dir * step, behavior: 'instant'});  // nowy obraz zaczyna się dokładnie tam, gdzie kończył się poprzedni
   if (Math.abs(se.scrollTop - before) > 2) return 'strona';
-  let best = null, area = 0;
+  let best = null, area = 0, seen = 0;
   for (const e of deepAll('*')) {
     if (e.scrollHeight <= e.clientHeight + 5 || e.clientHeight < 60) continue;
     const r = e.getBoundingClientRect();
-    const vis = Math.max(0, Math.min(r.bottom, shown) - Math.max(r.top, 0)) * Math.max(0, Math.min(r.right, innerWidth) - Math.max(r.left, 0));
+    const h = Math.max(0, Math.min(r.bottom, shown) - Math.max(r.top, 0));
+    const vis = h * Math.max(0, Math.min(r.right, innerWidth) - Math.max(r.left, 0));
     if (vis <= area || !/(auto|scroll|overlay)/.test(getComputedStyle(e).overflowY)) continue;
-    const top = e.scrollTop;
-    if ((dy > 0 && top + e.clientHeight >= e.scrollHeight - 1) || (dy < 0 && top <= 0)) continue;  // już na końcu
-    area = vis; best = e;
+    if ((dir > 0 && e.scrollTop + e.clientHeight >= e.scrollHeight - 1) || (dir < 0 && e.scrollTop <= 0)) continue;  // już na końcu
+    area = vis; best = e; seen = h;
   }
   if (!best) return '';
-  best.scrollBy({top: dy, behavior: 'instant'});
+  best.scrollBy({top: dir * Math.max(40, seen), behavior: 'instant'});  // panel aplikacji: o jego widoczną wysokość
   return 'panel';
 }""")
 # Klikalne elementy widoczne na ekranie (linki, przyciski, pola): telefon z klawiaturą skacze po nich strzałkami.
@@ -405,13 +421,11 @@ def act(body):
     elif action == "scroll":
         shown = min(view.get("clip") or height, (page.viewport_size or {}).get("height") or height)
         page.mouse.move(width / 2, shown / 2)  # środek tego, co widać na telefonie
-        dy = int(body.get("dy", 0))
-        limit = shown - 200 if shown > 1000 else max(100, shown * 3 // 4)  # okno aplikacji: krok 3/4 ekranu
-        dy = max(-limit, min(limit, dy))
-        # dokładnie o dy px: kółko myszy w trybie telefonu Chrome mnoży (ok. 4×), a w aplikacjach (Jakdojade) przewija się
-        # panel w środku, nie strona – wtedy największy widoczny przewijany element
-        if not run(page, SCROLL, [dy, shown], default=""):
-            page.mouse.wheel(0, dy / 4)
+        direction = 1 if int(body.get("dy", 0)) > 0 else -1
+        # o jeden pokazany ekran (bez nakładki), skryptem: kółko myszy w trybie telefonu Chrome mnoży (ok. 4×), a w
+        # aplikacjach (Jakdojade) przewija się panel w środku, nie strona – wtedy największy widoczny przewijany element
+        if not run(page, SCROLL, [direction, shown], default=""):
+            page.mouse.wheel(0, direction * shown / 4)
         page.wait_for_timeout(250)
     elif action == "type":
         text = str(body.get("text") or "")[:500]
