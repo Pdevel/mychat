@@ -2091,10 +2091,23 @@ def saving_enabled():
 
 # Ustawienia zapamiętane w telefonie (ciasteczka na rok): klucz -> dozwolone wartości.
 SETTINGS = {"obrazki": {"0", "1"}, "linki": {"0", "1"}, "tekst": {"s", "m", "l", "xl"}, "oszcz": {"0", "1"}, "ekq": {"s", "l"},
-            "nokia": {"0", "1"},
+            "nokia": {"0", "1"}, "ciemny": {"0", "1"},
             "miasto": None}
 TEXT_SIZES = {"s": 12, "m": 14, "l": 17, "xl": 20}  # px; 14 to wielkość domyślna
 DATA_COOKIE = "dane"
+# Ciemny motyw na wszystkich stronach (czytnik, filmy, mapa, zdalny ekran…): wysyłany po stylach serwisu, więc ciemne tło
+# i jasny tekst wygrywają z barwami odwiedzanej strony, a pasek u góry zostaje w kolorze serwisu. Zwykły CSS – Opera Mini.
+DARK_ALL = (
+    "html{background:#202124}body{background:#202124;color:#e8eaed}a{color:#8ab4f8}h1,h2,b{color:#f1f3f4}"
+    ".m,.bc,.h,.o,.f{color:#9aa0a6}.s{color:#bdc1c6}.it,.r,.f{border-color:#3c4043}.f{background:#202124}"
+    ".ib{background:#2a2b2e;border-color:#3c4043;color:#e8eaed}.v{background:#1f2a3d;border-color:#2f3f5c;color:#e8eaed}"
+    ".b{background:#303134;border-color:#5f6368;color:#8ab4f8}.e{background:#3b2a1a;border-color:#8a6d3b;color:#f6d7a7}"
+    ".q,.u,.pi{background:#303134;color:#e8eaed;border-color:#5f6368}input[type=submit]{background:#8ab4f8;color:#202124}"
+    ".hl{background:#5c4b00;color:#fff}.k{background:#303134;color:#e8eaed;border-color:#5f6368}"
+    ".ch2{background:#303134;border-color:#5f6368}.ch2.on{background:#8ab4f8;border-color:#8ab4f8;color:#202124}"
+    ".r a.t:visited{color:#c58af9}.ab{background:#2a2b2e}.fx{background:#3b2a1a;border-color:#8a6d3b}"
+    ".nx a,.snd .k{color:#8ab4f8}.sb th,.sb td{border-color:#3c4043}.bar{box-shadow:0 1px 3px #000}"
+)
 
 
 def text_css():
@@ -3614,7 +3627,8 @@ TEMPLATES = {
 <style>{{ style }}</style>{% block extra_style %}{% endblock %}{% if theme %}
 <style>{{ theme_css(theme) }}</style>{% endif %}{% if text_css %}
 <style>{{ text_css }}</style>{% endif %}
-{% block head %}{% endblock %}</head>
+{% block head %}{% endblock %}{% if dark_css %}
+<style>{{ dark_css }}</style>{% endif %}</head>
 <body{% block bodyattr %}{% endblock %}>
 {% block body %}{% endblock %}
 </body>
@@ -3630,7 +3644,7 @@ TEMPLATES = {
     "_settings.html": """<div class="f" id="d"><a class="ch2" href="{{ original }}" accesskey="9"><span class="k">9</span>[Oryginał]</a>{% if screen_on %}<a class="ch2" href="{{ url_for('screen_page', u=original) }}">[Zdalny ekran]</a>{% endif %}{% if bookmark_url %}{% if bookmarked %}<a class="ch2" href="{{ url_for('bookmark_remove', u=bookmark_url, next=request.full_path) }}" accesskey="4"><span class="k">4</span>Usuń z zakładek</a>{% else %}<a class="ch2" href="{{ url_for('bookmark_add', u=bookmark_url, t=title, next=request.full_path) }}" accesskey="4"><span class="k">4</span>Dodaj do zakładek</a>{% endif %}{% endif %}<br>
 {% if has_images and not saving %}<a class="ch2" href="{{ url_for('settings', k='obrazki', v=0 if images else 1, next=request.full_path) }}">Obrazki: {{ "wyłącz" if images else "włącz" }}</a>{% endif %}{% if has_links %}<a class="ch2" href="{{ url_for('settings', k='linki', v=0 if links else 1, next=request.full_path) }}">Linki w tekście: {{ "wyłącz" if links else "włącz" }}</a>{% endif %}{% if has_images and not saving or has_links %}<br>
 {% endif %}Tekst: {% for size, label in (("s", "A-"), ("m", "A"), ("l", "A+"), ("xl", "A++")) %}{% if text_size == size %}<b class="ch2 on">{{ label }}</b>{% else %}<a class="ch2" href="{{ url_for('settings', k='tekst', v=size, next=request.full_path) }}">{{ label }}</a>{% endif %}{% endfor %}<br>
-<a class="ch2" href="{{ url_for('settings', k='oszcz', v=0 if saving else 1, next=request.full_path) }}">Oszczędzanie danych: {{ "wyłącz" if saving else "włącz" }}</a><br>
+<a class="ch2" href="{{ url_for('settings', k='oszcz', v=0 if saving else 1, next=request.full_path) }}">Oszczędzanie danych: {{ "wyłącz" if saving else "włącz" }}</a><a class="ch2" href="{{ url_for('settings', k='ciemny', v=0 if dark else 1, next=request.full_path) }}">Ciemny motyw: {{ "wyłącz" if dark else "włącz" }}</a><br>
 <span class="m ks">Dane w tym miesiącu: {{ data_mb|mb1 }}<br>Skróty: <span class="kp"><span class="k">1</span>wstecz</span> <span class="kp"><span class="k">3</span>dalej</span> <a class="kp" href="#g" accesskey="2"><span class="k">2</span>góra</a> <a class="kp" href="#d" accesskey="8"><span class="k">8</span>dół</a> <span class="kp"><span class="k">5</span>film</span> <span class="kp"><span class="k">7</span>wyniki</span> <span class="kp"><span class="k">0</span>start</span></span></div>
 """,
     "_find_form.html": """<form action="{{ url_for('read') }}" method="get">
@@ -3651,7 +3665,7 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 </div>
 <div class="hb">{% if weather %}<a class="cd" href="{{ url_for('weather_page') }}"><b>{{ weather.temp }}&deg;</b> {{ weather.city }}, {{ weather.desc }}{% for day in weather.days %}<br><span class="m">{{ day.label }} od {{ day.min }} do {{ day.max }}&deg;C, {{ day.desc }}</span>{% endfor %}</a>{% else %}<a class="cd" href="{{ url_for('weather_page') }}">Pogoda</a>{% endif %}
 {% if rates %}<div class="cd"><span class="m">Kursy NBP</span><br>{% for code, value in rates.rates %}<span class="nw">{{ code }} {{ value }}</span>{% if not loop.last %} &middot; {% endif %}{% endfor %} <span class="m">zł</span></div>
-{% endif %}<p><a href="{{ url_for('map_page') }}" class="ch">Mapa</a> {% if screen_on %}<a href="{{ url_for('screen_page') }}" class="ch">Zdalny ekran</a> {% endif %}{% if not in_frame %}<a href="{{ url_for('nokia_emulator') }}" class="ch">Podgląd Nokii</a> {% endif %}<a href="{{ url_for('bookmarks') }}" accesskey="4" class="ch">Zakładki{% if bookmarks_count %} ({{ bookmarks_count }}){% endif %}</a> <a href="{{ url_for('settings', k='oszcz', v=0 if saving else 1, next='/') }}" class="ch">Oszczędzanie danych: {{ "wyłącz" if saving else "włącz" }}</a></p>
+{% endif %}<p><a href="{{ url_for('map_page') }}" class="ch">Mapa</a> {% if screen_on %}<a href="{{ url_for('screen_page') }}" class="ch">Zdalny ekran</a> {% endif %}{% if not in_frame %}<a href="{{ url_for('nokia_emulator') }}" class="ch">Podgląd Nokii</a> {% endif %}<a href="{{ url_for('bookmarks') }}" accesskey="4" class="ch">Zakładki{% if bookmarks_count %} ({{ bookmarks_count }}){% endif %}</a> <a href="{{ url_for('settings', k='oszcz', v=0 if saving else 1, next='/') }}" class="ch">Oszczędzanie danych: {{ "wyłącz" if saving else "włącz" }}</a> <a href="{{ url_for('settings', k='ciemny', v=0 if dark else 1, next='/') }}" class="ch">Ciemny motyw: {{ "wyłącz" if dark else "włącz" }}</a></p>
 <p class="m">Dane z Szukajki w tym miesiącu: {{ data_mb|mb1 }} &middot; tekst:{% for size, label in (("s", "A-"), ("m", "A"), ("l", "A+"), ("xl", "A++")) %} {% if text_size == size %}<b>{{ label }}</b>{% else %}<a href="{{ url_for('settings', k='tekst', v=size, next='/') }}">{{ label }}</a>{% endif %}{% endfor %}</p></div>
 {% endblock %}
 """,
@@ -4220,7 +4234,7 @@ html,body{margin:0;background:#e8eaed;font-family:system-ui,Roboto,Arial,sans-se
         if (!a || ev.defaultPrevented || (a.target && a.target !== '_self')) return;
         var href = a.getAttribute('href') || '';
         if (!href || href.charAt(0) === '#' || /^javascript:/i.test(href)) return;
-        if (/\/audio\?t=/.test(href)) { ev.preventDefault(); playStream(a.href); return; }  // jak na Nokii: osobny odtwarzacz
+        if (/\\/audio\\?t=/.test(href)) { ev.preventDefault(); playStream(a.href); return; }  // jak na Nokii: osobny odtwarzacz
         startNav();
       });
       fd.addEventListener('submit', function (ev) { if (!ev.defaultPrevented) startNav(); });
@@ -5882,6 +5896,7 @@ def settings():
 @app.context_processor
 def page_settings():
     return {"text_css": text_css(), "saving": saving_enabled(), "data_mb": data_used() / 1_000_000,
+            "dark": request.cookies.get("ciemny") == "1", "dark_css": DARK_ALL if request.cookies.get("ciemny") == "1" else "",
             "text_size": request.cookies.get("tekst") or "m", "nokia_preview": nokia_preview(),
             "in_frame": request.headers.get("Sec-Fetch-Dest") == "iframe",
             "small_browser": nokia_preview() or bool(SMALL_BROWSER.search(request.headers.get("User-Agent", "")))}  # podgląd = Opera Mini
