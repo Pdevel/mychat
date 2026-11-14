@@ -394,7 +394,7 @@ def memory_mb(page):
     return {"chromium": round(total / 1024), "karta_js": round(js / 1_048_576, 1)}
 
 
-def compose_panel(page, view, width, shown):
+def compose_panel(page, view, width, shown, pause=150):
     """Aplikacja (Jakdojade, lista wyników): okno ma jeden ekran, a treść przewija się w panelu w środku. Panel
     przewijamy kawałek po kawałku i sklejamy w jeden długi obraz: górna część ekranu z panelem, kolejne odsłony panelu,
     na końcu dolny pasek aplikacji. Obszar z dalszej odsłony pamięta położenie panelu (ps) – kliknięcie ustawia je
@@ -414,7 +414,7 @@ def compose_panel(page, view, width, shown):
         got = run(page, PANEL_SET, want, default=None)
         if got is None or got - pos < 5:
             break
-        page.wait_for_timeout(150)  # listy dorysowują elementy po przewinięciu
+        page.wait_for_timeout(pause)  # listy dorysowują elementy po przewinięciu
         delta, top = got - pos, pb - (got - pos)
         parts.append({"shot": capture(page, view, top, delta), "h": delta})
         for it in clickables(page, width, shown):
@@ -598,7 +598,8 @@ def act(body):
         if not field and sessions[sid].get("search_click"):  # nakładka wyszukiwania jeszcze się otwiera
             page.wait_for_timeout(600)
             field = run(page, FIELD, default="") or ""
-    glued = compose_panel(page, view, width, height) if fitted < view["h"] and not body.get("single") else None
+    glued = (compose_panel(page, view, width, height, 60 if body.get("live") else 150)  # na żywo: szybciej, co sekundę
+             if fitted < view["h"] and not body.get("single") else None)
     sessions[sid]["panel"] = glued and dict(glued[2], url=page.url)
     shot = None if glued else capture(page, view)
     shot_done = time.monotonic()
