@@ -140,6 +140,27 @@ SCROLL = ("""([dir, shown]) => {""" + DEEP + """
   best.scrollBy({top: dir * Math.max(40, seen), behavior: 'instant'});  // panel aplikacji: o jego widoczną wysokość
   return 'panel';
 }""")
+# Panel aplikacji (największy widoczny przewijany element) – oznaczony, żeby kolejne kroki trafiały w ten sam.
+PANEL = ("""(shown) => {""" + DEEP + """
+  for (const e of deepAll('[data-ekran-panel]')) e.removeAttribute('data-ekran-panel');
+  let best = null, area = 0, box = null;
+  for (const e of deepAll('*')) {
+    if (e.scrollHeight <= e.clientHeight + 5 || e.clientHeight < 60) continue;
+    const r = e.getBoundingClientRect(), t = Math.max(r.top, 0), b = Math.min(r.bottom, shown);
+    const vis = Math.max(0, b - t) * Math.max(0, Math.min(r.right, innerWidth) - Math.max(r.left, 0));
+    if (vis <= area || !/(auto|scroll|overlay)/.test(getComputedStyle(e).overflowY)) continue;
+    area = vis; best = e; box = [Math.ceil(t), Math.floor(b) - 1];  // bez wiersza pikseli sąsiedniego paska (kreska na łączeniu)
+  }
+  if (!best || box[1] - box[0] < 80) return null;
+  best.setAttribute('data-ekran-panel', '1');
+  return {top: box[0], bottom: box[1], scroll: Math.round(best.scrollTop), max: Math.round(best.scrollHeight - best.clientHeight)};
+}""")
+PANEL_SET = ("""(top) => {""" + DEEP + """
+  const e = deepAll('[data-ekran-panel]')[0];
+  if (!e) return null;
+  e.scrollTo({top: top, behavior: 'instant'});
+  return Math.round(e.scrollTop);
+}""")
 # Klikalne elementy widoczne na ekranie (linki, przyciski, pola): telefon z klawiaturą skacze po nich strzałkami.
 CLICKABLES = ("""() => {""" + DEEP + """
   const sel = 'a[href],button,input:not([type=hidden]),textarea,select,summary,label[for],[role=button],[role=link],'
@@ -267,7 +288,7 @@ def title_of(page):
             return ""
 
 
-def capture(page, view):
+def capture(page, view, top=0, tall=None):
     """Zrzut widocznej części strony (base64). Wprost przez Chromium (Page.captureScreenshot): bez czekania na czcionki
     i „stabilny” obraz, na którym page.screenshot potrafi utknąć na stronach z animacjami. Zapasowo page.screenshot."""
     try:
@@ -275,12 +296,12 @@ def capture(page, view):
         page._ekran_cdp = cdp
         x, y = run(page, "() => [scrollX, scrollY]", default=[0, 0])  # obszar zrzutu liczy się od początku dokumentu
         scale = view["out"] / view["w"] if view.get("out") else view["scale"]
-        clip = {"x": x, "y": y, "width": view["w"], "height": view.get("clip") or view["h"], "scale": scale}  # scale: ostrość (Retina)
+        clip = {"x": x, "y": y + top, "width": view["w"], "height": tall or view.get("clip") or view["h"], "scale": scale}  # scale: ostrość
         return cdp.send("Page.captureScreenshot", {"format": view["fmt"], "quality": view["q"], "clip": clip})["data"]
     except PlaywrightError:
         page._ekran_cdp = None
         shot = page.screenshot(type="jpeg", quality=view["q"], timeout=6000, animations="disabled", caret="hide",
-                               clip={"x": 0, "y": 0, "width": view["w"], "height": view.get("clip") or view["h"]})
+                               clip={"x": 0, "y": top, "width": view["w"], "height": tall or view.get("clip") or view["h"]})
         return base64.b64encode(shot).decode()
 
 
@@ -340,6 +361,43 @@ def memory_mb(page):
     except PlaywrightError:
         pass
     return {"chromium": round(total / 1024), "karta_js": round(js / 1_048_576, 1)}
+
+
+def compose_panel(page, view, width, shown):
+    """Aplikacja (Jakdojade, lista wyników): okno ma jeden ekran, a treść przewija się w panelu w środku. Panel
+    przewijamy kawałek po kawałku i sklejamy w jeden długi obraz: górna część ekranu z panelem, kolejne odsłony panelu,
+    na końcu dolny pasek aplikacji. Obszar z dalszej odsłony pamięta położenie panelu (ps) – kliknięcie ustawia je
+    z powrotem. (części obrazu, obszary, {start, end} panelu) albo None, gdy nie ma czego sklejać."""
+    info = run(page, PANEL, shown, default=None)
+    if not info or info["max"] - info["scroll"] < 20:
+        return None
+    pt, pb, start = info["top"], info["bottom"], info["scroll"]
+    ph, room = pb - pt, view["h"] - (shown - pb)  # ile panelu zmieści się w obrazie (dolny pasek doklejamy na końcu)
+    first = clickables(page, width, shown)
+    parts = [{"shot": capture(page, view, 0, pb), "h": pb}]
+    items = [dict(it, b=min(it["b"], pb), ps=start) for it in first if it["cy"] < pb]
+    cur, pos = pb, start
+    while cur + 40 < room:
+        want = min(pos + ph, info["max"], pos + room - cur)
+        got = run(page, PANEL_SET, want, default=None)
+        if got is None or got - pos < 5:
+            break
+        page.wait_for_timeout(150)  # listy dorysowują elementy po przewinięciu
+        delta, top = got - pos, pb - (got - pos)
+        parts.append({"shot": capture(page, view, top, delta), "h": delta})
+        for it in clickables(page, width, shown):
+            if top <= it["cy"] < pb:
+                items.append(dict(it, y=max(it["y"], top) - top + cur, b=min(it["b"], pb) - top + cur, ps=got))
+        cur, pos = cur + delta, got
+    run(page, PANEL_SET, start, default=None)  # zdalna strona wraca tam, gdzie zaczyna się obraz
+    if len(parts) == 1:
+        return None
+    page.wait_for_timeout(80)
+    foot = pb + 2  # panel kończy się 1 px niżej (ten wiersz pominęliśmy w kawałkach panelu) + zapas na zaokrąglenie skali
+    if shown - foot > 2:
+        parts.append({"shot": capture(page, view, foot, shown - foot), "h": shown - foot})
+        items += [dict(it, y=max(it["y"], foot) - foot + cur, b=it["b"] - foot + cur) for it in first if it["cy"] >= foot]
+    return parts, items[:400], {"start": start, "end": min(pos + ph, info["max"])}
 
 
 def fit_height(page, view):
@@ -404,6 +462,9 @@ def act(body):
                 raise
         settle(page, 800)
     elif action == "click":
+        if isinstance(body.get("ps"), (int, float)):  # obszar z dalszej części sklejonego obrazu aplikacji: panel tam, gdzie był
+            run(page, PANEL_SET, int(body["ps"]), default=None)
+            page.wait_for_timeout(120)
         x = max(0, min(width - 1, float(body.get("x", 0))))
         y = max(0, min(height - 1, float(body.get("y", 0))))
         before, url_before = run(page, SIGNATURE, default='nawigacja'), page.url
@@ -420,11 +481,19 @@ def act(body):
             page.wait_for_timeout(350)  # nakładka, menu, pole: animacja i kursor
     elif action == "scroll":
         shown = min(view.get("clip") or height, (page.viewport_size or {}).get("height") or height)
+        if isinstance(body.get("screen"), (int, float)) and body["screen"] > 50:
+            shown = min(shown, int(body["screen"]))  # na żywo: o jeden ekran Nokii
         page.mouse.move(width / 2, shown / 2)  # środek tego, co widać na telefonie
         direction = 1 if int(body.get("dy", 0)) > 0 else -1
+        glued = sessions[sid].get("panel")
+        if glued and not body.get("screen") and glued.get("url") == page.url:  # sklejony obraz aplikacji: dalszy ciąg za nim
+            target = glued["end"] if direction > 0 else max(0, glued["start"] - (glued["end"] - glued["start"]))
+            if run(page, PANEL_SET, target, default=None) is not None:
+                direction = 0
+                page.wait_for_timeout(150)
         # o jeden pokazany ekran (bez nakładki), skryptem: kółko myszy w trybie telefonu Chrome mnoży (ok. 4×), a w
         # aplikacjach (Jakdojade) przewija się panel w środku, nie strona – wtedy największy widoczny przewijany element
-        if not run(page, SCROLL, [direction, shown], default=""):
+        if direction and not run(page, SCROLL, [direction, shown], default=""):
             page.mouse.wheel(0, direction * shown / 4)
         page.wait_for_timeout(250)
     elif action == "type":
@@ -490,16 +559,24 @@ def act(body):
     view = dict(view, clip=min(view.get("clip") or view["h"], fitted))  # zrzut tylko tego, co jest w oknie
     height = view["clip"]
     acted = time.monotonic()
-    shot = capture(page, view)
+    field = ""
+    if action == "click":
+        field = run(page, FIELD, default="") or ""  # kliknięto pole tekstowe – telefon od razu pokaże wpisywanie
+        if not field and sessions[sid].get("search_click"):  # nakładka wyszukiwania jeszcze się otwiera
+            page.wait_for_timeout(600)
+            field = run(page, FIELD, default="") or ""
+    glued = compose_panel(page, view, width, height) if fitted < view["h"] and not body.get("single") else None
+    sessions[sid]["panel"] = glued and dict(glued[2], url=page.url)
+    shot = None if glued else capture(page, view)
     shot_done = time.monotonic()
     result = {"title": title_of(page), "url": page.url, "width": width, "height": height, "shot": shot, "fmt": view["fmt"],
-              "items": clickables(page, width, view.get("clip") or height), "y": run(page, "() => Math.round(scrollY)", default=0)}
+              "items": glued[1] if glued else clickables(page, width, view.get("clip") or height),
+              "y": run(page, "() => Math.round(scrollY)", default=0)}
+    if glued:
+        result["parts"] = glued[0]  # Szukajka skleja kawałki w jeden obraz
+        result["shot"] = glued[0][0]["shot"]
     if action == "click":
-        result["field"] = run(page, FIELD, default="") or ""  # kliknięto pole tekstowe – telefon od razu pokaże wpisywanie
-        if not result["field"] and sessions[sid].get("search_click"):  # nakładka wyszukiwania jeszcze się otwiera
-            page.wait_for_timeout(600)
-            result["field"] = run(page, FIELD, default="") or ""
-            result["shot"] = capture(page, view)
+        result["field"] = field
     if action == "type":
         result["debug"] = debug
     if body.get("mem"):

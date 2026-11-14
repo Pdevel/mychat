@@ -3848,9 +3848,9 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 {% if not in_frame %}<a class="b" href="{{ url_for('nokia_emulator', u=url_for('screen_page')) }}">Podgląd Nokii</a>
 {% endif %}<a class="b" href="{{ url_for('home') }}">Nowe szukanie</a>
 <a class="b" href="{{ url_for('screen_page', a='close') }}">Zamknij i wyczyść</a></div>
-{% elif shot and as_list %}<div class="w">{% for it in shot["items"] %}<div class="r"><a href="{{ url_for('screen_page', a='click', vx=it.cx, vy=it.cy) }}">{{ loop.index }}. {% if it.f %}[pole] {% endif %}{{ it.t or "(bez opisu)" }}</a></div>
+{% elif shot and as_list %}<div class="w">{% for it in shot["items"] %}<div class="r"><a href="{{ url_for('screen_page', a='click', vx=it.cx, vy=it.cy, ps=it.get('ps')) }}">{{ loop.index }}. {% if it.f %}[pole] {% endif %}{{ it.t or "(bez opisu)" }}</a></div>
 {% else %}<p class="m">Na ekranie nie ma linków ani przycisków.</p>{% endfor %}<a class="b" href="{{ url_for('screen_page', a='shot') }}">Pokaż obraz</a></div>
-{% elif shot and mode == 's' and shot["items"] %}{% if shot.y > 0 and not live %}<div class="nx"><a href="{{ url_for('screen_page', a='up') }}">&#9650; wyżej</a></div>{% endif %}<div class="sc2" data-y="{{ shot.y|int }}"><img src="{{ url_for('screen_image', id=shot.id) }}" width="{{ shot.w }}" height="{{ shot.h }}" usemap="#ek" alt="Ekran"><map name="ek">{% for it in shot["items"] %}<area shape="rect" coords="{{ it.x1 }},{{ it.y1 }},{{ it.x2 }},{{ it.y2 }}" href="{{ url_for('screen_page', a='click', vx=it.cx, vy=it.cy, live=1 if live else None) }}" alt="{{ it.t or 'link' }}">{% endfor %}</map></div>{% if not live %}<div class="nx"><a href="{{ url_for('screen_page', a='down') }}">&#9660; dalej</a></div>{% endif %}
+{% elif shot and mode == 's' and shot["items"] %}{% if shot.y > 0 and not live %}<div class="nx"><a href="{{ url_for('screen_page', a='up') }}">&#9650; wyżej</a></div>{% endif %}<div class="sc2" data-y="{{ shot.y|int }}"><img src="{{ url_for('screen_image', id=shot.id) }}" width="{{ shot.w }}" height="{{ shot.h }}" usemap="#ek" alt="Ekran"><map name="ek">{% for it in shot["items"] %}<area shape="rect" coords="{{ it.x1 }},{{ it.y1 }},{{ it.x2 }},{{ it.y2 }}" href="{{ url_for('screen_page', a='click', vx=it.cx, vy=it.cy, ps=it.get('ps'), live=1 if live else None) }}" alt="{{ it.t or 'link' }}">{% endfor %}</map></div>{% if not live %}<div class="nx"><a href="{{ url_for('screen_page', a='down') }}">&#9660; dalej</a></div>{% endif %}
 {% elif shot %}<form class="sc2" data-y="{{ shot.y|int }}" action="{{ url_for('screen_page') }}" method="get">{% if live %}<input type="hidden" name="live" value="1">{% endif %}<input type="image" name="k" src="{{ url_for('screen_image', id=shot.id) }}" width="{{ shot.w }}" height="{{ shot.h }}" alt="Ekran"></form>{% if mode == 's' and not live %}<div class="nx"><a href="{{ url_for('screen_page', a='down') }}">&#9660; dalej</a></div>{% endif %}{% endif %}
 {% if live and not (mode == 's' and shot) %}<div class="ef"><a href="{{ url_for('screen_page') }}">&#9632; Zatrzymaj odświeżanie</a></div>{% endif %}{% if live and not small_browser %}<script>
 (function () {  // na żywo bez przeładowania strony: podmieniamy tylko obraz – zostaje przewinięcie i wpisany tekst
@@ -5437,20 +5437,24 @@ def screen_page():
         mode = SCREEN_MODES[screen_mode()]
         scale = mode["view"]["w"] / mode["display"]
         live_one = bool(request.args.get("live")) and screen_mode() == "s"
-        # na żywo na Nokii: obraz = dokładnie jeden ekran; Opera Mini przeładowuje stronę i wraca na górę, więc nie ma czego
-        # przewijać lokalnie – przewija się zdalna strona (2/8, ▲/▼), a widok zdalnej przeglądarki (i formularze) zostaje ten sam
-        body = {"sid": sid, "action": action, "geo": screen_geo(), "view": dict(mode["view"], clip=LIVE_CLIP) if live_one else mode["view"]}
+        # na żywo na Nokii: ten sam długi obraz co zwykle (podgląd zostawia przewinięcie między odświeżeniami), a 8/2 i ▼/▲
+        # przesuwają zdalną stronę o jeden ekran Nokii – gdy Opera Mini po odświeżeniu wraca na górę, widać kolejny ekran
+        body = {"sid": sid, "action": action, "geo": screen_geo(), "view": mode["view"]}
         if request.args.get("opcje"):
             body["mem"] = 1  # menu „⋯”: ile pamięci zajmuje zdalna przeglądarka
         if action == "open":
             body["url"] = target
         elif action == "click" and request.args.get("vx") is not None:  # obszar z mapy (strzałki Nokii): już w px widoku
             body.update(x=clamp_int(request.args.get("vx"), 0, 0, 2000), y=clamp_int(request.args.get("vy"), 0, 0, 4000))
+            if request.args.get("ps") is not None:  # obszar z dalszej części sklejonego obrazu aplikacji
+                body["ps"] = clamp_int(request.args.get("ps"), 0, 0, 10_000_000)
         elif action == "click":
             body.update(x=clamp_int(request.args.get("k.x"), 0, 0, 2000) * scale, y=clamp_int(request.args.get("k.y"), 0, 0, 4000) * scale)
         elif action in ("up", "down"):
             step = mode["view"]["h"]  # zdalna przeglądarka przewija o dokładnie jeden pokazany ekran (bez powtórzeń)
             body.update(action="scroll", dy=-step if action == "up" else step)
+            if live_one:
+                body["screen"] = LIVE_CLIP
         elif action == "type":
             body.update(text=(request.args.get("t") or "")[:500], enter=bool(request.args.get("enter")))
         elif action == "key":
@@ -5465,6 +5469,16 @@ def screen_page():
         if data.get("shot"):
             raw = base64.b64decode(data["shot"])
             try:
+                if isinstance(data.get("parts"), list) and len(data["parts"]) > 1:  # aplikacja: kawałki panelu w jeden obraz
+                    pieces = [Image.open(io.BytesIO(base64.b64decode(part["shot"]))).convert("RGB") for part in data["parts"]]
+                    glued = Image.new("RGB", (pieces[0].width, sum(piece.height for piece in pieces)), "white")
+                    top = 0
+                    for piece in pieces:
+                        glued.paste(piece, (0, top))
+                        top += piece.height
+                    out = io.BytesIO()
+                    glued.save(out, "JPEG", quality=76, optimize=True)
+                    raw = out.getvalue()
                 with Image.open(io.BytesIO(raw)) as image:
                     display = mode["display"]
                     height = round(image.height * display / image.width)  # wysokość na ekranie (px CSS)
