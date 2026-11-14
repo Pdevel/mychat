@@ -264,6 +264,20 @@ OVERLAYS = ("""([top, bottom, hide]) => {""" + DEEP + """
   }
   return n;
 }""")
+# Wygląd klikanego przycisku (np. play ↔ pauza zmienia tylko ikonę SVG): najbliższy klikalny przodek elementu w punkcie.
+TARGET = ("""([x, y]) => {""" + DEEP + """
+  let e = deepAt(x, y);
+  for (let i = 0; e && i < 5; i++, e = up(e))
+    if (e.matches && e.matches('a,button,[role=button],[onclick],[tabindex],label,summary')) break;
+  return e && e.outerHTML ? e.outerHTML.slice(0, 3000) : '';
+}""")
+# Zapasowe kliknięcie (strona nie zareagowała na mysz): także na grafice SVG, która nie ma metody click().
+FALLBACK_CLICK = ("""([x, y]) => {""" + DEEP + """
+  const e = deepAt(x, y);
+  if (!e) return;
+  if (typeof e.click === 'function') e.click();
+  else e.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true, composed: true, view: window, clientX: x, clientY: y}));
+}""")
 # Klikalne elementy widoczne na ekranie (linki, przyciski, pola): telefon z klawiaturą skacze po nich strzałkami.
 CLICKABLES = ("""() => {""" + DEEP + """
   const sel = 'a[href],button,input:not([type=hidden]),textarea,select,summary,label[for],[role=button],[role=link],'
@@ -599,13 +613,15 @@ def act(body):
             page.wait_for_timeout(120)
         x = max(0, min(width - 1, float(body.get("x", 0))))
         y = max(0, min(height - 1, float(body.get("y", 0))))
-        before, url_before = run(page, SIGNATURE, default='nawigacja'), page.url
+        def state():  # strona + wygląd klikanego przycisku + czy coś gra (pauza zmienia tylko ikonę i dźwięk)
+            return (run(page, SIGNATURE, default='nawigacja'), run(page, TARGET, [x, y], default=''), sound_playing())
+        before, url_before = state(), page.url
         sessions[sid]["last"] = [x, y]
         sessions[sid]["search_click"] = bool(run(page, SEARCHY, [x, y], default=False))
         page.mouse.click(x, y)
         page.wait_for_timeout(350)
-        if run(page, SIGNATURE, default='nawigacja') == before:  # nic się nie zmieniło: część stron mobilnych nie reaguje na mysz
-            run(page, "([x, y]) => { " + DEEP + "const e = deepAt(x, y); if (e) e.click(); }", [x, y])
+        if state() == before:  # nic się nie zmieniło: część stron mobilnych nie reaguje na mysz
+            run(page, FALLBACK_CLICK, [x, y])
             page.wait_for_timeout(300)
         if page.url != url_before or run(page, "() => document.readyState", default="loading") != "complete":
             settle(page, 700)  # kliknięcie otworzyło inną stronę – zrzut dopiero, gdy się wczyta
