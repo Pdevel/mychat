@@ -3830,7 +3830,7 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 """,
     "screen.html": """{% extends "base.html" %}
 {% block title %}{{ page_title or "Zdalny ekran" }}{% endblock %}
-{% block head %}{% if waiting %}<meta http-equiv="refresh" content="5;url={{ here }}">{% elif live and small_browser %}<meta http-equiv="refresh" content="1;url={{ url_for('screen_page', a='shot', live=1, n=tick) }}">{% endif %}<style>body{max-width:none}.ab{margin:0;padding:2px 2px 1px;background:#f1f3f4;white-space:nowrap}.ab .q{width:68%;padding:3px 8px;font-size:13px}.ab input[type=submit]{padding:4px 8px;font-size:12px}.ab a{padding:0 4px;font-weight:bold;font-size:16px}.sc2{text-align:center;line-height:0}.sc2 input{border:0;padding:0;margin:0;background:none;border-radius:0}.hk{position:absolute;left:-999px;top:0}.ef{margin:2px 4px}.ef .q{width:120px}.fx{background:#fff4e5;border:1px solid #f0c890;border-radius:8px;padding:4px}.nx{text-align:center;font-size:12px;line-height:1.7}.nx a{padding:0 12px}.ab.lv a{font-size:13px;padding:0 6px}</style>{% endblock %}
+{% block head %}{% if waiting %}<meta http-equiv="refresh" content="5;url={{ here }}">{% elif live and small_browser %}{% if in_frame %}<meta name="nk-refresh" content="1;url={{ url_for('screen_page', a='shot', live=1, n=tick) }}">{% else %}<meta http-equiv="refresh" content="1;url={{ url_for('screen_page', a='shot', live=1, n=tick) }}">{% endif %}{% endif %}<style>body{max-width:none}.ab{margin:0;padding:2px 2px 1px;background:#f1f3f4;white-space:nowrap}.ab .q{width:68%;padding:3px 8px;font-size:13px}.ab input[type=submit]{padding:4px 8px;font-size:12px}.ab a{padding:0 4px;font-weight:bold;font-size:16px}.sc2{text-align:center;line-height:0}.sc2 input{border:0;padding:0;margin:0;background:none;border-radius:0}.hk{position:absolute;left:-999px;top:0}.ef{margin:2px 4px}.ef .q{width:120px}.fx{background:#fff4e5;border:1px solid #f0c890;border-radius:8px;padding:4px}.nx{text-align:center;font-size:12px;line-height:1.7}.nx a{padding:0 12px}.ab.lv a{font-size:13px;padding:0 6px}</style>{% endblock %}
 {% block body %}{% if live and mode == 's' and shot %}<div class="nx ab lv" id="g"><a href="{{ url_for('screen_page', a='down', live=1) }}">8 &#9660; dalej</a><a href="{{ url_for('screen_page', a='up', live=1) }}">2 &#9650; wyżej</a><a href="{{ url_for('screen_page') }}">&#9632; stop</a></div>
 {% else %}<form class="ab" id="g" action="{{ url_for('screen_page') }}" method="get"><input class="q" type="text" name="u" value="{{ page_url or target }}" maxlength="2000"> <input type="submit" value="Idź"> <a href="{{ url_for('screen_page', a='shot', opcje=1) }}">&#8943;</a></form>{% endif %}
 {% if waiting %}<div class="w"><div class="ib"><b>{% if error %}Zdalna przeglądarka nie działa{% else %}Uruchamiam zdalną przeglądarkę&hellip;{% endif %}</b><br>
@@ -4025,8 +4025,8 @@ html,body{margin:0;background:#e8eaed;font-family:system-ui,Roboto,Arial,sans-se
       else current.click();
       return;
     }
-    if (k === 'lsk') { if (loads > 1) { loads -= 2; startLoad(); w.history.back(); } return; }  // tylko w obrębie ekranu
-    if (k === 'rsk') { startLoad(); w.location.href = '/'; return; }
+    if (k === 'lsk') { if (loads > 1) { loads -= 2; startNav(); w.history.back(); } return; }  // tylko w obrębie ekranu
+    if (k === 'rsk') { startNav(); w.location.href = '/'; return; }
     if (k === 'end') { location.href = {{ url_for('settings', k='nokia', v=0, next='/')|tojson }}; return; }
     var hot = d.querySelector('[accesskey="' + k + '"]');
     if (hot) hot.click();
@@ -4066,6 +4066,7 @@ html,body{margin:0;background:#e8eaed;font-family:system-ui,Roboto,Arial,sans-se
   // pasek ładowania jak w Operze Mini: od kliknięcia (wyjście ze strony w ramce) do wczytania nowej
   var bar = document.getElementById('nk-load'), fill = bar.firstChild, loadTimer = null, loadSafety = null, progress = 0;
   function startLoad() {
+    if (swapping) return;
     clearInterval(loadTimer); clearTimeout(loadSafety);
     progress = 0.08; fill.style.width = '8%'; bar.style.display = 'block';
     loadTimer = setInterval(function () { progress += (0.92 - progress) * 0.05; fill.style.width = (progress * 100).toFixed(1) + '%'; }, 100);
@@ -4077,8 +4078,43 @@ html,body{margin:0;background:#e8eaed;font-family:system-ui,Roboto,Arial,sans-se
     fill.style.width = '100%';
     setTimeout(function () { bar.style.display = 'none'; fill.style.width = '0'; }, 150);
   }
+  // odświeżanie na żywo jak w Operze Mini: stara strona zostaje na ekranie, aż nowa się wczyta (bez białego mignięcia) –
+  // nowa wczytuje się w niewidocznej drugiej ramce i zastępuje starą dopiero gotowa
+  var swapping = false, refreshTimer = null, buffer = null;
+  function cancelRefresh() {
+    clearTimeout(refreshTimer); refreshTimer = null;
+    if (buffer) { swapping = true; if (buffer.parentNode) buffer.parentNode.removeChild(buffer); swapping = false; buffer = null; stopLoad(); }
+  }
+  function startNav() { cancelRefresh(); startLoad(); }
+  function scheduleRefresh(fd) {
+    cancelRefresh();
+    var m = fd.querySelector('meta[name="nk-refresh"]'); if (!m) return;
+    var parts = /^\\s*([\\d.]+)\\s*;\\s*url=(.+)$/i.exec(m.getAttribute('content') || ''); if (!parts) return;
+    var url = parts[2];
+    refreshTimer = setTimeout(function () {
+      buffer = document.createElement('iframe');
+      buffer.className = 'scr'; buffer.title = 'Ekran Nokii';
+      buffer.style.cssText = 'position:absolute;left:0;top:0;visibility:hidden';
+      buffer.addEventListener('load', function () {
+        var b = buffer; if (!b) return;
+        try { if (b.contentWindow.location.href === 'about:blank') return; } catch (e) {}
+        buffer = null;
+        swapping = true;  // podmiana w jednym kroku: nowa ramka na miejsce starej
+        var old = frame; frame = b; b.style.cssText = ''; old.parentNode.removeChild(old); b.id = 'ekran';
+        swapping = false;
+        loads = 0;  // historia usuniętej ramki przepada – „Wstecz” nie może cofnąć całego podglądu
+        b.addEventListener('load', onFrameLoad);
+        onFrameLoad();
+      });
+      buffer.src = url;  // przed wstawieniem: pusta ramka (about:blank) zgłasza „load” od razu
+      frame.parentNode.insertBefore(buffer, frame.nextSibling);
+      startLoad();
+    }, Math.max(500, parseFloat(parts[1]) * 1000));
+  }
   startLoad();  // pierwsza strona w ramce
-  frame.addEventListener('load', function () {
+  frame.addEventListener('load', onFrameLoad);
+  function onFrameLoad() {
+    cancelRefresh();
     stopLoad();
     try {  // iPhone (Safari) nie zgłasza „beforeunload” – początek ładowania łapiemy po kliknięciu linku i wysłaniu formularza
       var fw = win(), fd = doc();
@@ -4089,9 +4125,9 @@ html,body{margin:0;background:#e8eaed;font-family:system-ui,Roboto,Arial,sans-se
         if (!a || ev.defaultPrevented || (a.target && a.target !== '_self')) return;
         var href = a.getAttribute('href') || '';
         if (!href || href.charAt(0) === '#' || /^javascript:/i.test(href)) return;
-        startLoad();
+        startNav();
       });
-      fd.addEventListener('submit', function (ev) { if (!ev.defaultPrevented) startLoad(); });
+      fd.addEventListener('submit', function (ev) { if (!ev.defaultPrevented) startNav(); });
       // iPhone (Safari i Chrome): pola w ekranie zablokowane (readonly + inputmode=none) – zablokowane pole nigdy nie otwiera
       // klawiatury, nawet gdy przeglądarka sama ustawi w nim fokus; odblokowuje je OK na polu albo dotknięcie pola palcem
       Array.prototype.forEach.call(fd.querySelectorAll('input,textarea'), lock);
@@ -4108,7 +4144,8 @@ html,body{margin:0;background:#e8eaed;font-family:system-ui,Roboto,Arial,sans-se
       if (current && !d.contains(current)) current = items(d)[lastIdx] || null;
       mark(d);
     });
-  });
+    scheduleRefresh(d);
+  }
 })();
 </script>
 </body></html>
