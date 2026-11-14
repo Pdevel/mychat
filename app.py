@@ -15,6 +15,7 @@ Strony to czysty HTML: bez CSS, bez JavaScriptu, z jak najmniejszą liczbą link
 import base64
 import collections
 import hashlib
+import hmac
 import io
 import ipaddress
 import json
@@ -3851,6 +3852,7 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 {% endif %}{% if field %}<form class="ef fx" action="{{ url_for('screen_page') }}" method="get"><b>{{ field }}:</b><br><input type="hidden" name="a" value="type"><input class="q" type="text" name="t" maxlength="500"> <input type="submit" value="Wpisz"> <input type="submit" name="enter" value="Wpisz + Enter"></form>
 {% endif %}{% if options %}<div class="w">{% if page_title %}<p class="m"><b>{{ page_title }}</b></p>{% endif %}{% if mem %}<p class="m">Pamięć RAM: zdalna przeglądarka {{ mem.chromium }} MB (JavaScript tej strony {{ mem.karta_js }} MB){% if shot %} &middot; na Nokii obraz ok. {{ "%.1f"|format(shot.w * shot.h * 4 / 1048576) }} MB{% endif %}</p>{% endif %}<a class="b" href="{{ url_for('screen_page', a='shot') }}">&laquo; Wróć do strony</a>
 <a class="b" href="{{ url_for('screen_page', a='shot', live=1) }}">Odświeżaj na żywo (co 1 s)</a>
+<a class="b" href="{{ url_for('screen_audio') }}">Dźwięk na żywo (&#9835;)</a>
 {% if shot %}<a class="b" href="{{ url_for('screen_page', a='shot', lista=1) }}">Lista linków ({{ shot["items"]|length }})</a>
 {% endif %}<a class="b" href="{{ url_for('screen_page', a='key', key='Backspace') }}">Usuń znak w polu (&#9003;)</a>
 {% if page_url %}<a class="b" href="{{ url_for('read', url=page_url, czytnik=1) }}">Otwórz w czytniku</a>
@@ -3936,6 +3938,20 @@ setInterval(function () { n += 1; e.innerHTML = '{{ now }} + ' + n + ' s'; }, 10
 <p class="m">Zrób zdjęcie ekranu albo przepisz numery, które się ruszają, i wyślij je w czacie. Strona waży kilka KB.</p>
 <p><a href="{{ url_for('home') }}">Szukajka</a></p>
 </body></html>
+""",
+    "screen_audio.html": """{% extends "base.html" %}
+{% block title %}Dźwięk ze zdalnego ekranu{% endblock %}
+{% block head %}{% if state in ("instaluję", "brak") %}<meta http-equiv="refresh" content="10;url={{ url_for('screen_audio') }}">{% endif %}{% endblock %}
+{% block body %}<div class="bar"><a href="{{ url_for('screen_page') }}">&laquo; Zdalny ekran</a></div><div class="w">
+<h1>Dźwięk na żywo</h1>
+{% if link %}<p>To, co gra w zdalnej przeglądarce (np. utwór włączony na stronie), leci na żywo do Twojego telefonu. Nic nie jest zapisywane.</p>
+<a class="b" href="{{ link }}" accesskey="5"><span class="k">5</span>Słuchaj w odtwarzaczu telefonu</a>
+{% if not small_browser %}<audio controls autoplay preload="none" src="{{ link }}" style="width:100%"></audio>
+{% endif %}<p class="m">Dźwięk jest kilka sekund za obrazem. Pauza i zmiana utworu – na zdalnym ekranie. Link działa 6 godzin.{% if restarted %} Zdalna przeglądarka uruchomiła się od nowa z dźwiękiem – otwórz stronę jeszcze raz.{% endif %}</p>
+{% elif state in ("instaluję", "brak") %}<div class="ib"><b>Przygotowuję dźwięk na zdalnej maszynie&hellip;</b><br>Pierwszy raz trwa to 1&ndash;2 minuty. Strona odświeży się sama.</div>
+{% else %}<div class="e">Dźwięk niedostępny: {{ state }}{% if error %} &ndash; {{ error }}{% endif %}</div>
+{% endif %}<a class="b" href="{{ url_for('screen_page') }}">&laquo; Wróć do zdalnego ekranu</a></div>
+{% endblock %}
 """,
     "nokia.html": """<!DOCTYPE html>
 <html lang="pl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -5495,6 +5511,28 @@ def nokia_emulator():
         start = "/"  # tylko strony Szukajki
     resp = make_response(render_template("nokia.html", start=start))
     resp.set_cookie("nokia", "1", max_age=3600, samesite="Lax")
+    return resp
+
+
+@app.route("/ekran/dzwiek")
+def screen_audio():
+    """Dźwięk ze zdalnej przeglądarki na żywo: podpisany link do strumienia MP3 na maszynie InstaBox (odtwarzacz telefonu)."""
+    if not INSTABOX_API_KEY:
+        abort(404)
+    server, state = screen_ready()
+    info, link = {"audio": state.get("phase") or "brak"}, None
+    if server:
+        try:
+            info = screen_act(server, {"sid": request.cookies.get("ekr") or "dzwiek", "action": "audio"}, retry=False)
+        except InstaboxError as err:
+            info = {"audio": "błąd", "audio_error": err.message}
+        if info.get("audio") == "gotowy":
+            expires = int(time.time()) + 6 * 3600
+            sig = hmac.new(SCREEN_TOKEN.encode(), f"audio:{expires}".encode(), hashlib.sha256).hexdigest()[:32]
+            link = f"{server.rstrip('/')}/audio?t={expires}.{sig}"
+    resp = make_response(render_template("screen_audio.html", link=link, state=info.get("audio") or "brak",
+                                         error=info.get("audio_error") or "", restarted=bool(info.get("restarted"))))
+    resp.headers["Cache-Control"] = "no-store"
     return resp
 
 

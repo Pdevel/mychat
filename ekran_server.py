@@ -14,9 +14,10 @@ import re
 import shutil
 import time
 import queue
+import subprocess
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import quote, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import sync_playwright
@@ -47,10 +48,76 @@ IDLE_SECONDS = 20 * 60
 KEYS = {"Enter", "Backspace", "Tab", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown",
         "Home", "End", "Space"}
 
+# Dźwięk na żywo: przeglądarka gra do wirtualnej karty dźwiękowej (PulseAudio, „null sink”), a /audio nadaje to, co
+# gra, jako strumień MP3 (ffmpeg) – tylko na żywo, nic nie jest zapisywane. Pakiety doinstalowujemy, gdy ich brak.
+PULSE = "/tmp/ekran-pulse"
+AUDIO_ENV = dict(os.environ, PULSE_SERVER="unix:" + PULSE)
+audio = {"state": "brak", "error": ""}
+listeners = []
+
+
+def start_pulse():
+    if os.path.exists(PULSE):
+        if subprocess.run(["pactl", "info"], env=AUDIO_ENV, capture_output=True, timeout=10).returncode == 0:
+            return True
+        os.remove(PULSE)
+    subprocess.run(["pulseaudio", "-D", "-n", "--exit-idle-time=-1", "--disallow-exit",
+                    "--load=module-null-sink sink_name=ekran sink_properties=device.description=ekran",
+                    f"--load=module-native-protocol-unix socket={PULSE} auth-anonymous=1"],
+                   capture_output=True, timeout=30)
+    for _ in range(20):
+        if subprocess.run(["pactl", "set-default-sink", "ekran"], env=AUDIO_ENV, capture_output=True, timeout=10).returncode == 0:
+            return True
+        time.sleep(0.25)
+    return False
+
+
+def setup_audio(install=False):
+    """Wirtualna karta dźwiękowa. install=True: doinstaluj pulseaudio i ffmpeg (apt), gdy ich nie ma."""
+    try:
+        missing = [name for name in ("pulseaudio", "pactl", "ffmpeg") if not shutil.which(name)]
+        if missing and install:
+            audio.update(state="instaluję")
+            sudo = [] if os.geteuid() == 0 else ["sudo", "-n"]
+            env = dict(os.environ, DEBIAN_FRONTEND="noninteractive")
+            subprocess.run(sudo + ["apt-get", "update", "-q"], capture_output=True, timeout=300, env=env)
+            done = subprocess.run(sudo + ["apt-get", "install", "-y", "-q", "--no-install-recommends", "pulseaudio",
+                                          "pulseaudio-utils", "ffmpeg"], capture_output=True, text=True, timeout=600, env=env)
+            missing = [name for name in ("pulseaudio", "pactl", "ffmpeg") if not shutil.which(name)]
+            if missing:
+                audio.update(state="błąd", error=(done.stderr or done.stdout or "apt-get")[-300:])
+                return False
+        if missing:
+            return False
+        if not start_pulse():
+            audio.update(state="błąd", error="PulseAudio nie wystartował")
+            return False
+        audio.update(state="gotowy", error="")
+        return True
+    except (OSError, subprocess.SubprocessError) as err:
+        audio.update(state="błąd", error=str(err)[:300])
+        return False
+
+
+def launch_browser():
+    executable = next((p for p in (shutil.which("chromium"), shutil.which("chromium-browser"), shutil.which("google-chrome"))
+                       if p), None)
+    return playwright.chromium.launch(executable_path=executable, args=["--no-sandbox", "--disable-dev-shm-usage"],
+                                      ignore_default_args=["--mute-audio"],  # Playwright domyślnie wycisza przeglądarkę
+                                      env=AUDIO_ENV if audio["state"] == "gotowy" else None)
+
+
+def install_audio_later():
+    """Brak pakietów: instalacja w tle; gdy się uda, przeglądarka uruchomi się od nowa z dźwiękiem przy pierwszej
+    akcji bez otwartych kart albo przy włączeniu dźwięku (to zamyka otwarte strony – jednorazowo)."""
+    if setup_audio(install=True):
+        audio["restart"] = True
+
+
 playwright = sync_playwright().start()
-executable = next((p for p in (shutil.which("chromium"), shutil.which("chromium-browser"), shutil.which("google-chrome"))
-                   if p), None)
-browser = playwright.chromium.launch(executable_path=executable, args=["--no-sandbox", "--disable-dev-shm-usage"])
+if not setup_audio():
+    threading.Thread(target=install_audio_later, daemon=True).start()
+browser = launch_browser()
 version = browser.version.split(".")[0]
 USER_AGENT = (f"Mozilla/5.0 (Linux; Android 14; K) AppleWebKit/537.36 (KHTML, like Gecko) "
               f"Chrome/{version}.0.0.0 Mobile Safari/537.36")  # widok mobilny, jak telefon z Chrome
@@ -471,10 +538,31 @@ def press_enter(page):
     return run(page, SIGNATURE, default='nawigacja') != before
 
 
+def restart_with_audio():
+    """Pakiety dźwięku doinstalowane w tle: przeglądarka od nowa, już z wirtualną kartą dźwiękową."""
+    global browser
+    for sid in list(sessions):
+        try:
+            sessions.pop(sid)["context"].close()
+        except PlaywrightError:
+            pass
+    try:
+        browser.close()
+    except PlaywrightError:
+        pass
+    audio.pop("restart", None)
+    browser = launch_browser()
+
+
 def act(body):
     sid = str(body.get("sid") or "")[:40]
     if not sid:
         raise ValueError("brak sid")
+    restarted = bool(audio.get("restart") and (sessions or body.get("action") == "audio"))
+    if audio.get("restart") and (not sessions or body.get("action") == "audio"):
+        restart_with_audio()
+    if body.get("action") == "audio":  # Szukajka pyta o dźwięk (włączenie po doinstalowaniu pakietów zamyka strony)
+        return {"audio": audio["state"], "audio_error": audio["error"], "listeners": len(listeners), "restarted": restarted}
     geo = body.get("geo")
     if not (isinstance(geo, dict) and all(isinstance(geo.get(k), (int, float)) for k in ("latitude", "longitude"))):
         geo = None
@@ -635,9 +723,49 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/health":  # odpowiada od razu, także gdy przeglądarka akurat pracuje
-            self.reply(200, {"ok": True, "sessions": len(sessions), "chromium": CHROMIUM, "version": VERSION, "busy": jobs.qsize()})
+            self.reply(200, {"ok": True, "sessions": len(sessions), "chromium": CHROMIUM, "version": VERSION, "busy": jobs.qsize(),
+                             "audio": audio["state"] if not audio.get("restart") else "gotowy po restarcie",
+                             "audio_error": audio["error"], "listeners": len(listeners)})
+        elif self.path.startswith("/audio"):
+            self.stream_audio()
         else:
             self.reply(404, {"error": "nie ma"})
+
+    def stream_audio(self):
+        """Strumień MP3 tego, co gra zdalna przeglądarka (na żywo). Link podpisany przez Szukajkę: t=ważność.podpis."""
+        ticket = (parse_qs(urlparse(self.path).query).get("t") or [""])[0]
+        expires, _, sig = ticket.partition(".")
+        good = hmac.new(TOKEN.encode(), f"audio:{expires}".encode(), hashlib.sha256).hexdigest()[:32]
+        if not expires.isdigit() or int(expires) < time.time() or not hmac.compare_digest(sig, good):
+            self.reply(403, {"error": "link do dźwięku wygasł – otwórz go ponownie w Szukajce"})
+            return
+        if audio["state"] != "gotowy" or audio.get("restart"):
+            self.reply(503, {"error": f"dźwięk niegotowy: {audio['state']} {audio['error']}"})
+            return
+        if len(listeners) >= 2:
+            self.reply(429, {"error": "dźwięk już leci do dwóch odbiorników"})
+            return
+        proc = subprocess.Popen(["ffmpeg", "-loglevel", "error", "-f", "pulse", "-fragment_size", "1024", "-i", "ekran.monitor",
+                                 "-ac", "1", "-ar", "22050", "-b:a", "48k", "-f", "mp3", "-flush_packets", "1", "pipe:1"],
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=AUDIO_ENV)
+        listeners.append(proc)
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "audio/mpeg")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("icy-name", "Szukajka - zdalny ekran")
+            self.end_headers()
+            while True:
+                chunk = proc.stdout.read1(4096) if hasattr(proc.stdout, "read1") else proc.stdout.read(4096)
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass  # telefon przestał słuchać
+        finally:
+            proc.kill()
+            listeners.remove(proc)
 
     def do_POST(self):
         if self.path != "/act" or not hmac.compare_digest(self.headers.get("X-Ekran-Token", ""), TOKEN):
