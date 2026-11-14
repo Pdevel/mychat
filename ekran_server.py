@@ -203,7 +203,13 @@ CLICKABLES = ("""() => {""" + DEEP + """
     const cx = Math.min(Math.max(q.left + q.width / 2, 1), innerWidth - 2), cy = Math.min(Math.max(q.top + q.height / 2, 1), innerHeight - 2);
     const top = deepAt(cx, cy);
     if (!top || !(within(e, top) || within(top, e))) continue;  // zasłonięte (np. okienkiem)
-    if (out.some(o => within(o.el, e) || within(e, o.el))) continue;  // link w przycisku itp. – raz
+    // element w elemencie: link/przycisk zawierający coś klikalnego liczy się raz; ogólny pojemnik (tabindex, role –
+    // np. okienko zgody OneTrust na Polsat Sport) ustępuje przyciskom w środku, inaczej ramka nie wejdzie na „Akceptuj”
+    const strong = el => /^(A|BUTTON|LABEL|SUMMARY|INPUT|SELECT|TEXTAREA)$/.test(el.tagName);
+    const outer = out.filter(o => within(o.el, e));
+    if (outer.some(o => strong(o.el))) continue;
+    for (const o of outer) out.splice(out.indexOf(o), 1);
+    if (out.some(o => within(e, o.el))) continue;
     const field = /^(INPUT|TEXTAREA|SELECT)$/.test(e.tagName) && !/^(button|submit|reset|checkbox|radio|image|file|range|color)$/i.test(e.type || '')
                   || e.isContentEditable;
     const labelled = e.getAttribute('aria-labelledby');
