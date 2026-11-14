@@ -161,6 +161,31 @@ PANEL_SET = ("""(top) => {""" + DEEP + """
   e.scrollTo({top: top, behavior: 'instant'});
   return Math.round(e.scrollTop);
 }""")
+# Elementy przypięte nad panelem (pływający przycisk „Kup bilet”, przyklejony nagłówek): przy przewijaniu panelu stoją
+# w miejscu, więc w każdym sklejonym kawałku zasłaniałyby listę – na czas robienia kolejnych odsłon są ukryte.
+OVERLAYS = ("""([top, bottom, hide]) => {""" + DEEP + """
+  if (!hide) {
+    for (const e of deepAll('[data-ekran-ukryte]')) { e.style.visibility = e.getAttribute('data-ekran-ukryte'); e.removeAttribute('data-ekran-ukryte'); }
+    return 0;
+  }
+  const panel = deepAll('[data-ekran-panel]')[0];
+  if (!panel) return 0;
+  let n = 0;
+  for (const e of deepAll('*')) {
+    if (e === panel || within(e, panel)) continue;  // panel i to, co go zawiera
+    const r = e.getBoundingClientRect();
+    if (r.width < 4 || r.height < 4 || r.bottom <= top || r.top >= bottom || r.height > (bottom - top) * 0.7) continue;
+    const pos = getComputedStyle(e).position;
+    if (!(pos === 'fixed' || pos === 'sticky' || (pos === 'absolute' && !within(panel, e)))) continue;
+    let up = e.parentElement, done = false;  // ukryty rodzic wystarczy
+    for (; up; up = up.parentElement) if (up.hasAttribute('data-ekran-ukryte')) { done = true; break; }
+    if (done) continue;
+    e.setAttribute('data-ekran-ukryte', e.style.visibility || '');
+    e.style.visibility = 'hidden';
+    n++;
+  }
+  return n;
+}""")
 # Klikalne elementy widoczne na ekranie (linki, przyciski, pola): telefon z klawiaturą skacze po nich strzałkami.
 CLICKABLES = ("""() => {""" + DEEP + """
   const sel = 'a[href],button,input:not([type=hidden]),textarea,select,summary,label[for],[role=button],[role=link],'
@@ -377,6 +402,7 @@ def compose_panel(page, view, width, shown):
     parts = [{"shot": capture(page, view, 0, pb), "h": pb}]
     items = [dict(it, b=min(it["b"], pb), ps=start) for it in first if it["cy"] < pb]
     cur, pos = pb, start
+    run(page, OVERLAYS, [pt, pb, True], default=0)  # kolejne odsłony: sama lista, bez przypiętych przycisków i nagłówków
     while cur + 40 < room:
         want = min(pos + ph, info["max"], pos + room - cur)
         got = run(page, PANEL_SET, want, default=None)
@@ -389,6 +415,7 @@ def compose_panel(page, view, width, shown):
             if top <= it["cy"] < pb:
                 items.append(dict(it, y=max(it["y"], top) - top + cur, b=min(it["b"], pb) - top + cur, ps=got))
         cur, pos = cur + delta, got
+    run(page, OVERLAYS, [0, 0, False], default=0)
     run(page, PANEL_SET, start, default=None)  # zdalna strona wraca tam, gdzie zaczyna się obraz
     if len(parts) == 1:
         return None
