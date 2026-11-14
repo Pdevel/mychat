@@ -4010,7 +4010,10 @@ html,body{margin:0;background:#e8eaed;font-family:system-ui,Roboto,Arial,sans-se
     if (k === 'down' || k === 'right') return move(1);
     if (k === 'ok') {
       if (!current) return move(1);
-      if (/^(INPUT|TEXTAREA|SELECT)$/.test(current.tagName) && !/^(submit|image|button)$/i.test(current.type)) current.focus();
+      if (/^(INPUT|TEXTAREA|SELECT)$/.test(current.tagName) && !/^(submit|image|button)$/i.test(current.type)) {
+        if (current.getAttribute('data-nk-im')) current.removeAttribute('inputmode');  // tylko OK na polu otwiera klawiaturę
+        current.focus();
+      }
       else current.click();
       return;
     }
@@ -4024,6 +4027,7 @@ html,body{margin:0;background:#e8eaed;font-family:system-ui,Roboto,Arial,sans-se
   function release() { clearTimeout(holdTimer); clearInterval(holdTimer); holdTimer = null; gliding = 0; }
   document.querySelectorAll('[data-k]').forEach(function (b) {
     var k = b.getAttribute('data-k');
+    b.tabIndex = -1;
     b.addEventListener('contextmenu', function (ev) { ev.preventDefault(); });  // przytrzymanie palcem bez menu telefonu
     if (ARROWS[k]) {  // przytrzymana strzałka przewija dalej sama, jak w telefonie
       b.addEventListener('pointerdown', function (ev) {
@@ -4038,6 +4042,7 @@ html,body{margin:0;background:#e8eaed;font-family:system-ui,Roboto,Arial,sans-se
       ['pointerup', 'pointercancel', 'lostpointercapture'].forEach(function (n) { b.addEventListener(n, release); });
       b.addEventListener('click', function (ev) { if (ev.detail === 0) press(k); });  // Enter/spacja na przycisku
     } else {
+      b.addEventListener('pointerdown', function (ev) { ev.preventDefault(); });  // dotknięcie klawisza nie przenosi fokusu
       b.addEventListener('click', function () { press(k); });
     }
   });
@@ -4079,6 +4084,18 @@ html,body{margin:0;background:#e8eaed;font-family:system-ui,Roboto,Arial,sans-se
         startLoad();
       });
       fd.addEventListener('submit', function (ev) { if (!ev.defaultPrevented) startLoad(); });
+      // iPhone: pola w ekranie bez klawiatury (inputmode=none), dopóki nie wciśniesz OK na polu albo nie dotkniesz go palcem –
+      // inaczej Safari potrafi sam ustawić fokus w polu po wczytaniu strony lub naciśnięciu klawisza i pokazać klawiaturę
+      Array.prototype.forEach.call(fd.querySelectorAll('input,textarea'), function (e) {
+        if (!e.hasAttribute('inputmode')) { e.setAttribute('inputmode', 'none'); e.setAttribute('data-nk-im', '1'); }
+      });
+      fd.addEventListener('pointerdown', function (ev) {
+        var t = ev.target; if (t && t.getAttribute && t.getAttribute('data-nk-im')) t.removeAttribute('inputmode');
+      }, true);
+      fd.addEventListener('focusout', function (ev) {
+        var t = ev.target; if (t && t.getAttribute && t.getAttribute('data-nk-im')) t.setAttribute('inputmode', 'none');
+      }, true);
+      if (typing(fd)) fd.activeElement.blur();
     } catch (e) {}
     current = null; loads += 1;
     var d = doc(); if (!d) return;
