@@ -3656,6 +3656,11 @@ DARK_STYLE = (
     ".dk .u,.dk .q{background:#303134;color:#e8eaed;border-color:#5f6368}"
     ".ok{color:#81c995;font-size:12px;white-space:nowrap}"
     ".dk input[type=submit]{background:#8ab4f8;color:#202124}"
+    ".sdt{width:100%;margin:0 0 4px}.sdt td{width:33%;padding:3px;vertical-align:top}"
+    ".sd{display:block;background:#303134;border-radius:12px;padding:5px 3px 6px;text-align:center;font-size:12px;line-height:1.3}"
+    ".dk a.sd{color:#e8eaed}.sd .k{float:left;margin:0 0 0 2px;font-size:10px;min-width:12px;line-height:13px}"
+    ".sdl{display:inline-block;width:28px;height:28px;line-height:28px;border-radius:14px;color:#fff;font-size:15px;font-weight:bold;margin:1px 0 2px}"
+    ".sdm{text-align:right;font-size:12px;margin:0 4px 10px}"
     ".dk .k{background:#303134;color:#e8eaed;border-color:#5f6368}.dk .r a.t:visited{color:#c58af9}"
     ".dk .ch2{background:#303134;border-color:#5f6368}.dk .f{background:#202124;border-color:#3c4043}"
 )
@@ -3684,7 +3689,7 @@ TEMPLATES = {
 """,
     "_nav.html": """<div class="bar"{% if not bottom %} id="g"{% endif %}>{% if theme and images %}<img class="ic" src="{{ url_for('image', u=theme.icon, r=theme.site, ic=theme.bar[1:]) }}" width="16" height="16" alt="">{% endif %}{% if q %}<a href="{{ url_for('search', q=q, p=rp, w=1) }}"{% if not bottom %} accesskey="7"{% endif %}>{% if request.args.get('l') %}Szukaj w sieci{% else %}&laquo; Wyniki{% endif %}</a> {% endif %}<a href="{{ url_for('home') }}"{% if not bottom %} accesskey="0"{% endif %}>Nowe szukanie</a></div>
 """,
-    "_settings.html": """<div class="f" id="d"><a class="ch2" href="{{ original }}" accesskey="9"><span class="k">9</span>[Oryginał]</a>{% if screen_on %}<a class="ch2" href="{{ url_for('screen_page', u=original) }}">[Zdalny ekran]</a>{% endif %}{% if bookmark_url %}{% if bookmarked %}<a class="ch2" href="{{ url_for('bookmark_remove', u=bookmark_url, next=request.full_path) }}" accesskey="4"><span class="k">4</span>Usuń z zakładek</a>{% else %}<a class="ch2" href="{{ url_for('bookmark_add', u=bookmark_url, t=title, next=request.full_path) }}" accesskey="4"><span class="k">4</span>Dodaj do zakładek</a>{% endif %}{% endif %}<br>
+    "_settings.html": """<div class="f" id="d"><a class="ch2" href="{{ original }}" accesskey="9"><span class="k">9</span>[Oryginał]</a>{% if screen_on %}<a class="ch2" href="{{ url_for('screen_page', u=original) }}">[Zdalny ekran]</a>{% endif %}{% if bookmark_url %}{% if bookmarked %}<a class="ch2" href="{{ url_for('bookmark_remove', u=bookmark_url, next=request.full_path) }}" accesskey="4"><span class="k">4</span>Usuń z zakładek</a>{% else %}<a class="ch2" href="{{ url_for('bookmark_add', u=bookmark_url, t=title, next=request.full_path) }}" accesskey="4"><span class="k">4</span>Dodaj do zakładek</a>{% endif %}{% if site %}<a class="ch2" href="{{ url_for('speed_add', u=site ~ '/', t=site_name or host, next=request.full_path) }}">{{ site_name or host }} do szybkiego wybierania</a>{% endif %}{% endif %}<br>
 {% if has_images and not saving %}<a class="ch2" href="{{ url_for('settings', k='obrazki', v=0 if images else 1, next=request.full_path) }}">Obrazki: {{ "wyłącz" if images else "włącz" }}</a>{% endif %}{% if has_links %}<a class="ch2" href="{{ url_for('settings', k='linki', v=0 if links else 1, next=request.full_path) }}">Linki w tekście: {{ "wyłącz" if links else "włącz" }}</a>{% endif %}{% if has_images and not saving or has_links %}<br>
 {% endif %}Tekst: {% for size, label in (("s", "A-"), ("m", "A"), ("l", "A+"), ("xl", "A++")) %}{% if text_size == size %}<b class="ch2 on">{{ label }}</b>{% else %}<a class="ch2" href="{{ url_for('settings', k='tekst', v=size, next=request.full_path) }}">{{ label }}</a>{% endif %}{% endfor %}<br>
 <a class="ch2" href="{{ url_for('settings', k='oszcz', v=0 if saving else 1, next=request.full_path) }}">Oszczędzanie danych: {{ "wyłącz" if saving else "włącz" }}</a><a class="ch2" href="{{ url_for('settings', k='ciemny', v=0 if dark else 1, next=request.full_path) }}">Ciemny motyw: {{ "wyłącz" if dark else "włącz" }}</a><br>
@@ -3706,9 +3711,11 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 <div class="logo">Szuk<span>ajka</span></div>
 {% set plus = True %}{% include "_pill.html" %}<p class="m">Wpisz hasło albo adres strony.</p>
 </div>
-<div class="hb">{% if weather %}<a class="cd" href="{{ url_for('weather_page') }}"><b>{{ weather.temp }}&deg;</b> {{ weather.city }}, {{ weather.desc }}{% for day in weather.days %}<br><span class="m">{{ day.label }} od {{ day.min }} do {{ day.max }}&deg;C, {{ day.desc }}</span>{% endfor %}</a>{% else %}<a class="cd" href="{{ url_for('weather_page') }}">Pogoda</a>{% endif %}
+<div class="hb">{% if tiles %}<table class="sdt" cellspacing="0" cellpadding="0">{% for row in tiles|batch(3) %}<tr>{% for t in row %}<td><a class="sd" href="{{ url_for('read', url=t.url) }}" accesskey="{{ t.n }}"><span class="k">{{ t.n }}</span><span class="sdl" style="background:{{ t.color }}">{{ t.letter }}</span><br>{{ t.name }}</a></td>{% endfor %}{% for _ in range(3 - row|length) %}<td></td>{% endfor %}</tr>
+{% endfor %}</table>{% endif %}<p class="sdm"><a href="{{ url_for('speed_dial') }}">Szybkie wybieranie: zmień</a></p>
+{% if weather %}<a class="cd" href="{{ url_for('weather_page') }}"><b>{{ weather.temp }}&deg;</b> {{ weather.city }}, {{ weather.desc }}{% for day in weather.days %}<br><span class="m">{{ day.label }} od {{ day.min }} do {{ day.max }}&deg;C, {{ day.desc }}</span>{% endfor %}</a>{% else %}<a class="cd" href="{{ url_for('weather_page') }}">Pogoda</a>{% endif %}
 {% if rates %}<div class="cd"><span class="m">Kursy NBP</span><br>{% for code, value in rates.rates %}<span class="nw">{{ code }} {{ value }}</span>{% if not loop.last %} &middot; {% endif %}{% endfor %} <span class="m">zł</span></div>
-{% endif %}<p><a href="{{ url_for('map_page') }}" class="ch">Mapa</a> {% if screen_on %}<a href="{{ url_for('screen_page') }}" class="ch">Zdalny ekran</a> {% endif %}{% if not in_frame %}<a href="{{ url_for('nokia_emulator') }}" class="ch">Podgląd Nokii</a> {% endif %}<a href="{{ url_for('history') }}" class="ch">Historia</a> <a href="{{ url_for('bookmarks') }}" accesskey="4" class="ch">Zakładki{% if bookmarks_count %} ({{ bookmarks_count }}){% endif %}</a> <a href="{{ url_for('settings', k='oszcz', v=0 if saving else 1, next='/') }}" class="ch">Oszczędzanie danych: {{ "wyłącz" if saving else "włącz" }}</a> <a href="{{ url_for('settings', k='ciemny', v=0 if dark else 1, next='/') }}" class="ch">Ciemny motyw: {{ "wyłącz" if dark else "włącz" }}</a></p>
+{% endif %}<p><a href="{{ url_for('map_page') }}" class="ch">Mapa</a> {% if screen_on %}<a href="{{ url_for('screen_page') }}" class="ch">Zdalny ekran</a> {% endif %}{% if not in_frame %}<a href="{{ url_for('nokia_emulator') }}" class="ch">Podgląd Nokii</a> {% endif %}<a href="{{ url_for('history') }}" class="ch">Historia</a> <a href="{{ url_for('bookmarks') }}" class="ch">Zakładki{% if bookmarks_count %} ({{ bookmarks_count }}){% endif %}</a> <a href="{{ url_for('settings', k='oszcz', v=0 if saving else 1, next='/') }}" class="ch">Oszczędzanie danych: {{ "wyłącz" if saving else "włącz" }}</a> <a href="{{ url_for('settings', k='ciemny', v=0 if dark else 1, next='/') }}" class="ch">Ciemny motyw: {{ "wyłącz" if dark else "włącz" }}</a></p>
 <p class="m">Dane z Szukajki w tym miesiącu: {{ data_mb|mb1 }} &middot; tekst:{% for size, label in (("s", "A-"), ("m", "A"), ("l", "A+"), ("xl", "A++")) %} {% if text_size == size %}<b>{{ label }}</b>{% else %}<a href="{{ url_for('settings', k='tekst', v=size, next='/') }}">{{ label }}</a>{% endif %}{% endfor %}</p></div>
 {% endblock %}
 """,
@@ -3727,6 +3734,25 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 {% endfor %}{% if q %}<a class="b" href="{{ url_for('history') }}">Cała historia</a>{% endif %}
 {% if total %}<a class="b" href="{{ url_for('history_clear') }}">Wyczyść historię</a>{% endif %}
 <p class="m">Historia jest zapisana tylko w telefonie (ostatnie ok. {{ limit }} stron &ndash; najstarsze wypadają).</p></div>
+{% endblock %}
+""",
+    "speed.html": """{% extends "base.html" %}
+{% block title %}Szybkie wybieranie{% endblock %}
+{% block extra_style %}<style>{{ dark_style }}</style>{% endblock %}
+{% block bodyattr %} class="dk"{% endblock %}
+{% block body %}<div class="sh"><div class="lg"><a href="{{ url_for('home') }}" accesskey="0">Szukajka</a></div></div>
+<div class="w">
+<h2>Szybkie wybieranie</h2>
+<p class="m">Kafelki na stronie głównej, otwierane klawiszami 1&ndash;{{ items|length or 9 }}.</p>
+{% for url, name in items %}<div class="r"><span class="k">{{ loop.index }}</span><a class="t" style="display:inline" href="{{ url_for('read', url=url) }}">{{ name }}</a><br>
+<span class="h">{{ url|host }}</span> &middot; {% if not loop.first %}<a class="o" href="{{ url_for('speed_change', i=loop.index, a='wyzej') }}">&#9650; wyżej</a> &middot; {% endif %}<a class="o" href="{{ url_for('speed_change', i=loop.index, a='usun') }}">usuń</a></div>
+{% else %}<p>Brak kafelków.</p>
+{% endfor %}{% if not full %}<h2>Dodaj stronę</h2>
+<form action="{{ url_for('speed_add') }}" method="get">Adres:<br><input class="u" type="text" name="u" maxlength="400"><br>Nazwa (nie musisz):<br><input class="u" type="text" name="t" maxlength="30"><br><input type="submit" value="Dodaj"></form>
+<p class="m">Stronę możesz też dodać z czytnika: na dole strony &bdquo;Dodaj do szybkiego wybierania&rdquo;.</p>
+{% else %}<p class="m">Wszystkie 9 miejsc zajęte &ndash; usuń któryś kafelek, żeby dodać nowy.</p>
+{% endif %}<a class="b" href="{{ url_for('speed_change', a='domyslne') }}">Przywróć domyślne</a>
+<a class="b" href="{{ url_for('home') }}">&laquo; Strona główna</a></div>
 {% endblock %}
 """,
     "bookmarks.html": """{% extends "base.html" %}
@@ -4472,7 +4498,8 @@ def video_items(article):
 @app.route("/")
 def home():
     weather, rates = home_widgets(user_city())
-    return render_template("home.html", q="", weather=weather, rates=rates, bookmarks_count=len(read_bookmarks()))
+    return render_template("home.html", q="", weather=weather, rates=rates, bookmarks_count=len(read_bookmarks()),
+                           tiles=speed_tiles())
 
 
 @app.route("/link")
@@ -5860,6 +5887,78 @@ def history():
 def history_clear():
     resp = redirect(url_for("history"))
     resp.delete_cookie(HISTORY_COOKIE)
+    return resp
+
+
+SPEED_COOKIE = "szybkie"
+SPEED_MAX = 9  # klawisze 1–9 na stronie głównej
+SPEED_DEFAULT = [["https://pl.m.wikipedia.org/", "Wikipedia"], ["https://www.onet.pl/", "Onet"], ["https://www.wp.pl/", "WP"],
+                 ["https://www.interia.pl/", "Interia"], ["https://www.rmf24.pl/", "RMF24"], ["https://jakdojade.pl/", "Jakdojade"]]
+SPEED_COLORS = ("#1a73e8", "#d93025", "#188038", "#e37400", "#9334e6", "#007b83", "#c5221f", "#3f51b5", "#795548")
+
+
+def read_speed():
+    """Szybkie wybieranie z ciasteczka ([adres, nazwa]); bez ciasteczka – kilka popularnych stron na start."""
+    raw = request.cookies.get(SPEED_COOKIE)
+    if raw is None:
+        return [list(row) for row in SPEED_DEFAULT]
+    try:
+        data = json.loads(zlib.decompress(base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4))).decode("utf-8"))
+    except (ValueError, zlib.error, TypeError):
+        return [list(row) for row in SPEED_DEFAULT]
+    return [row for row in data if isinstance(row, list) and len(row) == 2 and all(isinstance(v, str) for v in row)][:SPEED_MAX] \
+        if isinstance(data, list) else []
+
+
+def save_speed(resp, rows):
+    raw = base64.urlsafe_b64encode(zlib.compress(json.dumps(rows[:SPEED_MAX], ensure_ascii=False).encode("utf-8"), 9)).decode()
+    resp.set_cookie(SPEED_COOKIE, raw.rstrip("="), max_age=5 * 365 * 24 * 3600, samesite="Lax")
+
+
+def speed_tiles():
+    """Kafelki na stronę główną: numer (klawisz), nazwa, litera i kolor wyliczony z adresu (stały dla strony)."""
+    tiles = []
+    for number, (url, name) in enumerate(read_speed(), 1):
+        host = host_of(url)
+        letter = (name or host or "?").strip()[:1].upper()
+        color = SPEED_COLORS[int(hashlib.md5(host.encode()).hexdigest(), 16) % len(SPEED_COLORS)]
+        tiles.append({"n": number, "url": url, "name": shorten(name or host, 14), "letter": letter, "color": color})
+    return tiles
+
+
+@app.route("/szybkie")
+def speed_dial():
+    return render_template("speed.html", items=read_speed(), full=len(read_speed()) >= SPEED_MAX, q="")
+
+
+@app.route("/szybkie/dodaj")
+def speed_add():
+    url = (request.args.get("u") or "").strip()
+    name = shorten(squash(request.args.get("t") or ""), 30)
+    if url and not re.match(r"^https?://", url, re.I) and "." in url and " " not in url:
+        url = "https://" + url
+    resp = redirect(safe_next(request.args.get("next")) if request.args.get("next") else url_for("speed_dial"))
+    if re.match(r"^https?://", url, re.I) and len(url) <= 400:
+        rows = [row for row in read_speed() if row[0] != url]
+        if len(rows) < SPEED_MAX:
+            save_speed(resp, rows + [[url, name or host_of(url)]])
+    return resp
+
+
+@app.route("/szybkie/zmien")
+def speed_change():
+    rows, index = read_speed(), clamp_int(request.args.get("i"), 0, 0, SPEED_MAX)
+    resp = redirect(url_for("speed_dial"))
+    action = request.args.get("a")
+    if action == "domyslne":
+        resp.delete_cookie(SPEED_COOKIE)
+        return resp
+    if 1 <= index <= len(rows):
+        if action == "usun":
+            rows.pop(index - 1)
+        elif action == "wyzej" and index > 1:
+            rows[index - 2], rows[index - 1] = rows[index - 1], rows[index - 2]
+        save_speed(resp, rows)
     return resp
 
 
