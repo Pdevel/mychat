@@ -267,6 +267,42 @@ def clickables(page, width, height):
     return [dict(it, b=min(it["b"], height)) for it in items if it["y"] < height and it["cy"] < height][:400]
 
 
+def memory_mb(page):
+    """Pamięć zdalnej przeglądarki: cały Chromium (suma RSS jego procesów z /proc) i JavaScript tej karty."""
+    total = 0
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit():
+            continue
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as handle:
+                cmd = handle.read(400)
+            if b"chrom" not in cmd.lower() and b"headless_shell" not in cmd:
+                continue
+            try:  # PSS: pamięć wspólna procesów Chromium liczona raz (suma RSS by ją zawyżała)
+                with open(f"/proc/{pid}/smaps_rollup", encoding="ascii", errors="replace") as handle:
+                    found = [int(line.split()[1]) for line in handle if line.startswith("Pss:")]
+            except OSError:
+                found = []
+            if not found:
+                with open(f"/proc/{pid}/status", encoding="ascii", errors="replace") as handle:
+                    found = [int(line.split()[1]) for line in handle if line.startswith("VmRSS:")]
+            total += found[0] if found else 0  # kB
+        except (OSError, ValueError):
+            continue
+    js = 0
+    try:
+        cdp = getattr(page, "_ekran_cdp", None) or page.context.new_cdp_session(page)
+        page._ekran_cdp = cdp
+        if getattr(page, "_ekran_perf", None) is not cdp:  # pomiary trzeba raz włączyć w tej sesji CDP
+            cdp.send("Performance.enable")
+            page._ekran_perf = cdp
+        metrics = cdp.send("Performance.getMetrics")["metrics"]
+        js = next((m["value"] for m in metrics if m["name"] == "JSHeapUsedSize"), 0)
+    except PlaywrightError:
+        pass
+    return {"chromium": round(total / 1024), "karta_js": round(js / 1_048_576, 1)}
+
+
 def press_enter(page):
     """Enter; gdy strona go zignoruje (Mapy Google odrzucają symulowane klawisze) – wysłanie formularza pola
     albo zdarzenie Enter wysłane z poziomu strony."""
@@ -393,6 +429,8 @@ def act(body):
             result["shot"] = capture(page, view)
     if action == "type":
         result["debug"] = debug
+    if body.get("mem"):
+        result["mem"] = memory_mb(page)
     done = time.monotonic()
     result["ms"] = {"akcja": round((acted - started) * 1000), "zrzut": round((shot_done - acted) * 1000),
                     "reszta": round((done - shot_done) * 1000)}

@@ -3839,7 +3839,7 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 {% else %}{% if error %}<div class="e">{{ error }}</div>{% endif %}
 {% if google_q %}<div class="ef"><a href="{{ url_for('search', q=google_q) }}"><b>Szukaj &bdquo;{{ google_q }}&rdquo; w Szukajce</b></a></div>
 {% endif %}{% if field %}<form class="ef fx" action="{{ url_for('screen_page') }}" method="get"><b>{{ field }}:</b><br><input type="hidden" name="a" value="type"><input class="q" type="text" name="t" maxlength="500"> <input type="submit" value="Wpisz"> <input type="submit" name="enter" value="Wpisz + Enter"></form>
-{% endif %}{% if options %}<div class="w">{% if page_title %}<p class="m"><b>{{ page_title }}</b></p>{% endif %}<a class="b" href="{{ url_for('screen_page', a='shot') }}">&laquo; Wróć do strony</a>
+{% endif %}{% if options %}<div class="w">{% if page_title %}<p class="m"><b>{{ page_title }}</b></p>{% endif %}{% if mem %}<p class="m">Pamięć RAM: zdalna przeglądarka {{ mem.chromium }} MB (JavaScript tej strony {{ mem.karta_js }} MB){% if shot %} &middot; na Nokii obraz ok. {{ "%.1f"|format(shot.w * shot.h * 4 / 1048576) }} MB{% endif %}</p>{% endif %}<a class="b" href="{{ url_for('screen_page', a='shot') }}">&laquo; Wróć do strony</a>
 <a class="b" href="{{ url_for('screen_page', a='shot', live=1) }}">Odświeżaj na żywo (co 1 s)</a>
 {% if shot %}<a class="b" href="{{ url_for('screen_page', a='shot', lista=1) }}">Lista linków ({{ shot["items"]|length }})</a>
 {% endif %}<a class="b" href="{{ url_for('screen_page', a='key', key='Backspace') }}">Usuń znak w polu (&#9003;)</a>
@@ -5387,6 +5387,8 @@ def screen_page():
         # na żywo na Nokii: obraz = dokładnie jeden ekran; Opera Mini przeładowuje stronę i wraca na górę, więc nie ma czego
         # przewijać lokalnie – przewija się zdalna strona (2/8, ▲/▼), a widok zdalnej przeglądarki (i formularze) zostaje ten sam
         body = {"sid": sid, "action": action, "geo": screen_geo(), "view": dict(mode["view"], clip=LIVE_CLIP) if live_one else mode["view"]}
+        if request.args.get("opcje"):
+            body["mem"] = 1  # menu „⋯”: ile pamięci zajmuje zdalna przeglądarka
         if action == "open":
             body["url"] = target
         elif action == "click" and request.args.get("vx") is not None:  # obszar z mapy (strzałki Nokii): już w px widoku
@@ -5430,7 +5432,7 @@ def screen_page():
         resp = make_response(render_template("screen.html", waiting=False, state=state, target=target, shot=shot,
                                              mode=screen_mode(), live=bool(request.args.get("live")), tick=int(time.time()) % 100000,
                                              field=data.get("field") or "", as_list=bool(request.args.get("lista")),
-                                             options=bool(request.args.get("opcje")),
+                                             options=bool(request.args.get("opcje")), mem=data.get("mem") if isinstance(data.get("mem"), dict) else None,
                                              google_q=google_query(data.get("url") or ""),
                                              page_title=data.get("title", ""), page_url=data.get("url", "") or target,
                                              error=error, here=request.full_path, sw=SCREEN_W, closed=data.get("closed"),
