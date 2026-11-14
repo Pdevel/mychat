@@ -3565,6 +3565,13 @@ STYLE = (
     "input[type=submit]{background:#0b57d0;color:#fff;border:0;border-radius:16px;padding:6px 12px;font-weight:bold}"
     ".hl{background:#fff3a0}"
     ".e{background:#fff4e5;border:1px solid #f0c890;padding:8px 10px;margin:8px 0;border-radius:10px}"
+    # klawisz z cyfrą (skrót) i opcje jako pigułki – większe pola dla krzyżaka niż drobne linki w zdaniu
+    ".k{display:inline-block;min-width:15px;padding:0 3px;margin:0 4px 0 0;border:1px solid #c4c7c5;border-bottom-width:2px;"
+    "border-radius:4px;background:#fff;color:#3c4043;font:bold 11px/15px Arial,sans-serif;text-align:center;vertical-align:1px}"
+    ".ch2{display:inline-block;padding:2px 10px;margin:3px 4px 3px 0;border:1px solid #d3e0fb;border-radius:14px;"
+    "background:#fff;font-weight:bold;line-height:1.7}.ch2.on{background:#0b57d0;border-color:#0b57d0;color:#fff}"
+    ".ks{line-height:2.1}.ks .k{margin-left:6px}.kp{white-space:nowrap}"
+    ".r a.t{display:block;font-size:15px;line-height:1.35;padding:1px 0 2px}.r a.t:visited{color:#7b3fb0}"
 )
 
 # Ciemny wygląd strony głównej i wyników: duże logo, zaokrąglone pole wyszukiwania z lupą (tabela zamiast flexboxa).
@@ -3592,6 +3599,8 @@ DARK_STYLE = (
     ".dk .u,.dk .q{background:#303134;color:#e8eaed;border-color:#5f6368}"
     ".ok{color:#81c995;font-size:12px;white-space:nowrap}"
     ".dk input[type=submit]{background:#8ab4f8;color:#202124}"
+    ".dk .k{background:#303134;color:#e8eaed;border-color:#5f6368}.dk .r a.t:visited{color:#c58af9}"
+    ".dk .ch2{background:#303134;border-color:#5f6368}.dk .f{background:#202124;border-color:#3c4043}"
 )
 
 TEMPLATES = {
@@ -3617,10 +3626,11 @@ TEMPLATES = {
 """,
     "_nav.html": """<div class="bar"{% if not bottom %} id="g"{% endif %}>{% if theme and images %}<img class="ic" src="{{ url_for('image', u=theme.icon, r=theme.site, ic=theme.bar[1:]) }}" width="16" height="16" alt="">{% endif %}{% if q %}<a href="{{ url_for('search', q=q, p=rp, w=1) }}"{% if not bottom %} accesskey="7"{% endif %}>{% if request.args.get('l') %}Szukaj w sieci{% else %}&laquo; Wyniki{% endif %}</a> {% endif %}<a href="{{ url_for('home') }}"{% if not bottom %} accesskey="0"{% endif %}>Nowe szukanie</a></div>
 """,
-    "_settings.html": """<div class="f" id="d"><a href="{{ original }}" accesskey="9">[Oryginał]</a>{% if screen_on %} &middot; <a href="{{ url_for('screen_page', u=original) }}">[Zdalny ekran]</a>{% endif %}{% if bookmark_url %} &middot; {% if bookmarked %}<a href="{{ url_for('bookmark_remove', u=bookmark_url, next=request.full_path) }}" accesskey="4">Usuń z zakładek</a>{% else %}<a href="{{ url_for('bookmark_add', u=bookmark_url, t=title, next=request.full_path) }}" accesskey="4">Dodaj do zakładek</a>{% endif %}{% endif %}<br>
-{% if has_images and not saving %}<a href="{{ url_for('settings', k='obrazki', v=0 if images else 1, next=request.full_path) }}">Obrazki: {{ "wyłącz" if images else "włącz" }}</a> &middot; {% endif %}{% if has_links %}<a href="{{ url_for('settings', k='linki', v=0 if links else 1, next=request.full_path) }}">Linki w tekście: {{ "wyłącz" if links else "włącz" }}</a>{% endif %}{% if has_images and not saving or has_links %}<br>
-{% endif %}Tekst:{% for size, label in (("s", "A-"), ("m", "A"), ("l", "A+"), ("xl", "A++")) %} {% if text_size == size %}<b>{{ label }}</b>{% else %}<a href="{{ url_for('settings', k='tekst', v=size, next=request.full_path) }}">{{ label }}</a>{% endif %}{% endfor %} &middot; <a href="{{ url_for('settings', k='oszcz', v=0 if saving else 1, next=request.full_path) }}">Oszczędzanie danych: {{ "wyłącz" if saving else "włącz" }}</a><br>
-<span class="m">Dane w tym miesiącu: {{ data_mb|mb1 }} &middot; skróty: 1 wstecz, 3 dalej, <a href="#g" accesskey="2">2 góra</a>, <a href="#d" accesskey="8">8 dół</a>, 5 film, 4 zakładka, 7 wyniki, 0 nowe szukanie, 9 oryginał</span></div>
+    "_settings.html": """<div class="f" id="d"><a class="ch2" href="{{ original }}" accesskey="9"><span class="k">9</span>[Oryginał]</a>{% if screen_on %}<a class="ch2" href="{{ url_for('screen_page', u=original) }}">[Zdalny ekran]</a>{% endif %}{% if bookmark_url %}{% if bookmarked %}<a class="ch2" href="{{ url_for('bookmark_remove', u=bookmark_url, next=request.full_path) }}" accesskey="4"><span class="k">4</span>Usuń z zakładek</a>{% else %}<a class="ch2" href="{{ url_for('bookmark_add', u=bookmark_url, t=title, next=request.full_path) }}" accesskey="4"><span class="k">4</span>Dodaj do zakładek</a>{% endif %}{% endif %}<br>
+{% if has_images and not saving %}<a class="ch2" href="{{ url_for('settings', k='obrazki', v=0 if images else 1, next=request.full_path) }}">Obrazki: {{ "wyłącz" if images else "włącz" }}</a>{% endif %}{% if has_links %}<a class="ch2" href="{{ url_for('settings', k='linki', v=0 if links else 1, next=request.full_path) }}">Linki w tekście: {{ "wyłącz" if links else "włącz" }}</a>{% endif %}{% if has_images and not saving or has_links %}<br>
+{% endif %}Tekst: {% for size, label in (("s", "A-"), ("m", "A"), ("l", "A+"), ("xl", "A++")) %}{% if text_size == size %}<b class="ch2 on">{{ label }}</b>{% else %}<a class="ch2" href="{{ url_for('settings', k='tekst', v=size, next=request.full_path) }}">{{ label }}</a>{% endif %}{% endfor %}<br>
+<a class="ch2" href="{{ url_for('settings', k='oszcz', v=0 if saving else 1, next=request.full_path) }}">Oszczędzanie danych: {{ "wyłącz" if saving else "włącz" }}</a><br>
+<span class="m ks">Dane w tym miesiącu: {{ data_mb|mb1 }}<br>Skróty: <span class="kp"><span class="k">1</span>wstecz</span> <span class="kp"><span class="k">3</span>dalej</span> <a class="kp" href="#g" accesskey="2"><span class="k">2</span>góra</a> <a class="kp" href="#d" accesskey="8"><span class="k">8</span>dół</a> <span class="kp"><span class="k">5</span>film</span> <span class="kp"><span class="k">7</span>wyniki</span> <span class="kp"><span class="k">0</span>start</span></span></div>
 """,
     "_find_form.html": """<form action="{{ url_for('read') }}" method="get">
 {% if fixed_url %}<input type="hidden" name="url" value="{{ fixed_url }}">{% else %}Link:<br><input class="u" type="text" name="url" value="" maxlength="2000"><br>
@@ -3716,9 +3726,9 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 {% endfor %}{% if blocked_hidden %}<p class="m">Ukryto {{ blocked_hidden }} {{ "stronę, która blokuje" if blocked_hidden == 1 else ("strony, które blokują" if blocked_hidden % 10 in (2, 3, 4) and blocked_hidden % 100 not in (12, 13, 14) else "stron, które blokują") }} Szukajkę (ochrona przed botami). <a href="{{ url_for('search', q=q, p=page, all=1) }}">Pokaż</a></p>
 {% endif %}{% if hidden %}<p class="m">Ukryto {{ hidden }} {{ "stronę" if hidden == 1 else ("strony" if hidden % 10 in (2, 3, 4) and hidden % 100 not in (12, 13, 14) else "stron") }}, na których filmy nie działają. <a href="{{ url_for('search', q=q, p=page, all=1) }}">Pokaż</a></p>
 {% endif %}{% if not results and not error %}<p>Brak wyników.</p>
-{% endif %}{% if has_more %}<a class="b" href="{{ url_for('search', q=q, p=page + 1, all=1 if show_all else None) }}" accesskey="3">Następna strona &raquo;</a>
-{% endif %}{% if page > 1 %}<a class="b" href="{{ url_for('search', q=q, p=page - 1, all=1 if show_all else None) }}" accesskey="1">&laquo; Poprzednia strona</a>
-{% endif %}<p class="m"><a href="{{ url_for('home') }}" accesskey="0">Nowe szukanie</a> &middot; <a href="{{ url_for('map_page', q=q) }}">&bdquo;{{ q }}&rdquo; na mapie</a> &middot; skróty: 3 dalej, 1 wstecz, 0 nowe szukanie</p></div>
+{% endif %}{% if has_more %}<a class="b" href="{{ url_for('search', q=q, p=page + 1, all=1 if show_all else None) }}" accesskey="3"><span class="k">3</span>Następna strona &raquo;</a>
+{% endif %}{% if page > 1 %}<a class="b" href="{{ url_for('search', q=q, p=page - 1, all=1 if show_all else None) }}" accesskey="1"><span class="k">1</span>&laquo; Poprzednia strona</a>
+{% endif %}<p class="m"><a href="{{ url_for('home') }}" accesskey="0">Nowe szukanie</a> &middot; <a href="{{ url_for('map_page', q=q) }}">&bdquo;{{ q }}&rdquo; na mapie</a> </p><p class="m ks">Skróty: <span class="kp"><span class="k">3</span>dalej</span> <span class="kp"><span class="k">1</span>wstecz</span> <span class="kp"><span class="k">0</span>start</span></p></div>
 {% endblock %}
 """,
     "read.html": """{% extends "base.html" %}
@@ -3754,8 +3764,8 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 {% else %}{{ tl(r.v) }}<br>
 {% endif %}{% endfor %}</div>
 {% else %}<p>{{ it.text }}</p>
-{% endif %}{% endfor %}{% if page < pages %}<a class="b" href="{{ url_for('read', url=url, q=q, rp=rp, page=page + 1) }}" accesskey="3">Dalej &raquo; ({{ page }}/{{ pages }})</a>
-{% endif %}{% if page > 1 %}<a class="b" href="{{ url_for('read', url=url, q=q, rp=rp, page=page - 1) }}" accesskey="1">&laquo; Wstecz</a>
+{% endif %}{% endfor %}{% if page < pages %}<a class="b" href="{{ url_for('read', url=url, q=q, rp=rp, page=page + 1) }}" accesskey="3"><span class="k">3</span>Dalej &raquo; ({{ page }}/{{ pages }})</a>
+{% endif %}{% if page > 1 %}<a class="b" href="{{ url_for('read', url=url, q=q, rp=rp, page=page - 1) }}" accesskey="1"><span class="k">1</span>&laquo; Wstecz</a>
 {% endif %}{% set fixed_url = url %}{% include "_find_form.html" %}</div>
 {% set bottom = True %}{% include "_nav.html" %}{% include "_settings.html" %}
 {% endblock %}
