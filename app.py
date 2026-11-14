@@ -3999,6 +3999,14 @@ html,body{margin:0;background:#e8eaed;font-family:system-ui,Roboto,Arial,sans-se
     var cb = current && boxOf(d, current);
     if (cb && (cb.top + cb.height <= 0 || cb.top >= w.innerHeight)) { current = null; mark(d); }
   }
+  function lock(e) {
+    if (!e || !/^(INPUT|TEXTAREA)$/.test(e.tagName) || /^(hidden|submit|image|button|checkbox|radio|file|range|color)$/i.test(e.type || '')) return;
+    if (!e.getAttribute('data-nk-ro')) { if (e.readOnly) return; e.setAttribute('data-nk-ro', '1'); }  // pola naprawdę tylko do odczytu zostawiamy
+    e.readOnly = true; e.setAttribute('inputmode', 'none');
+  }
+  function unlock(e) {
+    if (e && e.getAttribute && e.getAttribute('data-nk-ro')) { e.readOnly = false; e.removeAttribute('inputmode'); }
+  }
   function typing(d) {  // pole tekstowe w ekranie ma fokus (otwarta klawiatura telefonu)
     var a = d.activeElement;
     return a && (a.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName) && !/^(submit|image|button|checkbox|radio)$/i.test(a.type || ''));
@@ -4011,7 +4019,7 @@ html,body{margin:0;background:#e8eaed;font-family:system-ui,Roboto,Arial,sans-se
     if (k === 'ok') {
       if (!current) return move(1);
       if (/^(INPUT|TEXTAREA|SELECT)$/.test(current.tagName) && !/^(submit|image|button)$/i.test(current.type)) {
-        if (current.getAttribute('data-nk-im')) current.removeAttribute('inputmode');  // tylko OK na polu otwiera klawiaturę
+        unlock(current);  // tylko OK na polu otwiera klawiaturę
         current.focus();
       }
       else current.click();
@@ -4084,17 +4092,12 @@ html,body{margin:0;background:#e8eaed;font-family:system-ui,Roboto,Arial,sans-se
         startLoad();
       });
       fd.addEventListener('submit', function (ev) { if (!ev.defaultPrevented) startLoad(); });
-      // iPhone: pola w ekranie bez klawiatury (inputmode=none), dopóki nie wciśniesz OK na polu albo nie dotkniesz go palcem –
-      // inaczej Safari potrafi sam ustawić fokus w polu po wczytaniu strony lub naciśnięciu klawisza i pokazać klawiaturę
-      Array.prototype.forEach.call(fd.querySelectorAll('input,textarea'), function (e) {
-        if (!e.hasAttribute('inputmode')) { e.setAttribute('inputmode', 'none'); e.setAttribute('data-nk-im', '1'); }
-      });
-      fd.addEventListener('pointerdown', function (ev) {
-        var t = ev.target; if (t && t.getAttribute && t.getAttribute('data-nk-im')) t.removeAttribute('inputmode');
-      }, true);
-      fd.addEventListener('focusout', function (ev) {
-        var t = ev.target; if (t && t.getAttribute && t.getAttribute('data-nk-im')) t.setAttribute('inputmode', 'none');
-      }, true);
+      // iPhone (Safari i Chrome): pola w ekranie zablokowane (readonly + inputmode=none) – zablokowane pole nigdy nie otwiera
+      // klawiatury, nawet gdy przeglądarka sama ustawi w nim fokus; odblokowuje je OK na polu albo dotknięcie pola palcem
+      Array.prototype.forEach.call(fd.querySelectorAll('input,textarea'), lock);
+      fd.addEventListener('pointerdown', function (ev) { unlock(ev.target); }, true);
+      fd.addEventListener('touchstart', function (ev) { unlock(ev.target); }, true);
+      fd.addEventListener('focusout', function (ev) { if (ev.target && ev.target.getAttribute && ev.target.getAttribute('data-nk-ro')) lock(ev.target); }, true);
       if (typing(fd)) fd.activeElement.blur();
     } catch (e) {}
     current = null; loads += 1;
