@@ -3891,6 +3891,52 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 {% endif %}<a class="hk" tabindex="-1" href="{{ url_for('screen_page', a='back') }}" accesskey="1">wstecz</a><a class="hk" tabindex="-1" href="{{ url_for('screen_page', a='up', live=1 if live else None) }}" accesskey="2">góra</a><a class="hk" tabindex="-1" href="{{ url_for('screen_page', a='forward') }}" accesskey="3">dalej</a><a class="hk" tabindex="-1" href="{{ url_for('screen_page') if live else url_for('screen_page', a='reload') }}" accesskey="5">{{ "stop" if live else "odśwież" }}</a><a class="hk" tabindex="-1" href="{{ url_for('screen_page', a='down', live=1 if live else None) }}" accesskey="8">dół</a><a class="hk" tabindex="-1" href="{{ url_for('home') }}" accesskey="0">start</a>
 {% if debug %}<!-- wpisywanie: {{ debug }} -->{% endif %}{% endblock %}
 """,
+    "anim_test.html": """<!DOCTYPE html>
+<html lang="pl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>Test animacji</title>
+<style>
+body{margin:0;padding:6px 8px;font:14px/1.4 Arial,sans-serif;color:#202124;background:#fff}
+h1{font-size:17px;margin:4px 0 6px}h2{font-size:14px;margin:12px 0 4px}.m{color:#5f6368;font-size:12px}
+.t{border:1px solid #dadce0;border-radius:8px;padding:6px 8px;margin:0 0 8px;overflow:hidden}
+.n{display:inline-block;width:18px;height:18px;line-height:18px;text-align:center;border-radius:9px;background:#0b57d0;color:#fff;font-weight:bold;margin-right:6px}
+@keyframes obrot{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+@keyframes puls{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.2;transform:scale(.6)}}
+@keyframes jazda{from{margin-left:0}to{margin-left:180px}}
+@keyframes kolor{0%{background:#ea4335}33%{background:#fbbc04}66%{background:#34a853}100%{background:#ea4335}}
+@keyframes miga{0%,49%{visibility:visible}50%,100%{visibility:hidden}}
+.obrot{width:30px;height:30px;background:#0b57d0;margin:6px 0;animation:obrot 2s linear infinite}
+.puls{width:30px;height:30px;border-radius:15px;background:#ea4335;margin:6px 0;animation:puls 1.5s ease-in-out infinite}
+.tor{background:#eee;height:14px;border-radius:7px;width:200px;margin:6px 0}
+.jazda{width:20px;height:14px;border-radius:7px;background:#34a853;animation:jazda 2s ease-in-out infinite alternate}
+.kolor{height:22px;border-radius:6px;margin:6px 0;animation:kolor 3s linear infinite}
+.miga{color:#ea4335;font-weight:bold;animation:miga 1s step-end infinite}
+.przejscie{display:inline-block;padding:6px 12px;margin:6px 0;border-radius:14px;background:#eef3fd;color:#0b57d0;font-weight:bold;
+  text-decoration:none;transition:background 1s,color 1s,padding 1s}
+.przejscie:focus,.przejscie:hover{background:#0b57d0;color:#fff;padding:6px 30px}
+.ua{font:11px/1.3 monospace;word-wrap:break-word;color:#3c4043;background:#f1f3f4;padding:6px;border-radius:6px}
+</style></head><body>
+<h1>Test animacji</h1>
+<p class="m">Otwórz na Nokii i zapisz numery elementów, które się <b>ruszają</b> lub <b>zmieniają</b>. Wszystkie animacje są bez końca.</p>
+<h2>Animacje CSS</h2>
+<div class="t"><span class="n">1</span>Obracający się kwadrat<div class="obrot"></div></div>
+<div class="t"><span class="n">2</span>Pulsujące kółko (znika i wraca)<div class="puls"></div></div>
+<div class="t"><span class="n">3</span>Zielona kropka jeździ w lewo i prawo<div class="tor"><div class="jazda"></div></div></div>
+<div class="t"><span class="n">4</span>Pasek zmienia kolor: czerwony, żółty, zielony<div class="kolor"></div></div>
+<div class="t"><span class="n">5</span>Migający napis: <span class="miga">MIGAM</span></div>
+<div class="t"><span class="n">6</span>Przejście CSS: zaznacz ten przycisk krzyżakiem – powinien płynnie zrobić się ciemnoniebieski i szerszy<br>
+<a class="przejscie" href="#6">Zaznacz mnie</a></div>
+<h2>Dla porównania (inne sposoby)</h2>
+<div class="t"><span class="n">7</span>Animowany GIF (kręcące się kółko)<br><img src="{{ url_for('anim_test_gif') }}" width="32" height="32" alt="GIF"></div>
+<div class="t"><span class="n">8</span>Animowany SVG (kółko zmienia rozmiar)<br><img src="{{ url_for('anim_test_svg') }}" width="40" height="40" alt="SVG"></div>
+<div class="t"><span class="n">9</span>Zegar w JavaScripcie (sekundy powinny lecieć): <b id="zegar">{{ now }}</b>
+<script>(function () { var e = document.getElementById('zegar'); var n = 0;
+setInterval(function () { n += 1; e.innerHTML = '{{ now }} + ' + n + ' s'; }, 1000); })();</script></div>
+<h2>Twoja przeglądarka</h2>
+<div class="ua">{{ ua }}{% for k, v in extra %}<br>{{ k }}: {{ v }}{% endfor %}</div>
+<p class="m">Zrób zdjęcie ekranu albo przepisz numery, które się ruszają, i wyślij je w czacie. Strona waży kilka KB.</p>
+<p><a href="{{ url_for('home') }}">Szukajka</a></p>
+</body></html>
+""",
     "nokia.html": """<!DOCTYPE html>
 <html lang="pl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Podgląd Nokii</title>
@@ -5398,6 +5444,46 @@ def screen_act(url, body, retry=True):
     if resp.status_code != 200:
         raise InstaboxError(data.get("error") or f"Zdalna przeglądarka: błąd {resp.status_code}.")
     return data
+
+
+@app.route("/test-animacji")
+def anim_test():
+    """Strona testowa: które animacje (CSS, GIF, SVG, JavaScript) odtwarza przeglądarka telefonu (Opera Mini?)."""
+    extra = [(name, request.headers.get(name)) for name in ("X-OperaMini-Phone-UA", "X-OperaMini-Phone", "X-OperaMini-Features",
+                                                             "Device-Stock-UA") if request.headers.get(name)]
+    resp = make_response(render_template("anim_test.html", ua=request.headers.get("User-Agent", "(brak)"), extra=extra,
+                                         now=time.strftime("%H:%M:%S")))
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+@app.route("/test-animacji.gif")
+def anim_test_gif():
+    frames = []
+    for step in range(8):  # kółko z jedną ciemną kropką, która obiega środek
+        frame = Image.new("P", (32, 32), 0)
+        frame.putpalette([255, 255, 255, 200, 200, 200, 11, 87, 208] + [0] * 759)
+        draw = ImageDraw.Draw(frame)
+        for i in range(8):
+            angle = i * math.pi / 4
+            x, y = 16 + 11 * math.cos(angle), 16 + 11 * math.sin(angle)
+            draw.ellipse((x - 3, y - 3, x + 3, y + 3), fill=2 if i == step else 1)
+        frames.append(frame)
+    out = io.BytesIO()
+    frames[0].save(out, "GIF", save_all=True, append_images=frames[1:], duration=120, loop=0)
+    resp = make_response(out.getvalue())
+    resp.headers.update({"Content-Type": "image/gif", "Cache-Control": "public, max-age=86400"})
+    return resp
+
+
+@app.route("/test-animacji.svg")
+def anim_test_svg():
+    svg = ('<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40">'
+           '<circle cx="20" cy="20" r="6" fill="#34a853"><animate attributeName="r" values="6;18;6" dur="1.5s" '
+           'repeatCount="indefinite"/></circle></svg>')
+    resp = make_response(svg)
+    resp.headers.update({"Content-Type": "image/svg+xml", "Cache-Control": "public, max-age=86400"})
+    return resp
 
 
 @app.route("/nokia")
