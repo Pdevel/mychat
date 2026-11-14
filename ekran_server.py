@@ -39,6 +39,7 @@ def view_of(body):
     out = {"w": num("w", 240, 480, WIDTH), "h": num("h", 320, 4000, HEIGHT), "scale": num("scale", 1, 2, 1), "q": num("q", 40, 85, 60),
            "fmt": "webp" if view.get("fmt") == "webp" else "jpeg"}
     out["clip"] = min(out["h"], num("clip", 100, 4000, out["h"]))  # zrzut tylko górnej części widoku (np. jeden ekran Nokii)
+    out["base"] = min(out["h"], num("base", 200, 4000, out["h"]))  # okno dla aplikacji (Mapy, Jakdojade) – rośnie do h dla długich stron
     out["out"] = num("out", 0, 960, 0)  # szerokość gotowego obrazu (Nokia: 232 px) – bez przepakowywania na serwerze Szukajki
     return out
 MAX_SESSIONS = 3
@@ -156,7 +157,7 @@ SIGNATURE = ("() => { " + DEEP + "const all = deepAll('*'); const a = deepActive
 
 
 def new_context(sid, view):
-    context = browser.new_context(viewport={"width": view["w"], "height": view["h"]}, device_scale_factor=view["scale"],
+    context = browser.new_context(viewport={"width": view["w"], "height": view.get("base") or view["h"]}, device_scale_factor=view["scale"],
                                   is_mobile=True, has_touch=True, user_agent=USER_AGENT, locale="pl-PL",
                                   timezone_id="Europe/Warsaw")
     # link otwierający nową kartę (target=_blank, window.open): ekran pokazuje nową kartę
@@ -305,6 +306,32 @@ def memory_mb(page):
     return {"chromium": round(total / 1024), "karta_js": round(js / 1_048_576, 1)}
 
 
+def fit_height(page, view):
+    """Wysokość okna dopasowana do strony. Aplikacje (Mapy Google, Jakdojade) rozciągają się na całe okno – w oknie
+    wysokim na 3000 px treść ląduje u góry, a pod nią jest pustka; dostają okno wielkości ekranu telefonu. Długie strony
+    (artykuły) – wysokie okno: kilka ekranów w jednym obrazie, przewijanie bez pytania serwera. Raz na adres strony."""
+    base = view.get("base") or view["h"]
+    if base >= view["h"]:
+        return view["h"]
+    known = getattr(page, "_ekran_fit", None)
+    if known and known[0] == page.url:
+        return known[1]
+    try:
+        if (page.viewport_size or {}).get("height") != base:
+            page.set_viewport_size({"width": view["w"], "height": base})
+            page.wait_for_timeout(120)
+        content = run(page, "() => Math.max(document.documentElement.scrollHeight, document.body ? document.body.scrollHeight : 0)",
+                      default=base) or base
+        height = view["h"] if content > base * 1.3 else base
+        if height != base:
+            page.set_viewport_size({"width": view["w"], "height": height})
+            page.wait_for_timeout(150)
+    except PlaywrightError:
+        height = (page.viewport_size or {}).get("height") or base
+    page._ekran_fit = (page.url, height)
+    return height
+
+
 def press_enter(page):
     """Enter; gdy strona go zignoruje (Mapy Google odrzucają symulowane klawisze) – wysłanie formularza pola
     albo zdarzenie Enter wysłane z poziomu strony."""
@@ -356,8 +383,11 @@ def act(body):
         else:
             page.wait_for_timeout(350)  # nakładka, menu, pole: animacja i kursor
     elif action == "scroll":
-        page.mouse.move(width / 2, (view.get("clip") or height) / 2)  # środek tego, co widać na telefonie
-        page.mouse.wheel(0, max(-3000, min(3000, int(body.get("dy", 0)))))
+        shown = min(view.get("clip") or height, (page.viewport_size or {}).get("height") or height)
+        page.mouse.move(width / 2, shown / 2)  # środek tego, co widać na telefonie
+        dy = int(body.get("dy", 0))
+        limit = shown - 200 if shown > 1000 else max(100, shown * 3 // 4)  # okno aplikacji: krok 3/4 ekranu
+        page.mouse.wheel(0, max(-limit, min(limit, dy)))
         page.wait_for_timeout(250)
     elif action == "type":
         text = str(body.get("text") or "")[:500]
@@ -418,6 +448,9 @@ def act(body):
     if sid in sessions and sessions[sid]["page"] is not page and not sessions[sid]["page"].is_closed():
         page = sessions[sid]["page"]  # kliknięcie otworzyło nową kartę
         settle(page, 800)
+    fitted = fit_height(page, view)
+    view = dict(view, clip=min(view.get("clip") or view["h"], fitted))  # zrzut tylko tego, co jest w oknie
+    height = view["clip"]
     acted = time.monotonic()
     shot = capture(page, view)
     shot_done = time.monotonic()
