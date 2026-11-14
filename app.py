@@ -5127,7 +5127,7 @@ with open(SCREEN_SERVER, "rb") as _source:
 screen_shots = DiskCache("ekran", ttl=900, max_files=300)
 # Mały: Nokia (zrzut zmniejszany do 232 px). Duży: nowoczesne telefony – widok 390 px w podwójnej gęstości pikseli.
 SCREEN_MODES = {
-    "s": {"view": {"w": 320, "h": 3000, "scale": 1, "q": 80}, "display": SCREEN_W, "step": 2800},  # 320×3000 -> 232×2175: ok. 7 ekranów
+    "s": {"view": {"w": 320, "h": 3000, "scale": 1, "q": 76, "out": SCREEN_W}, "display": SCREEN_W, "step": 2800},  # 320×3000 -> 232×2175: ok. 7 ekranów
     # Nokii w jednym obrazie (ok. 2 MB po rozpakowaniu, z pracą Opery Mini do ok. 10 MB) – przewijanie w obrębie zrzutu jest natychmiastowe
     "l": {"view": {"w": 390, "h": 630, "scale": 2, "q": 68, "fmt": "webp"}, "display": 390},  # WebP: ok. 1/3 lżejszy od JPEG
 }
@@ -5282,9 +5282,15 @@ def prepare_screen():
         _screen_lock.release()
 
 
+_screen_ok = {"url": None, "at": 0.0}  # ostatnia udana akcja na zdalnym ekranie (w tym procesie serwera)
+
+
 def screen_ready():
     """(adres ekranu albo None, stan). Gdy ekran nie działa – przygotowanie w tle."""
     state = screen_state()
+    if (state.get("status") == "ready" and state.get("url") and _screen_ok["url"] == state["url"]
+            and time.monotonic() - _screen_ok["at"] < 60):
+        return state["url"], state  # przed chwilą odpowiadał: bez osobnego sprawdzania (każde to droga tam i z powrotem)
     if state.get("status") == "ready" and state.get("url"):
         for wait in (0, 2, 4):  # chwilowy brak odpowiedzi to nie powód, by wgrywać ekran od nowa (traci otwarte strony)
             time.sleep(wait)
@@ -5334,7 +5340,9 @@ def screen_act(url, body, retry=True):
             time.sleep(3)
             return screen_act(url, {"sid": body["sid"], "action": "shot", "geo": body.get("geo"), "view": body.get("view")},
                               retry=False)
+        _screen_ok["at"] = 0.0  # następnym razem znowu sprawdzimy, czy maszyna żyje
         raise InstaboxError(f"Zdalna przeglądarka nie odpowiedziała ({status}). Spróbuj ponownie albo odśwież (5).")
+    _screen_ok.update(url=url, at=time.monotonic())
     if resp.status_code != 200:
         raise InstaboxError(data.get("error") or f"Zdalna przeglądarka: błąd {resp.status_code}.")
     return data
@@ -5418,7 +5426,7 @@ def screen_page():
                 with Image.open(io.BytesIO(raw)) as image:
                     display = mode["display"]
                     height = round(image.height * display / image.width)  # wysokość na ekranie (px CSS)
-                    if mode["view"]["scale"] == 1:  # Nokia: plik o rozmiarze ekranu
+                    if mode["view"]["scale"] == 1 and image.width != display:  # Nokia: plik o rozmiarze ekranu (gdy maszyna nie zmniejszyła)
                         image = image.convert("RGB").resize((display, height), Image.Resampling.LANCZOS)
                         out = io.BytesIO()
                         image.save(out, "JPEG", quality=76, optimize=True)

@@ -39,6 +39,7 @@ def view_of(body):
     out = {"w": num("w", 240, 480, WIDTH), "h": num("h", 320, 4000, HEIGHT), "scale": num("scale", 1, 2, 1), "q": num("q", 40, 85, 60),
            "fmt": "webp" if view.get("fmt") == "webp" else "jpeg"}
     out["clip"] = min(out["h"], num("clip", 100, 4000, out["h"]))  # zrzut tylko górnej części widoku (np. jeden ekran Nokii)
+    out["out"] = num("out", 0, 960, 0)  # szerokość gotowego obrazu (Nokia: 232 px) – bez przepakowywania na serwerze Szukajki
     return out
 MAX_SESSIONS = 3
 IDLE_SECONDS = 20 * 60
@@ -236,7 +237,8 @@ def capture(page, view):
         cdp = page.context.new_cdp_session(page) if getattr(page, "_ekran_cdp", None) is None else page._ekran_cdp
         page._ekran_cdp = cdp
         x, y = run(page, "() => [scrollX, scrollY]", default=[0, 0])  # obszar zrzutu liczy się od początku dokumentu
-        clip = {"x": x, "y": y, "width": view["w"], "height": view.get("clip") or view["h"], "scale": view["scale"]}  # scale: ostrość (Retina)
+        scale = view["out"] / view["w"] if view.get("out") else view["scale"]
+        clip = {"x": x, "y": y, "width": view["w"], "height": view.get("clip") or view["h"], "scale": scale}  # scale: ostrość (Retina)
         return cdp.send("Page.captureScreenshot", {"format": view["fmt"], "quality": view["q"], "clip": clip})["data"]
     except PlaywrightError:
         page._ekran_cdp = None
