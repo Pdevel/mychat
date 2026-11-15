@@ -4140,6 +4140,37 @@ html,body{margin:0;background:#e8eaed;font-family:system-ui,Roboto,Arial,sans-se
     if (b && !fits(b, w)) w.scrollBy(0, b.top < 0 ? b.top - 6 : Math.min(b.top - 6, b.top + b.height - w.innerHeight + 6));
     mark(d);  // bez focus(): żółta ramka wystarczy, a fokus na iPhonie potrafi wywołać klawiaturę
   }
+  // strzałki jak w Operze Mini: przestrzennie – w dół do najbliższego elementu poniżej (np. na szachownicy e2 -> e1),
+  // w prawo do najbliższego w tym samym rzędzie; gdy w rzędzie już nic nie ma, prawo/lewo idą po kolei (jak dotąd)
+  function spatial(k) {
+    var d = doc(); if (!d) return;
+    var w = win(), cb = current && boxOf(d, current);
+    var vertical = k === 'up' || k === 'down', dir = (k === 'down' || k === 'right') ? 1 : -1;
+    if (!cb || cb.top + cb.height <= 0 || cb.top >= w.innerHeight) return move(dir);
+    var cx = cb.left + cb.width / 2, cy = cb.top + cb.height / 2, best = null, bestScore = Infinity, step = Math.round(w.innerHeight * 0.4);
+    items(d).forEach(function (e) {
+      if (e === current) return;
+      var b = boxOf(d, e); if (!b) return;
+      var x = b.left + b.width / 2, y = b.top + b.height / 2, score;
+      if (vertical) {
+        var dy = (y - cy) * dir;
+        if (dy < Math.max(4, Math.min(cb.height, b.height) * 0.5)) return;  // nie poniżej/powyżej
+        if (b.top > w.innerHeight + step || b.top + b.height < -step) return;  // za daleko – najpierw przewijanie
+        score = dy + 2 * Math.abs(x - cx);
+      } else {
+        var dx = (x - cx) * dir;
+        if (dx < 4 || Math.abs(y - cy) > Math.max(cb.height, b.height) * 0.6) return;  // tylko ten sam rząd
+        score = dx;
+      }
+      if (score < bestScore) { bestScore = score; best = e; }
+    });
+    if (best) return pick(d, best);
+    if (!vertical) return move(dir);  // w rzędzie nic więcej: kolejny element po kolei
+    w.scrollBy(0, dir * step);  // nic poniżej/powyżej w zasięgu: przewinięcie, kursor zostaje, póki widać
+    cb = boxOf(d, current);
+    if (cb && (cb.top + cb.height <= 0 || cb.top >= w.innerHeight)) current = null;
+    mark(d);
+  }
   function move(dir) {  // jak w Operze Mini: krótki krok przewijania, kursor tylko na widocznych elementach
     var d = doc(); if (!d) return;
     var w = win(), step = Math.round(w.innerHeight * 0.4), list = items(d), i = list.indexOf(current);
@@ -4192,8 +4223,7 @@ html,body{margin:0;background:#e8eaed;font-family:system-ui,Roboto,Arial,sans-se
   function press(k) {
     var d = doc(), w = win(); if (!d) return;
     if (!(k === 'ok' && current && current === d.activeElement) && typing(d)) d.activeElement.blur();  // inny klawisz chowa klawiaturę
-    if (k === 'up' || k === 'left') return move(-1);
-    if (k === 'down' || k === 'right') return move(1);
+    if (k === 'up' || k === 'down' || k === 'left' || k === 'right') return spatial(k);
     if (k === 'ok') {
       if (!current) return move(1);
       if (/^(INPUT|TEXTAREA|SELECT)$/.test(current.tagName) && !/^(submit|image|button)$/i.test(current.type)) {
