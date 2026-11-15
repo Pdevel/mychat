@@ -54,6 +54,10 @@ PULSE = "/tmp/ekran-pulse"
 AUDIO_ENV = dict(os.environ, PULSE_SERVER="unix:" + PULSE)
 audio = {"state": "brak", "error": ""}
 listeners = []
+# jakość strumienia: s – oszczędna (mowa, mało danych), d – dobra (muzyka), w – wysoka
+AUDIO_QUALITY = {"s": ["-ac", "1", "-ar", "22050", "-b:a", "48k"],
+                 "d": ["-ac", "2", "-ar", "44100", "-b:a", "128k"],
+                 "w": ["-ac", "2", "-ar", "44100", "-b:a", "192k", "-compression_level", "0"]}
 
 
 def start_pulse():
@@ -826,8 +830,10 @@ class Handler(BaseHTTPRequestHandler):
         if len(listeners) >= 2:
             self.reply(429, {"error": "dźwięk już leci do dwóch odbiorników"})
             return
-        proc = subprocess.Popen(["ffmpeg", "-loglevel", "error", "-f", "pulse", "-fragment_size", "1024", "-i", "ekran.monitor",
-                                 "-ac", "1", "-ar", "22050", "-b:a", "48k", "-f", "mp3", "-flush_packets", "1", "pipe:1"],
+        quality = AUDIO_QUALITY.get((parse_qs(urlparse(self.path).query).get("q") or ["d"])[0], AUDIO_QUALITY["d"])
+        proc = subprocess.Popen(["ffmpeg", "-loglevel", "error", "-thread_queue_size", "1024", "-f", "pulse",
+                                 "-fragment_size", "2048", "-i", "ekran.monitor", *quality,
+                                 "-codec:a", "libmp3lame", "-f", "mp3", "-flush_packets", "1", "pipe:1"],
                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=AUDIO_ENV)
         listeners.append(proc)
         try:

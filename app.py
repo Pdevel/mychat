@@ -2134,7 +2134,7 @@ def saving_enabled():
 
 # Ustawienia zapamiętane w telefonie (ciasteczka na rok): klucz -> dozwolone wartości.
 SETTINGS = {"obrazki": {"0", "1"}, "linki": {"0", "1"}, "tekst": {"s", "m", "l", "xl"}, "oszcz": {"0", "1"}, "ekq": {"s", "l"},
-            "nokia": {"0", "1"}, "ciemny": {"0", "1"},
+            "nokia": {"0", "1"}, "ciemny": {"0", "1"}, "dzw": {"s", "d", "w"},
             "miasto": None}
 TEXT_SIZES = {"s": 12, "m": 14, "l": 17, "xl": 20}  # px; 14 to wielkość domyślna
 DATA_COOKIE = "dane"
@@ -4048,7 +4048,8 @@ setInterval(function () { n += 1; e.innerHTML = '{{ now }} + ' + n + ' s'; }, 10
 {% if link %}<p>To, co gra w zdalnej przeglądarce (np. utwór włączony na stronie), leci na żywo do Twojego telefonu. Nic nie jest zapisywane.</p>
 <a class="b" href="{{ link }}" accesskey="5"><span class="k">5</span>Słuchaj w odtwarzaczu telefonu</a>
 {% if not small_browser %}<audio controls autoplay preload="none" src="{{ link }}" style="width:100%"></audio>
-{% endif %}<p class="m">Dźwięk jest kilka sekund za obrazem. Pauza i zmiana utworu – na zdalnym ekranie. Link działa 6 godzin.{% if restarted %} Zdalna przeglądarka uruchomiła się od nowa z dźwiękiem – otwórz stronę jeszcze raz.{% endif %}</p>
+{% endif %}<p>Jakość: {% for code, name, info in levels %}{% if code == level %}<b class="ch2 on">{{ name }}</b>{% else %}<a class="ch2" href="{{ url_for('settings', k='dzw', v=code, next=url_for('screen_audio')) }}">{{ name }}</a>{% endif %}{% endfor %}<br><span class="m">{% for code, name, info in levels %}{% if code == level %}{{ info }}{% endif %}{% endfor %}. Po zmianie włącz słuchanie od nowa.</span></p>
+<p class="m">Dźwięk jest kilka sekund za obrazem. Pauza i zmiana utworu – na zdalnym ekranie. Link działa 6 godzin.{% if restarted %} Zdalna przeglądarka uruchomiła się od nowa z dźwiękiem – otwórz stronę jeszcze raz.{% endif %}</p>
 {% elif state in ("instaluję", "brak") %}<div class="ib"><b>Przygotowuję dźwięk na zdalnej maszynie&hellip;</b><br>Pierwszy raz trwa to 1&ndash;2 minuty. Strona odświeży się sama.</div>
 {% else %}<div class="e">Dźwięk niedostępny: {{ state }}{% if error %} &ndash; {{ error }}{% endif %}</div>
 {% endif %}<a class="b" href="{{ url_for('screen_page') }}">&laquo; Wróć do zdalnego ekranu</a></div>
@@ -5650,11 +5651,19 @@ def nokia_emulator():
     return resp
 
 
+AUDIO_LEVELS = (("s", "oszczędna", "mono, 48 kb/s, ok. 21 MB/h"), ("d", "dobra", "stereo, 128 kb/s, ok. 58 MB/h"),
+                ("w", "wysoka", "stereo, 192 kb/s, ok. 86 MB/h"))
+
+
+def audio_level():
+    return request.cookies.get("dzw") if request.cookies.get("dzw") in ("s", "d", "w") else "d"
+
+
 def audio_link(server):
-    """Podpisany (HMAC) link do strumienia dźwięku na maszynie, ważny 6 godzin."""
+    """Podpisany (HMAC) link do strumienia dźwięku na maszynie, ważny 6 godzin, w wybranej jakości."""
     expires = int(time.time()) + 6 * 3600
     sig = hmac.new(SCREEN_TOKEN.encode(), f"audio:{expires}".encode(), hashlib.sha256).hexdigest()[:32]
-    return f"{server.rstrip('/')}/audio?t={expires}.{sig}"
+    return f"{server.rstrip('/')}/audio?t={expires}.{sig}&q={audio_level()}"
 
 
 @app.route("/ekran/dzwiek")
@@ -5672,7 +5681,8 @@ def screen_audio():
         if info.get("audio") == "gotowy":
             link = audio_link(server)
     resp = make_response(render_template("screen_audio.html", link=link, state=info.get("audio") or "brak",
-                                         error=info.get("audio_error") or "", restarted=bool(info.get("restarted"))))
+                                         error=info.get("audio_error") or "", restarted=bool(info.get("restarted")),
+                                         levels=AUDIO_LEVELS, level=audio_level()))
     resp.headers["Cache-Control"] = "no-store"
     return resp
 
