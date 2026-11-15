@@ -356,6 +356,29 @@ CLICKABLES = ("""() => {""" + DEEP + """
               cx: Math.round(cx), cy: Math.round(cy), t: text, f: field ? 1 : 0});
     if (out.length >= 400) break;
   }
+  // szachownica chessground (Lichess i inne): pola nie są linkami – każde z 64 pól jako obszar z opisem („e2: biały pion”)
+  const NAMES = {pawn: 'pion', knight: 'skoczek', bishop: 'goniec', rook: 'wieża', queen: 'hetman', king: 'król'};
+  for (const board of deepAll('cg-board')) {
+    const r = board.getBoundingClientRect();
+    if (r.width < 80 || r.bottom <= 0 || r.top >= innerHeight) continue;
+    for (let i = out.length - 1; i >= 0; i--) if (within(out[i].el, board) || within(board, out[i].el)) out.splice(i, 1);
+    const wrap = board.closest('.cg-wrap'), black = !!(wrap && wrap.classList.contains('orientation-black')), size = r.width / 8;
+    const at = {};
+    for (const piece of board.querySelectorAll('piece')) {
+      const q = piece.getBoundingClientRect(), role = Object.keys(NAMES).find(k => piece.classList.contains(k));
+      if (q.width < 4 || !role || piece.classList.contains('ghost')) continue;
+      const col = Math.floor((q.left + q.width / 2 - r.left) / size), row = Math.floor((q.top + q.height / 2 - r.top) / size);
+      const white = piece.classList.contains('white'), fem = role === 'rook';
+      at[row * 8 + col] = (white ? (fem ? 'biała ' : 'biały ') : (fem ? 'czarna ' : 'czarny ')) + NAMES[role];
+    }
+    for (let row = 0; row < 8; row++) for (let col = 0; col < 8; col++) {
+      const x = r.left + col * size, y = r.top + row * size;
+      if (y + size <= 0 || y >= innerHeight) continue;
+      const name = 'abcdefgh'[black ? 7 - col : col] + (black ? row + 1 : 8 - row);
+      out.push({el: board, x: x, y: y, r: x + size, b: y + size, cx: Math.round(x + size / 2), cy: Math.round(y + size / 2),
+                t: name + (at[row * 8 + col] ? ': ' + at[row * 8 + col] : ''), f: 0});
+    }
+  }
   return out.map(o => ({x: Math.round(o.x), y: Math.round(o.y), r: Math.round(o.r), b: Math.round(o.b), cx: o.cx, cy: o.cy, t: o.t, f: o.f}));
 }""")
 FIELD = ("""() => {""" + DEEP + """
