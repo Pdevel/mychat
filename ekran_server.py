@@ -371,12 +371,21 @@ CLICKABLES = ("""() => {""" + DEEP + """
       const white = piece.classList.contains('white'), fem = role === 'rook';
       at[row * 8 + col] = (white ? (fem ? 'biała ' : 'biały ') : (fem ? 'czarna ' : 'czarny ')) + NAMES[role];
     }
+    // pola, na które wybrana figura może pójść (kropki): square.move-dest / premove-dest
+    const dest = {};
+    for (const sq of board.querySelectorAll('square.move-dest, square.premove-dest')) {
+      const q = sq.getBoundingClientRect();
+      if (q.width < 4) continue;
+      dest[Math.floor((q.top + q.height / 2 - r.top) / size) * 8 + Math.floor((q.left + q.width / 2 - r.left) / size)] = true;
+    }
+    // kursor tylko po polach z figurą i po kropkach – nie po 64 polach
     for (let row = 0; row < 8; row++) for (let col = 0; col < 8; col++) {
-      const x = r.left + col * size, y = r.top + row * size;
-      if (y + size <= 0 || y >= innerHeight) continue;
+      const index = row * 8 + col, x = r.left + col * size, y = r.top + row * size;
+      if ((!at[index] && !dest[index]) || y + size <= 0 || y >= innerHeight) continue;
       const name = 'abcdefgh'[black ? 7 - col : col] + (black ? row + 1 : 8 - row);
+      const what = at[index] ? (dest[index] ? at[index] + ' (bicie)' : at[index]) : 'ruch tutaj';
       out.push({el: board, x: x, y: y, r: x + size, b: y + size, cx: Math.round(x + size / 2), cy: Math.round(y + size / 2),
-                t: name + (at[row * 8 + col] ? ': ' + at[row * 8 + col] : ''), f: 0});
+                t: name + ': ' + what, f: 0});
     }
   }
   return out.map(o => ({x: Math.round(o.x), y: Math.round(o.y), r: Math.round(o.r), b: Math.round(o.b), cx: o.cx, cy: o.cy, t: o.t, f: o.f}));
