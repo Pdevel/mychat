@@ -41,7 +41,8 @@ def view_of(body):
            "fmt": "webp" if view.get("fmt") == "webp" else "jpeg"}
     out["clip"] = min(out["h"], num("clip", 100, 4000, out["h"]))  # zrzut tylko górnej części widoku (np. jeden ekran Nokii)
     out["base"] = min(out["h"], num("base", 200, 4000, out["h"]))  # okno dla aplikacji (Mapy, Jakdojade) – rośnie do h dla długich stron
-    out["out"] = num("out", 0, 960, 0)  # szerokość gotowego obrazu (Nokia: 232 px) – bez przepakowywania na serwerze Szukajki
+    out["out"] = num("out", 0, 960, 0)
+    out["desktop"] = bool(view.get("desktop"))  # wersja komputerowa: przeglądarka przedstawia się jak Chrome na komputerze  # szerokość gotowego obrazu (Nokia: 232 px) – bez przepakowywania na serwerze Szukajki
     return out
 MAX_SESSIONS = 3
 IDLE_SECONDS = 20 * 60
@@ -136,6 +137,10 @@ browser = launch_browser()
 version = browser.version.split(".")[0]
 USER_AGENT = (f"Mozilla/5.0 (Linux; Android 14; K) AppleWebKit/537.36 (KHTML, like Gecko) "
               f"Chrome/{version}.0.0.0 Mobile Safari/537.36")  # widok mobilny, jak telefon z Chrome
+DESKTOP_AGENT = (f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+                 f"Chrome/{version}.0.0.0 Safari/537.36")
+# strony, które w wersji mobilnej każą tylko pobrać aplikację – od razu wersja komputerowa
+DESKTOP_SITES = re.compile(r"(^|\.)(discord\.com|discord\.gg|discordapp\.com)$")
 sessions = {}
 # Pomocnicze funkcje JS: strony budują okienka (zgody na ciasteczka, logowanie, menu) w Shadow DOM, którego zwykłe
 # document.querySelectorAll i elementFromPoint nie widzą – schodzimy do otwartych shadowRoot.
@@ -376,9 +381,10 @@ SIGNATURE = ("() => { " + DEEP + "const all = deepAll('*'); const a = deepActive
 
 
 def new_context(sid, view):
+    desktop = bool(view.get("desktop"))
     context = browser.new_context(viewport={"width": view["w"], "height": view.get("base") or view["h"]}, device_scale_factor=view["scale"],
-                                  is_mobile=True, has_touch=True, user_agent=USER_AGENT, locale="pl-PL",
-                                  timezone_id="Europe/Warsaw")
+                                  is_mobile=not desktop, has_touch=not desktop, user_agent=DESKTOP_AGENT if desktop else USER_AGENT,
+                                  locale="pl-PL", timezone_id="Europe/Warsaw")
     # link otwierający nową kartę (target=_blank, window.open): ekran pokazuje nową kartę
     context.on("page", lambda new_page, sid=sid: sessions.get(sid) and sessions[sid].update(page=new_page))
     return context
@@ -396,7 +402,8 @@ def page_for(sid, geo=None, view=None):
         context = new_context(sid, view)
         sessions[sid] = {"context": context, "page": context.new_page(), "used": now, "geo": None, "view": view}
     session = sessions[sid]
-    if (session["view"]["w"], session["view"]["h"], session["view"]["scale"]) != (view["w"], view["h"], view["scale"]):
+    if ((session["view"]["w"], session["view"]["h"], session["view"]["scale"], bool(session["view"].get("desktop")))
+            != (view["w"], view["h"], view["scale"], bool(view.get("desktop")))):
         # inny rozmiar ekranu (np. przełączenie na duży): nowa karta w nowym rozmiarze, ta sama strona
         url = session["page"].url if not session["page"].is_closed() else ""
         session["context"].close()
@@ -647,6 +654,10 @@ def act(body):
         geo = None
     started = time.monotonic()
     view = view_of(body)
+    # wersja komputerowa: z ustawienia telefonu albo sama dla stron, które w mobilnej każą tylko pobrać aplikację
+    target = str(body.get("url") or "") if body.get("action") == "open" else (
+        sessions[sid]["page"].url if sid in sessions and not sessions[sid]["page"].is_closed() else "")
+    view["desktop"] = view["desktop"] or bool(DESKTOP_SITES.search(urlparse(target).hostname or ""))
     page = page_for(sid, {"latitude": float(geo["latitude"]), "longitude": float(geo["longitude"]), "accuracy": 1000}
                     if geo else None, view)
     width, height = view["w"], view["h"]

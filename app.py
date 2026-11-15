@@ -2134,7 +2134,7 @@ def saving_enabled():
 
 # Ustawienia zapamiętane w telefonie (ciasteczka na rok): klucz -> dozwolone wartości.
 SETTINGS = {"obrazki": {"0", "1"}, "linki": {"0", "1"}, "tekst": {"s", "m", "l", "xl"}, "oszcz": {"0", "1"}, "ekq": {"s", "l"},
-            "nokia": {"0", "1"}, "ciemny": {"0", "1"}, "dzw": {"s", "d", "w"},
+            "nokia": {"0", "1"}, "ciemny": {"0", "1"}, "dzw": {"s", "d", "w"}, "ekd": {"0", "1"},
             "miasto": None}
 TEXT_SIZES = {"s": 12, "m": 14, "l": 17, "xl": 20}  # px; 14 to wielkość domyślna
 DATA_COOKIE = "dane"
@@ -3954,6 +3954,7 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 {% endif %}{% if options %}<div class="w">{% if page_title %}<p class="m"><b>{{ page_title }}</b></p>{% endif %}{% if mem %}<p class="m">Pamięć RAM: zdalna przeglądarka {{ mem.chromium }} MB (JavaScript tej strony {{ mem.karta_js }} MB){% if shot %} &middot; na Nokii obraz ok. {{ "%.1f"|format(shot.w * shot.h * 4 / 1048576) }} MB{% endif %}</p>{% endif %}<a class="b" href="{{ url_for('screen_page', a='shot') }}">&laquo; Wróć do strony</a>
 <a class="b" href="{{ url_for('screen_page', a='shot', live=1) }}">Odświeżaj na żywo (co 1 s)</a>
 <a class="b" href="{{ url_for('screen_audio') }}">Dźwięk na żywo (&#9835;)</a>
+<a class="b" href="{{ url_for('settings', k='ekd', v=0 if desktop_mode else 1, next=url_for('screen_page')) }}">Wersja komputerowa: {{ "wyłącz" if desktop_mode else "włącz" }}</a>
 {% if shot %}<a class="b" href="{{ url_for('screen_page', a='shot', lista=1) }}">Lista linków ({{ shot["items"]|length }})</a>
 {% endif %}<a class="b" href="{{ url_for('screen_page', a='key', key='Backspace') }}">Usuń znak w polu (&#9003;)</a>
 {% if page_url %}<a class="b" href="{{ url_for('read', url=page_url, czytnik=1) }}">Otwórz w czytniku</a>
@@ -5724,7 +5725,8 @@ def screen_page():
         live_one = bool(request.args.get("live")) and screen_mode() == "s"
         # na żywo na Nokii: ten sam długi obraz co zwykle (podgląd zostawia przewinięcie między odświeżeniami), a 8/2 i ▼/▲
         # przesuwają zdalną stronę o jeden ekran Nokii – gdy Opera Mini po odświeżeniu wraca na górę, widać kolejny ekran
-        body = {"sid": sid, "action": action, "geo": screen_geo(), "view": mode["view"]}
+        view = dict(mode["view"], desktop=True) if request.cookies.get("ekd") == "1" else mode["view"]  # wersja komputerowa
+        body = {"sid": sid, "action": action, "geo": screen_geo(), "view": view}
         if request.args.get("opcje"):
             body["mem"] = 1  # menu „⋯”: ile pamięci zajmuje zdalna przeglądarka
         if request.args.get("live"):
@@ -5790,7 +5792,7 @@ def screen_page():
                                              live_wait=1 if time.monotonic() - started < 0.5 else 0,
                                              live_left=round(max(0.0, 1 - (time.monotonic() - started)), 2),  # podgląd: co do ułamka sekundy
                                              field=data.get("field") or "", as_list=bool(request.args.get("lista")),
-                                             options=bool(request.args.get("opcje")), mem=data.get("mem") if isinstance(data.get("mem"), dict) else None,
+                                             options=bool(request.args.get("opcje")), desktop_mode=request.cookies.get("ekd") == "1", mem=data.get("mem") if isinstance(data.get("mem"), dict) else None,
                                              google_q=google_query(data.get("url") or ""),
                                              # gra dźwięk, a nikt go nie słucha: na górze link „słuchaj” (jedno OK)
                                              sound_link=audio_link(server) if data.get("sound") and not data.get("listeners") else "",
