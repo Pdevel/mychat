@@ -385,10 +385,11 @@ CLICKABLES = ("""() => {""" + DEEP + """
       const name = 'abcdefgh'[black ? 7 - col : col] + (black ? row + 1 : 8 - row);
       const what = at[index] ? (dest[index] ? at[index] + ' (bicie)' : at[index]) : 'ruch tutaj';
       out.push({el: board, x: x, y: y, r: x + size, b: y + size, cx: Math.round(x + size / 2), cy: Math.round(y + size / 2),
-                t: name + ': ' + what, f: 0});
+                t: name + ': ' + what, f: 0, g: Math.round(r.top)});  // g: górna krawędź planszy (kotwica telefonu)
     }
   }
-  return out.map(o => ({x: Math.round(o.x), y: Math.round(o.y), r: Math.round(o.r), b: Math.round(o.b), cx: o.cx, cy: o.cy, t: o.t, f: o.f}));
+  return out.map(o => Object.assign({x: Math.round(o.x), y: Math.round(o.y), r: Math.round(o.r), b: Math.round(o.b), cx: o.cx, cy: o.cy,
+                                     t: o.t, f: o.f}, o.g !== undefined ? {g: o.g} : {}));
 }""")
 FIELD = ("""() => {""" + DEEP + """
   const e = deepActive();
