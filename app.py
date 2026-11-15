@@ -5732,8 +5732,7 @@ def screen_page():
         elif action in ("up", "down"):
             step = mode["view"]["h"]  # zdalna przeglądarka przewija o dokładnie jeden pokazany ekran (bez powtórzeń)
             body.update(action="scroll", dy=-step if action == "up" else step)
-            if live_one:
-                body["screen"] = LIVE_CLIP
+
         elif action == "type":
             body.update(text=(request.args.get("t") or "")[:500], enter=bool(request.args.get("enter")))
         elif action == "key":

@@ -183,8 +183,9 @@ SUBMIT = ("""() => {""" + DEEP + """
     e.dispatchEvent(new KeyboardEvent(type, {key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true}));
 }""")
 # Przewinięcie o dy px: strona, a gdy się nie przewija – największy widoczny przewijany element (panel aplikacji).
-SCROLL = ("""([dir, shown]) => {""" + DEEP + """
-  // pasek przypięty do góry/dołu ekranu (nagłówek strony): zasłania treść, więc krok jest o niego krótszy
+SCROLL = ("""async ([dir, shown]) => {""" + DEEP + """
+  // pasek przypięty do góry/dołu ekranu (nagłówek strony): zasłania treść, więc krok jest o niego krótszy. Mierzony
+  // także PO przewinięciu – wiele nagłówków przykleja się dopiero, gdy strona zjedzie w dół.
   const bar = y => {
     let found = null;
     for (const x of [10, innerWidth / 2, innerWidth - 10]) {
@@ -198,11 +199,45 @@ SCROLL = ("""([dir, shown]) => {""" + DEEP + """
     }
     return found;
   };
-  const top = bar(2), bottom = bar(shown - 2);
-  const step = Math.max(80, shown - (top ? Math.max(0, top.bottom) : 0) - (bottom ? Math.max(0, shown - bottom.top) : 0));
+  const topH = () => { const b = bar(2); return b ? Math.max(0, b.bottom) : 0; };
+  const botH = () => { const b = bar(shown - 2); return b ? Math.max(0, shown - b.top) : 0; };
+  // kotwica: wiersz tekstu (albo obrazek) przecięty dolną krawędzią widocznej części – w następnym obrazie ma stać cały,
+  // tuż pod nagłówkiem. Pamiętamy sam wiersz, nie piksele: przyklejony nagłówek potrafi przesunąć całą treść.
+  const anchorAt = y => {
+    let best = null;
+    for (const x of [16, innerWidth * 0.3, innerWidth / 2, innerWidth * 0.7, innerWidth - 16]) {
+      const range = document.caretRangeFromPoint ? document.caretRangeFromPoint(x, y) : null;
+      if (range) {
+        const r = range.getBoundingClientRect();
+        if (r.height > 0 && r.height < 120 && r.top <= y && r.bottom >= y - 1 && (!best || r.top < best.top))
+          best = {top: r.top, at: () => range.getBoundingClientRect().top};
+      }
+      const e = document.elementFromPoint(x, y);
+      if (e && /^(IMG|VIDEO|CANVAS|SVG|PICTURE|IFRAME)$/i.test(e.tagName)) {
+        const r = e.getBoundingClientRect();
+        if (r.top <= y && r.height < shown / 2 && (!best || r.top < best.top)) best = {top: r.top, at: () => e.getBoundingClientRect().top};
+      }
+    }
+    return best && best.top > y - shown / 3 ? best : null;
+  };
   const se = document.scrollingElement || document.documentElement;
   const before = se.scrollTop;
-  scrollBy({top: dir * step, behavior: 'instant'});  // nowy obraz zaczyna się dokładnie tam, gdzie kończył się poprzedni
+  if (dir > 0) {
+    const y = shown - botH() - 1;  // ostatni piksel widocznej treści (punkt na samej krawędzi okna leży już poza nim)
+    const anchor = anchorAt(y);
+    scrollBy({top: Math.max(80, anchor ? anchor.top : y), behavior: 'instant'});
+    // strona reaguje na przewinięcie (przykleja nagłówek, przesuwa treść) dopiero w kolejnych klatkach – czekamy na nią
+    const settle = () => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(done, 60))));
+    for (let round = 0; round < 2; round++) {
+      await settle();
+      const want = topH() + 6;  // nagłówek przyklejony (także dopiero teraz) – wiersz staje tuż pod nim (6 px: interlinia)
+      const now = anchor ? anchor.at() : y - (se.scrollTop - before);
+      if (Math.abs(now - want) <= 1) break;
+      scrollBy({top: now - want, behavior: 'instant'});
+    }
+  } else {
+    scrollBy({top: -Math.max(80, shown - topH() - botH()), behavior: 'instant'});
+  }
   if (Math.abs(se.scrollTop - before) > 2) return 'strona';
   let best = null, area = 0, seen = 0;
   for (const e of deepAll('*')) {
@@ -215,7 +250,7 @@ SCROLL = ("""([dir, shown]) => {""" + DEEP + """
     area = vis; best = e; seen = h;
   }
   if (!best) return '';
-  best.scrollBy({top: dir * Math.max(40, seen), behavior: 'instant'});  // panel aplikacji: o jego widoczną wysokość
+  best.scrollBy({top: dir * Math.max(40, seen - 24), behavior: 'instant'});  // panel aplikacji: o widoczną wysokość, z zakładką
   return 'panel';
 }""")
 # Panel aplikacji (największy widoczny przewijany element) – oznaczony, żeby kolejne kroki trafiały w ten sam.
