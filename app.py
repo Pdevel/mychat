@@ -3941,8 +3941,8 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 """,
     "screen.html": """{% extends "base.html" %}
 {% block title %}{{ page_title or "Zdalny ekran" }}{% endblock %}
-{% block head %}{% if waiting %}<meta http-equiv="refresh" content="1;url={{ here }}">{% elif live and small_browser %}{% if in_frame %}<meta name="nk-refresh" content="{{ live_left }};url={{ url_for('screen_page', a='shot', live=1, n=tick, at=anchor or None) }}{% if anchor == 'b' %}#plansza{% elif anchor %}#p{{ anchor }}{% endif %}">{% else %}<meta http-equiv="refresh" content="{{ live_wait }};url={{ url_for('screen_page', a='shot', live=1, n=tick, at=anchor or None) }}{% if anchor == 'b' %}#plansza{% elif anchor %}#p{{ anchor }}{% endif %}">{% endif %}{% endif %}<style>body{max-width:none}.ab{margin:0;padding:2px 2px 1px;background:#f1f3f4;white-space:nowrap}.ab .q{width:68%;padding:3px 8px;font-size:13px}.ab input[type=submit]{padding:4px 8px;font-size:12px}.ab a{padding:0 4px;font-weight:bold;font-size:16px}.sc2{text-align:center;line-height:0}.sc2 img{display:block;margin:0 auto}.pk{display:block;height:0;overflow:hidden}.sc2 input{border:0;padding:0;margin:0;background:none;border-radius:0}.hk{position:absolute;left:-999px;top:0}.ef{margin:2px 4px}.ef .q{width:120px}.fx{background:#fff4e5;border:1px solid #f0c890;border-radius:8px;padding:4px}.snd{display:block;background:#0b57d0;color:#fff;font-weight:bold;text-align:center;padding:5px;font-size:13px}.snd .k{color:#0b57d0}.nx{text-align:center;font-size:12px;line-height:1.7}.nx a{padding:0 12px}.ab.lv a{font-size:13px;padding:0 6px}</style>{% endblock %}
-{% block body %}{% if sound_link %}<a class="snd" href="{{ sound_link }}" accesskey="5"><span class="k">5</span>&#9835; Gra dźwięk &ndash; słuchaj</a>
+{% block head %}{% if waiting %}<meta http-equiv="refresh" content="1;url={{ here }}">{% elif live and small_browser %}{% if in_frame %}<meta name="nk-refresh" content="{{ live_left }};url={{ url_for('screen_page', a='shot', live=1, n=tick, at=anchor or None) }}{% if anchor == 'b' %}#plansza{% elif anchor %}#p{{ anchor }}{% endif %}">{% else %}<meta http-equiv="refresh" content="{{ live_wait }};url={{ url_for('screen_page', a='shot', live=1, n=tick, at=anchor or None) }}{% if anchor == 'b' %}#plansza{% elif anchor %}#p{{ anchor }}{% endif %}">{% endif %}{% endif %}<style>body{max-width:none}.ab{margin:0;padding:2px 2px 1px;background:#f1f3f4;white-space:nowrap}.ab .q{width:68%;padding:3px 8px;font-size:13px}.ab input[type=submit]{padding:4px 8px;font-size:12px}.ab a{padding:0 4px;font-weight:bold;font-size:16px}.sc2{text-align:center;line-height:0;font-size:0}.slt{margin:0 auto;border-collapse:collapse}.slt td{padding:0;line-height:0;font-size:0;vertical-align:top}.slt img{display:block;vertical-align:top;border:0}.pk{display:block;height:0;overflow:hidden}.sc2 input{border:0;padding:0;margin:0;background:none;border-radius:0}.hk{position:absolute;left:-999px;top:0}.ef{margin:2px 4px}.ef .q{width:120px}.fx{background:#fff4e5;border:1px solid #f0c890;border-radius:8px;padding:4px}.snd{display:block;background:#0b57d0;color:#fff;font-weight:bold;text-align:center;padding:5px;font-size:13px}.snd .k{color:#0b57d0}.nx{text-align:center;font-size:12px;line-height:1.7}.nx a{padding:0 12px}.ab.lv a{font-size:13px;padding:0 6px}</style>{% endblock %}
+{% block body %}{% if sound_link %}<a class="snd" href="{{ url_for('screen_audio_playlist', fmt='m3u') if small_browser else sound_link }}" accesskey="5"><span class="k">5</span>&#9835; Gra dźwięk &ndash; słuchaj</a>
 {% endif %}{% if live and mode == 's' and shot %}<div class="nx ab lv" id="g"><a href="{{ url_for('screen_page', a='down', live=1) }}">8 &#9660; dalej</a><a href="{{ url_for('screen_page', a='up', live=1) }}">2 &#9650; wyżej</a><a href="{{ url_for('screen_page') }}">5 &#9632; stop</a></div>
 {% else %}<form class="ab" id="g" action="{{ url_for('screen_page') }}" method="get"><input class="q" type="text" name="u" value="{{ page_url or target }}" maxlength="2000"> <input type="submit" value="Idź"> <a href="{{ url_for('screen_page', a='shot', opcje=1) }}">&hellip;</a></form>{% endif %}
 {% if waiting %}<div class="w"><div class="ib"><b>{% if error %}Zdalna przeglądarka nie działa{% else %}Uruchamiam zdalną przeglądarkę&hellip;{% endif %}</b><br>
@@ -3964,7 +3964,7 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 <a class="b" href="{{ url_for('screen_page', a='close') }}">Zamknij i wyczyść</a></div>
 {% elif shot and as_list %}<div class="w">{% for it in shot["items"] %}<div class="r"><a href="{{ url_for('screen_page', a='click', vx=it.cx, vy=it.cy, ps=it.get('ps')) }}">{{ loop.index }}. {% if it.f %}[pole] {% endif %}{{ it.t or "(bez opisu)" }}</a></div>
 {% else %}<p class="m">Na ekranie nie ma linków ani przycisków.</p>{% endfor %}<a class="b" href="{{ url_for('screen_page', a='shot') }}">Pokaż obraz</a></div>
-{% elif shot and mode == 's' and shot.slices %}{% if shot.y > 0 and not live %}<div class="nx"><a href="{{ url_for('screen_page', a='up') }}">&#9650; wyżej</a></div>{% endif %}<div class="sc2" data-y="{{ shot.y|int }}">{% for sl in shot.slices %}{% if sl.anchor %}<a class="pk" id="{{ sl.anchor }}"></a>{% endif %}<img src="{{ url_for('screen_image', id=sl.id) }}" width="{{ shot.w }}" height="{{ sl.h }}"{% if sl["items"] %} usemap="#ek{{ loop.index }}"{% endif %} alt="Ekran"><br>{% if sl["items"] %}<map name="ek{{ loop.index }}">{% for it in sl["items"] %}{% set at = 'b' if it.get('g') is not none else [0, it.y1 - 40]|max // 10 * 10 %}<area shape="rect" coords="{{ it.x1 }},{{ it.sy1 }},{{ it.x2 }},{{ it.sy2 }}" href="{{ url_for('screen_page', a='click', vx=it.cx, vy=it.cy, ps=it.get('ps'), live=1 if live else None, at=at if at == 'b' or at > 0 else None) }}{% if at == 'b' %}#plansza{% elif at > 0 %}#p{{ at }}{% endif %}" alt="{{ it.t or 'link' }}">{% endfor %}</map>{% endif %}{% endfor %}</div>{% if not live %}<div class="nx"><a href="{{ url_for('screen_page', a='down') }}">&#9660; dalej</a></div>{% endif %}
+{% elif shot and mode == 's' and shot.slices %}{% if shot.y > 0 and not live %}<div class="nx"><a href="{{ url_for('screen_page', a='up') }}">&#9650; wyżej</a></div>{% endif %}<div class="sc2" data-y="{{ shot.y|int }}"><table class="slt" cellspacing="0" cellpadding="0" border="0">{% for sl in shot.slices %}<tr><td>{% if sl.anchor %}<a class="pk" id="{{ sl.anchor }}"></a>{% endif %}<img src="{{ url_for('screen_image', id=sl.id) }}" width="{{ shot.w }}" height="{{ sl.h }}"{% if sl["items"] %} usemap="#ek{{ loop.index }}"{% endif %} alt="Ekran">{% if sl["items"] %}<map name="ek{{ loop.index }}">{% for it in sl["items"] %}{% set at = 'b' if it.get('g') is not none else [0, it.y1 - 40]|max // 10 * 10 %}<area shape="rect" coords="{{ it.x1 }},{{ it.sy1 }},{{ it.x2 }},{{ it.sy2 }}" href="{{ url_for('screen_page', a='click', vx=it.cx, vy=it.cy, ps=it.get('ps'), live=1 if live else None, at=at if at == 'b' or at > 0 else None) }}{% if at == 'b' %}#plansza{% elif at > 0 %}#p{{ at }}{% endif %}" alt="{{ it.t or 'link' }}">{% endfor %}</map>{% endif %}</td></tr>{% endfor %}</table></div>{% if not live %}<div class="nx"><a href="{{ url_for('screen_page', a='down') }}">&#9660; dalej</a></div>{% endif %}
 {% elif shot %}<form class="sc2" data-y="{{ shot.y|int }}" action="{{ url_for('screen_page') }}" method="get">{% if live %}<input type="hidden" name="live" value="1">{% endif %}<input type="image" name="k" src="{{ url_for('screen_image', id=shot.id) }}" width="{{ shot.w }}" height="{{ shot.h }}" alt="Ekran"></form>{% if mode == 's' and not live %}<div class="nx"><a href="{{ url_for('screen_page', a='down') }}">&#9660; dalej</a></div>{% endif %}{% endif %}
 {% if live and not (mode == 's' and shot) %}<div class="ef"><a href="{{ url_for('screen_page') }}">&#9632; Zatrzymaj odświeżanie</a></div>{% endif %}{% if live and not small_browser %}<script>
 (function () {  // na żywo bez przeładowania strony: podmieniamy tylko obraz – zostaje przewinięcie i wpisany tekst
@@ -4047,7 +4047,12 @@ setInterval(function () { n += 1; e.innerHTML = '{{ now }} + ' + n + ' s'; }, 10
 {% block body %}<div class="bar"><a href="{{ url_for('screen_page') }}">&laquo; Zdalny ekran</a></div><div class="w">
 <h1>Dźwięk na żywo</h1>
 {% if link %}<p>To, co gra w zdalnej przeglądarce (np. utwór włączony na stronie), leci na żywo do Twojego telefonu. Nic nie jest zapisywane.</p>
-<a class="b" href="{{ link }}" accesskey="5"><span class="k">5</span>Słuchaj w odtwarzaczu telefonu</a>
+{% if small_browser %}<a class="b" href="{{ url_for('screen_audio_playlist', fmt='m3u') }}" accesskey="5"><span class="k">5</span>Słuchaj w odtwarzaczu telefonu</a>
+<p class="m">Opera Mini pobierze małą playlistę &ndash; wybierz &bdquo;Otwórz&rdquo;. Nie gra? Spróbuj:</p>
+<a class="b" href="{{ url_for('screen_audio_playlist', fmt='pls') }}">Playlista PLS</a>
+<a class="b" href="{{ url_for('screen_audio_playlist', fmt='m3u', http=1) }}">Playlista M3U (http)</a>
+<a class="b" href="{{ link }}">Strumień MP3 (bez playlisty)</a>
+{% else %}<a class="b" href="{{ link }}" accesskey="5"><span class="k">5</span>Słuchaj w odtwarzaczu telefonu</a>{% endif %}
 {% if not small_browser %}<audio controls autoplay preload="none" src="{{ link }}" style="width:100%"></audio>
 {% endif %}<p>Jakość: {% for code, name, info in levels %}{% if code == level %}<b class="ch2 on">{{ name }}</b>{% else %}<a class="ch2" href="{{ url_for('settings', k='dzw', v=code, next=url_for('screen_audio')) }}">{{ name }}</a>{% endif %}{% endfor %}<br><span class="m">{% for code, name, info in levels %}{% if code == level %}{{ info }}{% endif %}{% endfor %}. Po zmianie włącz słuchanie od nowa.</span></p>
 <p class="m">Dźwięk jest kilka sekund za obrazem. Pauza i zmiana utworu – na zdalnym ekranie. Link działa 6 godzin.{% if restarted %} Zdalna przeglądarka uruchomiła się od nowa z dźwiękiem – otwórz stronę jeszcze raz.{% endif %}</p>
@@ -5730,6 +5735,28 @@ def audio_link(server):
     expires = int(time.time()) + 6 * 3600
     sig = hmac.new(SCREEN_TOKEN.encode(), f"audio:{expires}".encode(), hashlib.sha256).hexdigest()[:32]
     return f"{server.rstrip('/')}/audio?t={expires}.{sig}&q={audio_level()}"
+
+
+@app.route("/ekran/dzwiek.<fmt>")
+def screen_audio_playlist(fmt):
+    """Playlista z adresem strumienia (Nokia): Opera Mini pobiera ją jak mały plik, a odtwarzacz telefonu sam łączy się
+    ze strumieniem na żywo – sam strumień Opera Mini próbowała pobrać do końca, a on się nie kończy."""
+    if not INSTABOX_API_KEY or fmt not in ("m3u", "pls"):
+        abort(404)
+    server, _ = screen_ready()
+    if server is None:
+        abort(503)
+    url = audio_link(server)
+    if request.args.get("http"):
+        url = "http://" + url.split("://", 1)[1]  # starsze odtwarzacze nie obsługują https
+    if fmt == "m3u":
+        body, mime = f"#EXTM3U\n#EXTINF:-1,Szukajka - zdalny ekran\n{url}\n", "audio/x-mpegurl"
+    else:
+        body, mime = f"[playlist]\nNumberOfEntries=1\nFile1={url}\nTitle1=Szukajka - zdalny ekran\nLength1=-1\nVersion=2\n", "audio/x-scpls"
+    resp = make_response(body)
+    resp.headers.update({"Content-Type": mime, "Cache-Control": "no-store",
+                         "Content-Disposition": f'inline; filename="szukajka.{fmt}"'})
+    return resp
 
 
 @app.route("/ekran/dzwiek")
