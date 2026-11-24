@@ -3941,10 +3941,10 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 """,
     "screen.html": """{% extends "base.html" %}
 {% block title %}{{ page_title or "Zdalny ekran" }}{% endblock %}
-{% block head %}{% if waiting %}<meta http-equiv="refresh" content="1;url={{ here }}">{% elif live and small_browser %}{% if in_frame %}<meta name="nk-refresh" content="{{ live_left }};url={{ url_for('screen_page', a='shot', live=1, n=tick, at=anchor or None) }}{% if anchor == 'b' %}#plansza{% elif anchor %}#p{{ anchor }}{% endif %}">{% else %}<meta http-equiv="refresh" content="{{ live_wait }};url={{ url_for('screen_page', a='shot', live=1, n=tick, at=anchor or None) }}{% if anchor == 'b' %}#plansza{% elif anchor %}#p{{ anchor }}{% endif %}">{% endif %}{% endif %}<style>body{max-width:none}.ab{margin:0;padding:2px 2px 1px;background:#f1f3f4;white-space:nowrap}.ab .q{width:68%;padding:3px 8px;font-size:13px}.ab input[type=submit]{padding:4px 8px;font-size:12px}.ab a{padding:0 4px;font-weight:bold;font-size:16px}.sc2{text-align:center;line-height:0;position:relative}.pk{position:absolute;left:0;width:1px;height:1px}.sc2 input{border:0;padding:0;margin:0;background:none;border-radius:0}.hk{position:absolute;left:-999px;top:0}.ef{margin:2px 4px}.ef .q{width:120px}.fx{background:#fff4e5;border:1px solid #f0c890;border-radius:8px;padding:4px}.snd{display:block;background:#0b57d0;color:#fff;font-weight:bold;text-align:center;padding:5px;font-size:13px}.snd .k{color:#0b57d0}.nx{text-align:center;font-size:12px;line-height:1.7}.nx a{padding:0 12px}.ab.lv a{font-size:13px;padding:0 6px}</style>{% endblock %}
+{% block head %}{% if waiting %}<meta http-equiv="refresh" content="1;url={{ here }}">{% elif live and small_browser %}{% if in_frame %}<meta name="nk-refresh" content="{{ live_left }};url={{ url_for('screen_page', a='shot', live=1, n=tick, at=anchor or None) }}{% if anchor == 'b' %}#plansza{% elif anchor %}#p{{ anchor }}{% endif %}">{% else %}<meta http-equiv="refresh" content="{{ live_wait }};url={{ url_for('screen_page', a='shot', live=1, n=tick, at=anchor or None) }}{% if anchor == 'b' %}#plansza{% elif anchor %}#p{{ anchor }}{% endif %}">{% endif %}{% endif %}<style>body{max-width:none}.ab{margin:0;padding:2px 2px 1px;background:#f1f3f4;white-space:nowrap}.ab .q{width:68%;padding:3px 8px;font-size:13px}.ab input[type=submit]{padding:4px 8px;font-size:12px}.ab a{padding:0 4px;font-weight:bold;font-size:16px}.sc2{text-align:center;line-height:0}.sc2 img{display:block;margin:0 auto}.pk{display:block;height:0;overflow:hidden}.sc2 input{border:0;padding:0;margin:0;background:none;border-radius:0}.hk{position:absolute;left:-999px;top:0}.ef{margin:2px 4px}.ef .q{width:120px}.fx{background:#fff4e5;border:1px solid #f0c890;border-radius:8px;padding:4px}.snd{display:block;background:#0b57d0;color:#fff;font-weight:bold;text-align:center;padding:5px;font-size:13px}.snd .k{color:#0b57d0}.nx{text-align:center;font-size:12px;line-height:1.7}.nx a{padding:0 12px}.ab.lv a{font-size:13px;padding:0 6px}</style>{% endblock %}
 {% block body %}{% if sound_link %}<a class="snd" href="{{ sound_link }}" accesskey="5"><span class="k">5</span>&#9835; Gra dźwięk &ndash; słuchaj</a>
 {% endif %}{% if live and mode == 's' and shot %}<div class="nx ab lv" id="g"><a href="{{ url_for('screen_page', a='down', live=1) }}">8 &#9660; dalej</a><a href="{{ url_for('screen_page', a='up', live=1) }}">2 &#9650; wyżej</a><a href="{{ url_for('screen_page') }}">5 &#9632; stop</a></div>
-{% else %}<form class="ab" id="g" action="{{ url_for('screen_page') }}" method="get"><input class="q" type="text" name="u" value="{{ page_url or target }}" maxlength="2000"> <input type="submit" value="Idź"> <a href="{{ url_for('screen_page', a='shot', opcje=1) }}">&#8943;</a></form>{% endif %}
+{% else %}<form class="ab" id="g" action="{{ url_for('screen_page') }}" method="get"><input class="q" type="text" name="u" value="{{ page_url or target }}" maxlength="2000"> <input type="submit" value="Idź"> <a href="{{ url_for('screen_page', a='shot', opcje=1) }}">&hellip;</a></form>{% endif %}
 {% if waiting %}<div class="w"><div class="ib"><b>{% if error %}Zdalna przeglądarka nie działa{% else %}Uruchamiam zdalną przeglądarkę&hellip;{% endif %}</b><br>
 {% if error %}{{ error }}{% else %}{{ state.phase or "start" }}{% endif %}</div>
 <a class="b" href="{{ here }}">Odśwież</a></div>
@@ -3964,7 +3964,7 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 <a class="b" href="{{ url_for('screen_page', a='close') }}">Zamknij i wyczyść</a></div>
 {% elif shot and as_list %}<div class="w">{% for it in shot["items"] %}<div class="r"><a href="{{ url_for('screen_page', a='click', vx=it.cx, vy=it.cy, ps=it.get('ps')) }}">{{ loop.index }}. {% if it.f %}[pole] {% endif %}{{ it.t or "(bez opisu)" }}</a></div>
 {% else %}<p class="m">Na ekranie nie ma linków ani przycisków.</p>{% endfor %}<a class="b" href="{{ url_for('screen_page', a='shot') }}">Pokaż obraz</a></div>
-{% elif shot and mode == 's' and shot["items"] %}{% if shot.y > 0 and not live %}<div class="nx"><a href="{{ url_for('screen_page', a='up') }}">&#9650; wyżej</a></div>{% endif %}<div class="sc2" data-y="{{ shot.y|int }}">{% if shot.board is not none %}<a class="pk" id="plansza" style="top:{{ shot.board }}px"></a>{% endif %}{% for k in range(1, shot.h // 100 + 1) %}<a class="pk" id="p{{ k }}" style="top:{{ k * 100 }}px"></a>{% endfor %}<img src="{{ url_for('screen_image', id=shot.id) }}" width="{{ shot.w }}" height="{{ shot.h }}" usemap="#ek" alt="Ekran"><map name="ek">{% for it in shot["items"] %}{% set at = 'b' if it.get('g') is not none else (it.y1 - 50) // 100 %}<area shape="rect" coords="{{ it.x1 }},{{ it.y1 }},{{ it.x2 }},{{ it.y2 }}" href="{{ url_for('screen_page', a='click', vx=it.cx, vy=it.cy, ps=it.get('ps'), live=1 if live else None, at=at if at == 'b' or at > 0 else None) }}{% if at == 'b' %}#plansza{% elif at > 0 %}#p{{ at }}{% endif %}" alt="{{ it.t or 'link' }}">{% endfor %}</map></div>{% if not live %}<div class="nx"><a href="{{ url_for('screen_page', a='down') }}">&#9660; dalej</a></div>{% endif %}
+{% elif shot and mode == 's' and shot.slices %}{% if shot.y > 0 and not live %}<div class="nx"><a href="{{ url_for('screen_page', a='up') }}">&#9650; wyżej</a></div>{% endif %}<div class="sc2" data-y="{{ shot.y|int }}">{% for sl in shot.slices %}{% if sl.anchor %}<a class="pk" id="{{ sl.anchor }}"></a>{% endif %}<img src="{{ url_for('screen_image', id=sl.id) }}" width="{{ shot.w }}" height="{{ sl.h }}"{% if sl["items"] %} usemap="#ek{{ loop.index }}"{% endif %} alt="Ekran"><br>{% if sl["items"] %}<map name="ek{{ loop.index }}">{% for it in sl["items"] %}{% set at = 'b' if it.get('g') is not none else [0, it.y1 - 40]|max // 10 * 10 %}<area shape="rect" coords="{{ it.x1 }},{{ it.sy1 }},{{ it.x2 }},{{ it.sy2 }}" href="{{ url_for('screen_page', a='click', vx=it.cx, vy=it.cy, ps=it.get('ps'), live=1 if live else None, at=at if at == 'b' or at > 0 else None) }}{% if at == 'b' %}#plansza{% elif at > 0 %}#p{{ at }}{% endif %}" alt="{{ it.t or 'link' }}">{% endfor %}</map>{% endif %}{% endfor %}</div>{% if not live %}<div class="nx"><a href="{{ url_for('screen_page', a='down') }}">&#9660; dalej</a></div>{% endif %}
 {% elif shot %}<form class="sc2" data-y="{{ shot.y|int }}" action="{{ url_for('screen_page') }}" method="get">{% if live %}<input type="hidden" name="live" value="1">{% endif %}<input type="image" name="k" src="{{ url_for('screen_image', id=shot.id) }}" width="{{ shot.w }}" height="{{ shot.h }}" alt="Ekran"></form>{% if mode == 's' and not live %}<div class="nx"><a href="{{ url_for('screen_page', a='down') }}">&#9660; dalej</a></div>{% endif %}{% endif %}
 {% if live and not (mode == 's' and shot) %}<div class="ef"><a href="{{ url_for('screen_page') }}">&#9632; Zatrzymaj odświeżanie</a></div>{% endif %}{% if live and not small_browser %}<script>
 (function () {  // na żywo bez przeładowania strony: podmieniamy tylko obraz – zostaje przewinięcie i wpisany tekst
@@ -5692,6 +5692,39 @@ def audio_level():
     return request.cookies.get("dzw") if request.cookies.get("dzw") in ("s", "d", "w") else "d"
 
 
+SLICE_H = 240  # px obrazu na Nokii: kawałek ok. jednego ekranu – Opera Mini nie zmniejsza takich obrazów
+
+
+def slice_shot(raw, shot, board=None, anchor=None):
+    """Tnie wysoki zrzut na kawałki ułożone jeden pod drugim. Opera Mini 4.4 zmniejsza bardzo wysokie obrazy (232×2175
+    zamieniała w wąski pasek). Granice kawałków: co SLICE_H oraz w miejscu kotwic – górna krawędź szachownicy
+    (#plansza) i miejsce nad klikniętym elementem (#pN) – bo kotwica stoi między obrazami. Obszary trafiają do
+    kawałka, w którym leży ich środek (współrzędne sy1/sy2 względem kawałka)."""
+    height = shot["h"]
+    marks = {y: name for y, name in ((board, "plansza"), (anchor, f"p{anchor}")) if isinstance(y, int) and 0 < y < height - 20}
+    cuts = sorted(set(range(0, height, SLICE_H)) | set(marks))
+    merged = []
+    for y in cuts:  # za blisko kotwicy: zwykła granica znika (bez kawałków po kilka pikseli)
+        if merged and y - merged[-1] < 30:
+            if y in marks and merged[-1] not in marks and merged[-1] != 0:
+                merged[-1] = y
+            continue
+        merged.append(y)
+    bounds = merged + [height]
+    slices = []
+    with Image.open(io.BytesIO(raw)) as image:
+        full = image.convert("RGB")
+        for top, bottom in zip(bounds, bounds[1:]):
+            out = io.BytesIO()
+            full.crop((0, top, full.width, bottom)).save(out, "JPEG", quality=76, optimize=True)
+            slice_id = uuid.uuid4().hex
+            screen_shots.set(slice_id, out.getvalue())
+            items = [dict(it, sy1=max(0, it["y1"] - top), sy2=min(bottom - top, it["y2"] - top)) for it in shot["items"]
+                     if top <= (it["y1"] + it["y2"]) / 2 < bottom]
+            slices.append({"id": slice_id, "h": bottom - top, "items": items, "anchor": marks.get(top)})
+    shot["slices"] = slices
+
+
 def audio_link(server):
     """Podpisany (HMAC) link do strumienia dźwięku na maszynie, ważny 6 godzin, w wybranej jakości."""
     expires = int(time.time()) + 6 * 3600
@@ -5825,6 +5858,9 @@ def screen_page():
                                          isinstance(it.get(k), (int, float)) for k in ("x", "y", "r", "b", "cx", "cy"))][:400]
                     tops = [it["g"] for it in shot["items"] if isinstance(it.get("g"), (int, float))]
                     shot["board"] = max(0, round(min(tops) * f) - 4) if tops else None  # szachownica: kotwica #plansza
+                    if screen_mode() == "s":  # Nokia: kawałki wysokości ekranu (Opera Mini zmniejsza bardzo wysokie obrazy)
+                        at = request.args.get("at") or ""
+                        slice_shot(raw, shot, board=shot["board"], anchor=int(at) if at.isdigit() and action in ("click", "shot") else None)
             except OSError:
                 error = error or "Nie udało się odczytać zrzutu ekranu."
         resp = make_response(render_template("screen.html", waiting=False, state=state, target=target, shot=shot,
@@ -5834,7 +5870,7 @@ def screen_page():
                                              live_left=round(max(0.0, 1 - (time.monotonic() - started)), 2),  # podgląd: co do ułamka sekundy
                                              field=data.get("field") or "", as_list=bool(request.args.get("lista")),
                                              options=bool(request.args.get("opcje")), desktop_mode=request.cookies.get("ekd") == "1",
-                                             anchor=("b" if request.args.get("at") == "b" else clamp_int(request.args.get("at"), 0, 0, 60))
+                                             anchor=("b" if request.args.get("at") == "b" else clamp_int(request.args.get("at"), 0, 0, 10000))
                                              if action in ("click", "shot") else 0, mem=data.get("mem") if isinstance(data.get("mem"), dict) else None,
                                              google_q=google_query(data.get("url") or ""),
                                              # gra dźwięk, a nikt go nie słucha: na górze link „słuchaj” (jedno OK)
