@@ -43,7 +43,7 @@ import urllib3.util.connection as urllib3_connection
 from bs4 import BeautifulSoup, SoupStrainer
 from bs4.element import CData, NavigableString, Tag
 from markupsafe import Markup, escape
-from flask import Flask, Response, abort, make_response, redirect, render_template, request, send_file, url_for
+from flask import Flask, Response, abort, make_response, redirect, render_template, request, send_file, send_from_directory, url_for
 from jinja2 import DictLoader
 from PIL import Image, ImageDraw, ImageOps
 from zoneinfo import ZoneInfo
@@ -4043,6 +4043,12 @@ setInterval(function () { n += 1; e.innerHTML = '{{ now }} + ' + n + ' s'; }, 10
 <div class="t"><span class="n">13</span><a href="{{ url_for('anim_test_live') }}">Strumień na żywo</a> &ndash; melodia przez 60 s, jak dźwięk ze zdalnego ekranu</div>
 <div class="t"><span class="n">14</span><a href="{{ url_for('anim_test_playlist', name='zywo', fmt='m3u') }}">Playlista M3U ze strumieniem na żywo</a></div>
 <div class="t"><span class="n">15</span><a href="{{ url_for('anim_test_playlist', name='zywo', fmt='pls') }}">Playlista PLS ze strumieniem na żywo</a></div>
+<h2>Tapeta</h2>
+<div class="t"><img src="{{ url_for('static', filename='tapeta-aniol-240x320.jpg') }}" width="120" height="160" alt="Anioł z mieczem"><br>
+<a href="{{ url_for('wallpaper', name='tapeta-aniol-240x320.jpg') }}">Pobierz tapetę 240&times;320</a> &ndash; dokładnie na ekran Nokii<br>
+<a href="{{ url_for('wallpaper', name='tapeta-aniol-caly.jpg') }}">Cały obraz (240&times;413)</a><br>
+<a href="{{ url_for('wallpaper', name='tapeta-aniol-oryginal.jpg') }}">Oryginał (564&times;970)</a><br>
+<span class="m">Wybierz &bdquo;Zapisz&rdquo;, potem w Galerii: Opcje &rarr; Ustaw jako tapetę.</span></div>
 <h2>Twoja przeglądarka</h2>
 <div class="ua">{{ ua }}{% for k, v in extra %}<br>{{ k }}: {{ v }}{% endfor %}</div>
 <p class="m">Zrób zdjęcie ekranu albo przepisz numery, które się ruszają, i wyślij je w czacie. Strona waży kilka KB.</p>
@@ -5688,6 +5694,15 @@ def test_sound_args(seconds, live=False):
     return [exe, "-loglevel", "error", *(["-re"] if live else []), "-f", "lavfi", "-i",
             f"aevalsrc='{TEST_MELODY}':s=22050:d={seconds}", "-ac", "1", "-c:a", "libmp3lame", "-b:a", "64k",
             *(["-flush_packets", "1"] if live else []), "-f", "mp3", "pipe:1"]
+
+
+@app.route("/tapeta/<name>")
+def wallpaper(name):
+    """Tapeta do pobrania (jako plik – Opera Mini pyta „Zapisz”)."""
+    if name not in ("tapeta-aniol-240x320.jpg", "tapeta-aniol-caly.jpg", "tapeta-aniol-oryginal.jpg"):
+        abort(404)
+    return send_from_directory(os.path.join(app.root_path, "static"), name, mimetype="image/jpeg", as_attachment=True,
+                               download_name=name)
 
 
 @app.route("/test-animacji/dzwiek.mp3")
