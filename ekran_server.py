@@ -13,7 +13,9 @@ import os
 import re
 import shutil
 import time
+import mimetypes
 import queue
+import secrets
 import subprocess
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -417,10 +419,46 @@ def new_context(sid, view):
     desktop = bool(view.get("desktop"))
     context = browser.new_context(viewport={"width": view["w"], "height": view.get("base") or view["h"]}, device_scale_factor=view["scale"],
                                   is_mobile=not desktop, has_touch=not desktop, user_agent=DESKTOP_AGENT if desktop else USER_AGENT,
-                                  locale="pl-PL", timezone_id="Europe/Warsaw")
-    # link otwierający nową kartę (target=_blank, window.open): ekran pokazuje nową kartę
-    context.on("page", lambda new_page, sid=sid: sessions.get(sid) and sessions[sid].update(page=new_page))
+                                  locale="pl-PL", timezone_id="Europe/Warsaw", accept_downloads=True)
+
+    def on_page(new_page, sid=sid):
+        # pobieranie pliku: zapisujemy go po akcji (finish_downloads), telefon dostanie link „Pobierz”
+        new_page.on("download", lambda download, sid=sid: pending_downloads.setdefault(sid, []).append(download))
+        if sessions.get(sid):  # link otwierający nową kartę (target=_blank, window.open): ekran pokazuje nową kartę
+            sessions[sid].update(page=new_page)
+
+    context.on("page", on_page)
     return context
+
+
+# Pliki pobrane w zdalnej przeglądarce: na maszynie najwyżej godzinę, telefon pobiera je podpisanym linkiem /plik/<id>.
+DOWNLOAD_DIR = "/tmp/ekran-pliki"
+DOWNLOAD_HOURS = 1
+pending_downloads = {}  # sid -> obiekty Download czekające na zapis
+downloads = {}  # sid -> [{id, name, size, time}] – najnowsze pierwsze
+
+
+def finish_downloads(sid):
+    """Zapisuje pobrania rozpoczęte przy tej akcji (czeka, aż się skończą) i sprząta pliki starsze niż godzina."""
+    done = []
+    for download in pending_downloads.pop(sid, []):
+        file_id = secrets.token_hex(8)
+        folder = os.path.join(DOWNLOAD_DIR, file_id)
+        name = re.sub(r'[\\/:*?"<>|\x00-\x1f]+', "_", download.suggested_filename or "plik").strip(" .")[:120] or "plik"
+        try:
+            os.makedirs(folder, exist_ok=True)
+            download.save_as(os.path.join(folder, name))
+            done.append({"id": file_id, "name": name, "size": os.path.getsize(os.path.join(folder, name)), "time": time.time()})
+        except (PlaywrightError, OSError):
+            shutil.rmtree(folder, ignore_errors=True)
+    cutoff = time.time() - DOWNLOAD_HOURS * 3600
+    for owner in list(downloads):
+        for item in [i for i in downloads[owner] if i["time"] < cutoff]:
+            shutil.rmtree(os.path.join(DOWNLOAD_DIR, item["id"]), ignore_errors=True)
+        downloads[owner] = [i for i in downloads[owner] if i["time"] >= cutoff]
+    if done:
+        downloads[sid] = done + downloads.get(sid, [])
+    return done
 
 
 def page_for(sid, geo=None, view=None):
@@ -719,7 +757,7 @@ def act(body):
         sessions[sid]["search_click"] = bool(run(page, SEARCHY, [x, y], default=False))
         page.mouse.click(x, y)
         page.wait_for_timeout(350)
-        if state() == before:  # nic się nie zmieniło: część stron mobilnych nie reaguje na mysz
+        if state() == before and not pending_downloads.get(sid):  # nic się nie zmieniło (pobieranie pliku to też zmiana)
             run(page, FALLBACK_CLICK, [x, y])
             page.wait_for_timeout(300)
         if page.url != url_before or run(page, "() => document.readyState", default="loading") != "complete":
@@ -802,6 +840,9 @@ def act(body):
     if sid in sessions and sessions[sid]["page"] is not page and not sessions[sid]["page"].is_closed():
         page = sessions[sid]["page"]  # kliknięcie otworzyło nową kartę
         settle(page, 800)
+    new_files = finish_downloads(sid)
+    if sid in sessions and sessions[sid]["page"].is_closed() and not page.is_closed():
+        sessions[sid]["page"] = page  # karta tylko do pobrania pliku zamknęła się sama – zostaje poprzednia strona
     apply_dark(page, bool(body.get("dark")))  # nowa karta (link z target=_blank) też ciemna
     fitted = fit_height(page, view)
     view = dict(view, clip=min(view.get("clip") or view["h"], fitted))  # zrzut tylko tego, co jest w oknie
@@ -830,6 +871,8 @@ def act(body):
         result["debug"] = debug
     if body.get("mem"):
         result["mem"] = memory_mb(page)
+    new_ids = {f["id"] for f in new_files}
+    result["downloads"] = [dict(name=f["name"], id=f["id"], size=f["size"], new=f["id"] in new_ids) for f in downloads.get(sid, [])[:10]]
     result["sound"] = sound_playing()  # telefon pokaże „Gra dźwięk – słuchaj”, gdy jeszcze nikt nie słucha
     result["listeners"] = len(listeners)
     done = time.monotonic()
@@ -857,8 +900,35 @@ class Handler(BaseHTTPRequestHandler):
                              "audio_error": audio["error"], "listeners": len(listeners)})
         elif self.path.startswith("/audio"):
             self.stream_audio()
+        elif self.path.startswith("/plik/"):
+            self.send_download()
         else:
             self.reply(404, {"error": "nie ma"})
+
+    def send_download(self):
+        """Plik pobrany w zdalnej przeglądarce – dla telefonu (link podpisany przez Szukajkę: t=ważność.podpis)."""
+        parts = urlparse(self.path)
+        file_id = parts.path.rsplit("/", 1)[-1]
+        expires, _, sig = ((parse_qs(parts.query).get("t") or [""])[0]).partition(".")
+        good = hmac.new(TOKEN.encode(), f"plik:{file_id}:{expires}".encode(), hashlib.sha256).hexdigest()[:32]
+        folder = os.path.join(DOWNLOAD_DIR, file_id)
+        if (not re.fullmatch(r"[0-9a-f]{16}", file_id) or not expires.isdigit() or int(expires) < time.time()
+                or not hmac.compare_digest(sig, good) or not os.path.isdir(folder) or not os.listdir(folder)):
+            self.reply(403, {"error": "link do pliku wygasł – pobierz plik ponownie w zdalnym ekranie"})
+            return
+        name = os.listdir(folder)[0]
+        path = os.path.join(folder, name)
+        ascii_name = re.sub(r"[^A-Za-z0-9._-]+", "_", name) or "plik"
+        self.send_response(200)
+        self.send_header("Content-Type", mimetypes.guess_type(name)[0] or "application/octet-stream")
+        self.send_header("Content-Length", str(os.path.getsize(path)))
+        self.send_header("Content-Disposition", f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(name)}")
+        self.end_headers()
+        try:
+            with open(path, "rb") as handle:
+                shutil.copyfileobj(handle, self.wfile, 64 * 1024)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
 
     def stream_audio(self):
         """Strumień MP3 tego, co gra zdalna przeglądarka (na żywo). Link podpisany przez Szukajkę: t=ważność.podpis."""

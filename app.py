@@ -3942,7 +3942,8 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
     "screen.html": """{% extends "base.html" %}
 {% block title %}{{ page_title or "Zdalny ekran" }}{% endblock %}
 {% block head %}{% if waiting %}<meta http-equiv="refresh" content="1;url={{ here }}">{% elif live and small_browser %}{% if in_frame %}<meta name="nk-refresh" content="{{ live_left }};url={{ url_for('screen_page', a='shot', live=1, n=tick, at=anchor or None) }}{% if anchor == 'b' %}#plansza{% elif anchor %}#p{{ anchor }}{% endif %}">{% else %}<meta http-equiv="refresh" content="{{ live_wait }};url={{ url_for('screen_page', a='shot', live=1, n=tick, at=anchor or None) }}{% if anchor == 'b' %}#plansza{% elif anchor %}#p{{ anchor }}{% endif %}">{% endif %}{% endif %}<style>body{max-width:none}.ab{margin:0;padding:2px 2px 1px;background:#f1f3f4;white-space:nowrap}.ab .q{width:68%;padding:3px 8px;font-size:13px}.ab input[type=submit]{padding:4px 8px;font-size:12px}.ab a{padding:0 4px;font-weight:bold;font-size:16px}.sc2{text-align:center;line-height:0;font-size:0}.slt{margin:0 auto;border-collapse:collapse}.slt td{padding:0;line-height:0;font-size:0;vertical-align:top}.slt img{display:block;vertical-align:top;border:0}.pk{display:block;height:0;overflow:hidden}.sc2 input{border:0;padding:0;margin:0;background:none;border-radius:0}.hk{position:absolute;left:-999px;top:0}.ef{margin:2px 4px}.ef .q{width:120px}.fx{background:#fff4e5;border:1px solid #f0c890;border-radius:8px;padding:4px}.snd{display:block;background:#0b57d0;color:#fff;font-weight:bold;text-align:center;padding:5px;font-size:13px}.snd .k{color:#0b57d0}.nx{text-align:center;font-size:12px;line-height:1.7}.nx a{padding:0 12px}.ab.lv a{font-size:13px;padding:0 6px}</style>{% endblock %}
-{% block body %}{% if sound_link %}<a class="snd" href="{{ url_for('screen_audio_playlist', fmt='m3u') if small_browser else sound_link }}" accesskey="5"><span class="k">5</span>&#9835; Gra dźwięk &ndash; słuchaj</a>
+{% block body %}{% for f in files or [] %}{% if f.new %}<a class="snd" href="{{ f.link }}"{% if loop.first %} accesskey="9"{% endif %}><span class="k">9</span>&darr; Pobierz: {{ f.name }} ({{ f.size|mb }})</a>
+{% endif %}{% endfor %}{% if sound_link %}<a class="snd" href="{{ url_for('screen_audio_playlist', fmt='m3u') if small_browser else sound_link }}" accesskey="5"><span class="k">5</span>&#9835; Gra dźwięk &ndash; słuchaj</a>
 {% endif %}{% if live and mode == 's' and shot %}<div class="nx ab lv" id="g"><a href="{{ url_for('screen_page', a='down', live=1) }}">8 &#9660; dalej</a><a href="{{ url_for('screen_page', a='up', live=1) }}">2 &#9650; wyżej</a><a href="{{ url_for('screen_page') }}">5 &#9632; stop</a></div>
 {% else %}<form class="ab" id="g" action="{{ url_for('screen_page') }}" method="get"><input class="q" type="text" name="u" value="{{ page_url or target }}" maxlength="2000"> <input type="submit" value="Idź"> <a href="{{ url_for('screen_page', a='shot', opcje=1) }}">&hellip;</a></form>{% endif %}
 {% if waiting %}<div class="w"><div class="ib"><b>{% if error %}Zdalna przeglądarka nie działa{% else %}Uruchamiam zdalną przeglądarkę&hellip;{% endif %}</b><br>
@@ -3953,7 +3954,8 @@ Szukane słowo (można pominąć):<br>{% endif %}<input class="q" type="text" na
 {% endif %}{% if field %}<form class="ef fx" action="{{ url_for('screen_page') }}" method="get"><b>{{ field }}:</b><br><input type="hidden" name="a" value="type"><input class="q" type="text" name="t" maxlength="500"> <input type="submit" value="Wpisz"> <input type="submit" name="enter" value="Wpisz + Enter"></form>
 {% endif %}{% if options %}<div class="w">{% if page_title %}<p class="m"><b>{{ page_title }}</b></p>{% endif %}{% if mem %}<p class="m">Pamięć RAM: zdalna przeglądarka {{ mem.chromium }} MB (JavaScript tej strony {{ mem.karta_js }} MB){% if shot %} &middot; na Nokii obraz ok. {{ "%.1f"|format(shot.w * shot.h * 4 / 1048576) }} MB{% endif %}</p>{% endif %}<a class="b" href="{{ url_for('screen_page', a='shot') }}">&laquo; Wróć do strony</a>
 <a class="b" href="{{ url_for('screen_page', a='shot', live=1) }}">Odświeżaj na żywo (co 1 s)</a>
-<a class="b" href="{{ url_for('screen_audio') }}">Dźwięk na żywo (&#9835;)</a>
+{% if files %}<p class="m"><b>Pobrane pliki</b> (do zapisania w telefonie, przez godzinę):</p>{% for f in files %}<a class="b" href="{{ f.link }}">&darr; {{ f.name }} ({{ f.size|mb }})</a>
+{% endfor %}{% endif %}<a class="b" href="{{ url_for('screen_audio') }}">Dźwięk na żywo (&#9835;)</a>
 <a class="b" href="{{ url_for('settings', k='ekd', v=0 if desktop_mode else 1, next=url_for('screen_page')) }}">Wersja komputerowa: {{ "wyłącz" if desktop_mode else "włącz" }}</a>
 {% if shot %}<a class="b" href="{{ url_for('screen_page', a='shot', lista=1) }}">Lista linków ({{ shot["items"]|length }})</a>
 {% endif %}<a class="b" href="{{ url_for('screen_page', a='key', key='Backspace') }}">Usuń znak w polu (&#9003;)</a>
@@ -5822,6 +5824,13 @@ def slice_shot(raw, shot, board=None, anchor=None):
     shot["slices"] = slices
 
 
+def file_link(server, file_id):
+    """Podpisany (HMAC) link do pliku pobranego w zdalnej przeglądarce, ważny godzinę."""
+    expires = int(time.time()) + 3600
+    sig = hmac.new(SCREEN_TOKEN.encode(), f"plik:{file_id}:{expires}".encode(), hashlib.sha256).hexdigest()[:32]
+    return f"{server.rstrip('/')}/plik/{file_id}?t={expires}.{sig}"
+
+
 def audio_link(server):
     """Podpisany (HMAC) link do strumienia dźwięku na maszynie, ważny 6 godzin, w wybranej jakości."""
     expires = int(time.time()) + 6 * 3600
@@ -5994,6 +6003,8 @@ def screen_page():
                                              google_q=google_query(data.get("url") or ""),
                                              # gra dźwięk, a nikt go nie słucha: na górze link „słuchaj” (jedno OK)
                                              sound_link=audio_link(server) if data.get("sound") and not data.get("listeners") else "",
+                                             files=[dict(f, link=file_link(server, f["id"])) for f in data.get("downloads") or []
+                                                    if isinstance(f, dict) and re.fullmatch(r"[0-9a-f]{16}", str(f.get("id")))],
                                              page_title=data.get("title", ""), page_url=data.get("url", "") or target,
                                              error=error, here=request.full_path, sw=SCREEN_W, closed=data.get("closed"),
                                              debug=json.dumps(data.get("debug"), ensure_ascii=False) if data.get("debug") else ""))
