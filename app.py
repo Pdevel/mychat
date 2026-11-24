@@ -5417,7 +5417,8 @@ INSTABOX_API = "https://api.instabox.sh"
 SCREEN_MACHINE = "szukajka-ekran"
 SCREEN_PORT = 8765
 SCREEN_W = 232  # szerokość zrzutu na telefonie (ekran 240 px)
-LIVE_CLIP = 405  # na żywo na Nokii: zrzut górnych 405 px widoku 320 px = 294 px na ekranie (z paskiem adresu cały ekran 240×320)
+LIVE_CLIP = 660  # na żywo na Nokii: górne 660 px widoku 320 px = ok. 478 px na ekranie (dwa kawałki, ok. 15 KB) – Opera Mini
+# nie nadążała z całym długim zrzutem (10 kawałków, ok. 72 KB) co sekundę: „timeout” i stary obraz
 # Strony-aplikacje, które bez JavaScriptu nic nie pokazują: czytnik od razu przekazuje je zdalnemu ekranowi.
 APP_URL = re.compile(r"^https?://(?:(?:www|maps)\.google\.[a-z.]+/maps|maps\.google\.|maps\.app\.goo\.gl/|goo\.gl/maps|"
                      r"(?:docs|mail|drive|calendar|translate)\.google\.|(?:www\.|m\.)?facebook\.com/|(?:www\.)?instagram\.com/|"
@@ -5925,7 +5926,11 @@ def screen_page():
         # na żywo na Nokii: ten sam długi obraz co zwykle (podgląd zostawia przewinięcie między odświeżeniami), a 8/2 i ▼/▲
         # przesuwają zdalną stronę o jeden ekran Nokii – gdy Opera Mini po odświeżeniu wraca na górę, widać kolejny ekran
         view = dict(mode["view"], desktop=True) if request.cookies.get("ekd") == "1" else mode["view"]  # wersja komputerowa
+        if live_one:
+            view = dict(view, clip=LIVE_CLIP)  # na żywo na Nokii: lekki fragment strony co sekundę
         body = {"sid": sid, "action": action, "geo": screen_geo(), "view": view}
+        if live_one and action == "click":
+            body["keep"] = LIVE_CLIP  # kliknięte miejsce zostaje w pokazanym fragmencie
         if request.args.get("opcje"):
             body["mem"] = 1  # menu „⋯”: ile pamięci zajmuje zdalna przeglądarka
         if request.args.get("live"):
@@ -5943,6 +5948,8 @@ def screen_page():
         elif action in ("up", "down"):
             step = mode["view"]["h"]  # zdalna przeglądarka przewija o dokładnie jeden pokazany ekran (bez powtórzeń)
             body.update(action="scroll", dy=-step if action == "up" else step)
+            if live_one:
+                body["screen"] = LIVE_CLIP  # na żywo: o pokazany fragment
 
         elif action == "type":
             body.update(text=(request.args.get("t") or "")[:500], enter=bool(request.args.get("enter")))

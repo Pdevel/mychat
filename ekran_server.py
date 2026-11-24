@@ -764,6 +764,16 @@ def act(body):
             settle(page, 700)  # kliknięcie otworzyło inną stronę – zrzut dopiero, gdy się wczyta
         else:
             page.wait_for_timeout(350)  # nakładka, menu, pole: animacja i kursor
+        keep = body.get("keep")
+        if isinstance(keep, (int, float)) and keep > 100 and page.url == url_before:
+            # na żywo telefon widzi tylko górny fragment okna: kliknięte miejsce (szachownica – jej górna krawędź) zostaje w nim
+            run(page, """([y, keep]) => {
+              const board = document.querySelector('cg-board');
+              const r = board && board.getBoundingClientRect();
+              const top = r && r.top <= y && r.bottom >= y ? r.top - 4 : (y < keep * 0.7 ? null : y - keep / 3);
+              if (top !== null && Math.abs(top) > 2) scrollBy({top: top, behavior: 'instant'});
+            }""", [y, keep])
+            page.wait_for_timeout(120)
     elif action == "scroll":
         shown = min(view.get("clip") or height, (page.viewport_size or {}).get("height") or height)
         if isinstance(body.get("screen"), (int, float)) and body["screen"] > 50:
@@ -845,6 +855,7 @@ def act(body):
         sessions[sid]["page"] = page  # karta tylko do pobrania pliku zamknęła się sama – zostaje poprzednia strona
     apply_dark(page, bool(body.get("dark")))  # nowa karta (link z target=_blank) też ciemna
     fitted = fit_height(page, view)
+    short = (view.get("clip") or view["h"]) < view["h"]  # telefon chce tylko kawałek (na żywo na Nokii) – bez sklejania
     view = dict(view, clip=min(view.get("clip") or view["h"], fitted))  # zrzut tylko tego, co jest w oknie
     height = view["clip"]
     acted = time.monotonic()
@@ -855,7 +866,7 @@ def act(body):
             page.wait_for_timeout(600)
             field = run(page, FIELD, default="") or ""
     glued = (compose_panel(page, view, width, height, 60 if body.get("live") else 150)  # na żywo: szybciej, co sekundę
-             if fitted < view["h"] and not body.get("single") else None)
+             if fitted < view["h"] and not body.get("single") and not short else None)
     sessions[sid]["panel"] = glued and dict(glued[2], url=page.url)
     shot = None if glued else capture(page, view)
     shot_done = time.monotonic()
