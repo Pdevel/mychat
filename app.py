@@ -4035,6 +4035,14 @@ h1{font-size:17px;margin:4px 0 6px}h2{font-size:14px;margin:12px 0 4px}.m{color:
 <div class="t"><span class="n">9</span>Zegar w JavaScripcie (sekundy powinny lecieć): <b id="zegar">{{ now }}</b>
 <script>(function () { var e = document.getElementById('zegar'); var n = 0;
 setInterval(function () { n += 1; e.innerHTML = '{{ now }} + ' + n + ' s'; }, 1000); })();</script></div>
+<h2>Dźwięk (odtwarzacz telefonu)</h2>
+<p class="m">Każdy link wybierz i przy pytaniu Opery Mini naciśnij &bdquo;Otwórz&rdquo;. Zapisz, przy których numerach słychać melodię (kilka tonów w górę i w dół).</p>
+<div class="t"><span class="n">10</span><a href="{{ url_for('anim_test_mp3') }}">Plik MP3</a> &ndash; melodia 6 s</div>
+<div class="t"><span class="n">11</span><a href="{{ url_for('anim_test_playlist', name='plik', fmt='m3u') }}">Playlista M3U z plikiem</a> &ndash; ta sama melodia</div>
+<div class="t"><span class="n">12</span><a href="{{ url_for('anim_test_playlist', name='plik-http', fmt='m3u') }}">Playlista M3U z plikiem (http)</a></div>
+<div class="t"><span class="n">13</span><a href="{{ url_for('anim_test_live') }}">Strumień na żywo</a> &ndash; melodia przez 60 s, jak dźwięk ze zdalnego ekranu</div>
+<div class="t"><span class="n">14</span><a href="{{ url_for('anim_test_playlist', name='zywo', fmt='m3u') }}">Playlista M3U ze strumieniem na żywo</a></div>
+<div class="t"><span class="n">15</span><a href="{{ url_for('anim_test_playlist', name='zywo', fmt='pls') }}">Playlista PLS ze strumieniem na żywo</a></div>
 <h2>Twoja przeglądarka</h2>
 <div class="ua">{{ ua }}{% for k, v in extra %}<br>{{ k }}: {{ v }}{% endfor %}</div>
 <p class="m">Zrób zdjęcie ekranu albo przepisz numery, które się ruszają, i wyślij je w czacie. Strona waży kilka KB.</p>
@@ -5667,6 +5675,75 @@ def anim_test_gif():
     return resp
 
 
+# Dźwięk do sprawdzenia odtwarzacza telefonu: krótka melodia generowana przez ffmpeg (bez cudzych nagrań).
+TEST_MELODY = "0.35*sin(2*PI*t*(330+110*floor(mod(t*2,5))))"
+_test_sound = {}
+_test_live = threading.Semaphore(2)  # strumień próbny trzyma wątek serwera przez minutę – najwyżej dwa naraz
+
+
+def test_sound_args(seconds, live=False):
+    exe, _ = ffmpeg_info()
+    if not exe:
+        return None
+    return [exe, "-loglevel", "error", *(["-re"] if live else []), "-f", "lavfi", "-i",
+            f"aevalsrc='{TEST_MELODY}':s=22050:d={seconds}", "-ac", "1", "-c:a", "libmp3lame", "-b:a", "64k",
+            *(["-flush_packets", "1"] if live else []), "-f", "mp3", "pipe:1"]
+
+
+@app.route("/test-animacji/dzwiek.mp3")
+def anim_test_mp3():
+    """Zwykły plik MP3 (6 s melodii) – czy Opera Mini go pobierze i czy odtwarzacz zagra."""
+    if "mp3" not in _test_sound:
+        args = test_sound_args(6)
+        if not args:
+            abort(503)
+        _test_sound["mp3"] = subprocess.run(args, capture_output=True, timeout=60).stdout
+    resp = make_response(_test_sound["mp3"])
+    resp.headers.update({"Content-Type": "audio/mpeg", "Content-Disposition": 'inline; filename="melodia.mp3"'})
+    return resp
+
+
+@app.route("/test-animacji/na-zywo.mp3")
+def anim_test_live():
+    """Strumień na żywo (60 s melodii nadawanej w czasie rzeczywistym, bez znanej długości) – tak jak dźwięk ze zdalnego
+    ekranu. Pokazuje, czy odtwarzacz telefonu gra strumień, zanim się skończy."""
+    args = test_sound_args(60, live=True)
+    if not args:
+        abort(503)
+    if not _test_live.acquire(blocking=False):
+        abort(429)
+
+    def generate():
+        proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        try:
+            while True:
+                chunk = proc.stdout.read1(4096)  # od razu to, co jest – bez czekania na pełny bufor
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            proc.kill()
+            _test_live.release()
+
+    return Response(generate(), mimetype="audio/mpeg", headers={"Cache-Control": "no-store", "icy-name": "Szukajka - test"})
+
+
+@app.route("/test-animacji/<name>.<fmt>")
+def anim_test_playlist(name, fmt):
+    """Playlisty do testu: M3U/PLS wskazujące plik albo strumień (https albo http)."""
+    target = {"plik": "anim_test_mp3", "plik-http": "anim_test_mp3", "zywo": "anim_test_live"}.get(name)
+    if not target or fmt not in ("m3u", "pls"):
+        abort(404)
+    url = url_for(target, _external=True, _scheme="http" if name.endswith("-http") else "https")
+    if fmt == "m3u":
+        body, mime = f"#EXTM3U\n#EXTINF:-1,Szukajka - test dźwięku\n{url}\n", "audio/x-mpegurl"
+    else:
+        body, mime = f"[playlist]\nNumberOfEntries=1\nFile1={url}\nTitle1=Szukajka - test\nLength1=-1\nVersion=2\n", "audio/x-scpls"
+    resp = make_response(body)
+    resp.headers.update({"Content-Type": mime, "Cache-Control": "no-store", "Content-Disposition": f'inline; filename="test.{fmt}"'})
+    return resp
+
+
 @app.route("/test-animacji.svg")
 def anim_test_svg():
     svg = ('<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40">'
@@ -6273,6 +6350,8 @@ def count_data(resp):
     Przybliżony – Opera Mini dodatkowo kompresuje strony, a równoległe pobrania obrazków mogą się nadpisać."""
     if request.endpoint in (None, "healthz", "robots", "icon", "diag") or resp.status_code >= 400:
         return resp
+    if resp.is_streamed and not resp.content_length:
+        return resp  # strumień (np. dźwięk na żywo): liczenie rozmiaru czekałoby na jego koniec
     size = resp.content_length or resp.calculate_content_length() or 0
     if size:
         resp.set_cookie(DATA_COOKIE, f"{time.strftime('%Y%m')}:{data_used() + size}", max_age=40 * 24 * 3600, samesite="Lax")
